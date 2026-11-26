@@ -77,8 +77,9 @@ npm run dist
 
 Produit dans `release/` :
 
-- `Hub IA Setup <version>.exe` : installateur (par utilisateur, sans droits administrateur, raccourcis bureau + menu Démarrer) ;
-- `Hub IA <version> portable.exe` : version sans installation.
+- `Hub-IA-Setup-<version>.exe` (+ `.blockmap` et `latest.yml`, utilisés par la mise à jour automatique) : installateur
+  (par utilisateur, sans droits administrateur, raccourcis bureau + menu Démarrer) ;
+- `Hub-IA-<version>-portable.exe` : version sans installation.
 
 Envoie l'un ou l'autre avec **[INSTALLATION.md](INSTALLATION.md)** (guide pas à pas pour la personne qui reçoit l'appli).
 `npm run dist:setup` ou `npm run dist:portable` ne produit qu'un des deux. `npm run icon` régénère l'icône (`build/`).
@@ -98,6 +99,30 @@ Limites : l'appli n'est pas signée (pas de certificat de signature de code), do
 affiche un avertissement au premier lancement (« Informations complémentaires » › « Exécuter quand même »).
 Le chiffrement des cookies et le verrouillage de l'archive (`onlyLoadAppFromAsar`, contrôle d'intégrité)
 sont activés dans l'appli packagée.
+
+## Mises à jour automatiques
+
+L'appli lit les releases **publiques** de ce dépôt GitHub (aucun jeton) ≈ 10 s après le lancement puis toutes les 6 h
+(désactivable dans Réglages › Mises à jour) :
+
+- **Version installée** : `electron-updater` télécharge la nouvelle version en arrière-plan (bannière avec la progression),
+  puis l'installe à la fermeture ou tout de suite avec « Redémarrer maintenant ». Il s'appuie sur `latest.yml` joint à la
+  release. L'appli n'étant pas signée, aucune vérification d'éditeur n'est faite (l'intégrité du fichier reste vérifiée
+  par le sha512 de `latest.yml`).
+- **Version portable** : bannière « Nouvelle version disponible » avec un lien vers la release (elle ne peut pas se
+  remplacer elle-même).
+- **Développement** : pas de vérification automatique ; « Vérifier maintenant » interroge l'API GitHub
+  (`HUB_FAKE_VERSION=0.1.0-alpha.1` simule une version plus ancienne pour tester).
+
+Les pré-versions (alpha/bêta) sont proposées tant que la version installée en est une (réglable).
+
+## Publier une version
+
+1. Change `version` dans `package.json` (ex. `0.1.0-alpha.3`, ou `0.1.0` pour une version finale).
+2. `npm run dist` (produit les exe, le `.blockmap` et `latest.yml` dans `release/`).
+3. `npm run release:assets` : vérifie que les 4 fichiers sont là et affiche la commande `gh release create …` à lancer
+   (avec `--prerelease` si la version contient « - »). Les 4 fichiers doivent être joints : sans `latest.yml`,
+   la version installée ne voit pas la mise à jour.
 
 ## Tests
 

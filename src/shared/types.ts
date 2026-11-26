@@ -283,6 +283,10 @@ export interface HubSettings {
   knowledgeBaseMap: Record<string, string>;
   /** Une note par discussion, créée et tenue à jour dans la base liée. */
   conversationNotes: boolean;
+  /** Vérifier les mises à jour au démarrage (défaut : oui). */
+  autoUpdate?: boolean;
+  /** Inclure les pré-versions alpha/bêta (défaut : oui si la version actuelle en est une). */
+  updateIncludePrerelease?: boolean;
   /** Modèle d'image utilisé par défaut (id de préréglage : 'z-image-turbo', 'sdxl'…). */
   imageModel?: string;
   /** L'assistant de premier démarrage a été terminé ou passé. */
@@ -535,6 +539,7 @@ export type HubEvent =
   | { type: 'imageEngine'; status: ImageEngineStatus }
   | { type: 'usage'; usage: UsageStats }
   | { type: 'limits'; limits: LimitsState }
+  | { type: 'update'; state: UpdateState }
   | { type: 'setup'; progress: SetupProgress }
   /** Une session Claude Code est apparue ou a changé (surveillance de ~/.claude/projects). */
   | { type: 'claudeSessions' }
@@ -542,6 +547,29 @@ export type HubEvent =
   | { type: 'claudeLogUsage' }
   /** Progression du calcul (fichiers relus). */
   | { type: 'claudeLogProgress'; done: number; total: number };
+
+/**
+ * État des mises à jour. mode : installed = version installée (téléchargement + installation automatiques),
+ * portable = notification + lien de téléchargement, dev = vérification manuelle seulement.
+ */
+export interface UpdateState {
+  mode: 'installed' | 'portable' | 'dev';
+  status: 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'up-to-date' | 'error';
+  currentVersion: string;
+  /** Version trouvée sur GitHub (si plus récente). */
+  version?: string;
+  /** Notes de la release (Markdown). */
+  notes?: string;
+  /** Page de la release sur GitHub. */
+  url?: string;
+  /** Téléchargement en cours (version installée), 0–100. */
+  percent?: number;
+  error?: string;
+  /** Dernière vérification (ms). */
+  checkedAt?: number;
+  includePrerelease: boolean;
+  autoCheck: boolean;
+}
 
 /** API exposée à l'interface par le preload (window.hub). */
 export interface HubApi {
@@ -623,6 +651,12 @@ export interface HubApi {
   getLimits(): Promise<LimitsState>;
   /** Relève les limites maintenant via une toute petite requête (Claude haiku). */
   refreshLimits(providerId: string): Promise<LimitsState>;
+  // Mises à jour (releases GitHub publiques)
+  getUpdateState(): Promise<UpdateState>;
+  /** Vérifie maintenant (version installée : télécharge en arrière-plan si une mise à jour existe). */
+  checkForUpdates(): Promise<UpdateState>;
+  /** Version installée : redémarre et installe la mise à jour téléchargée. */
+  installUpdateNow(): Promise<void>;
   getClaudeAccess(): Promise<ClaudeAccess>;
   saveClaudeAccess(allowed: string[], extraDirs: string[]): Promise<ClaudeAccess>;
   /** Conso Claude Code de tout ce PC depuis le début (lit ~/.claude/projects ; refresh = relever les nouveautés). */
@@ -750,5 +784,8 @@ export const HUB_METHODS = [
   'cancelSetup',
   'openExternal',
   'setOnboardingDone',
+  'getUpdateState',
+  'checkForUpdates',
+  'installUpdateNow',
 ] as const;
 export type HubMethod = (typeof HUB_METHODS)[number];

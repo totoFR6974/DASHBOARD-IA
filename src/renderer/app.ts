@@ -36,6 +36,7 @@ import type {
   UsageBucket,
   UsageStats,
   ClaudeEffort,
+  UpdateState,
 } from '../shared/types';
 import { CLAUDE_EFFORTS } from '../shared/types';
 
@@ -1008,6 +1009,91 @@ function closeAiMenu(): void {
   if (!state.aiMenuOpen) return;
   state.aiMenuOpen = false;
   renderAiMenu();
+}
+
+// ---------- Mises à jour (releases GitHub) ----------
+
+const updateUi = { state: null as UpdateState | null, dismissed: '' as string, showNotes: false };
+
+function onUpdateState(s: UpdateState): void {
+  updateUi.state = s;
+  renderUpdateBanner();
+  renderUpdateResult();
+}
+
+async function checkUpdatesNow(): Promise<void> {
+  updateUi.dismissed = '';
+  $('upd-result').textContent = 'Vérification…';
+  try {
+    onUpdateState(await hub.checkForUpdates());
+  } catch (err: any) {
+    $('upd-result').textContent = `Erreur : ${err.message ?? err}`;
+  }
+}
+
+function renderUpdateBanner(): void {
+  const s = updateUi.state;
+  const el = $('update-banner');
+  const key = `${s?.status}:${s?.version}`;
+  const show = !!s && ['available', 'downloading', 'ready'].includes(s.status) && !!s.version && updateUi.dismissed !== key;
+  el.classList.toggle('hidden', !show);
+  if (!show || !s) return;
+  const notesBtn = s.notes
+    ? h('button', { type: 'button', class: 'btn ghost small', onclick: () => ((updateUi.showNotes = !updateUi.showNotes), renderUpdateBanner()) }, updateUi.showNotes ? 'Masquer les nouveautés' : 'Voir les nouveautés')
+    : null;
+  const later = h('button', { type: 'button', class: 'btn ghost small', onclick: () => ((updateUi.dismissed = key), renderUpdateBanner()) }, 'Plus tard');
+  const parts: (HTMLElement | null)[] = [h('span', { class: 'update-ico' }, s.status === 'ready' ? '✓' : '↑')];
+  if (s.status === 'downloading') {
+    parts.push(
+      h('span', { class: 'update-text' }, `Mise à jour ${s.version} en cours de téléchargement… ${s.percent ?? 0} %`),
+      h('span', { class: 'update-progress' }, h('span', { style: `width:${s.percent ?? 0}%` })),
+      notesBtn,
+    );
+  } else if (s.status === 'ready') {
+    parts.push(
+      h('span', { class: 'update-text' }, `Mise à jour ${s.version} prête.`),
+      h('button', { type: 'button', class: 'btn primary small', onclick: () => void hub.installUpdateNow().catch((e: any) => toast(e.message ?? String(e))) }, 'Redémarrer maintenant'),
+      h('button', { type: 'button', class: 'btn ghost small', title: 'Elle s’installera quand tu fermeras l’application', onclick: () => ((updateUi.dismissed = key), renderUpdateBanner()) }, 'À la fermeture'),
+      notesBtn,
+    );
+  } else {
+    parts.push(
+      h('span', { class: 'update-text' }, `Nouvelle version ${s.version} disponible (tu as ${s.currentVersion}).`),
+      h('button', { type: 'button', class: 'btn primary small', onclick: () => s.url && void hub.openExternal(s.url).catch((e: any) => toast(e.message ?? String(e))) }, 'Télécharger'),
+      notesBtn,
+      later,
+    );
+  }
+  const children = parts.filter((p): p is HTMLElement => p !== null);
+  const row = h('div', { class: 'update-row' }, ...children);
+  el.replaceChildren(row, ...(updateUi.showNotes && s.notes ? [h('div', { class: 'update-notes msg-body', html: md(s.notes) })] : []));
+}
+
+function renderUpdateResult(): void {
+  const s = updateUi.state;
+  if (!s) return;
+  const res = document.getElementById('upd-result');
+  if (!res) return;
+  const txt: Record<UpdateState['status'], string> = {
+    idle: '',
+    checking: 'Vérification…',
+    'up-to-date': `À jour${s.checkedAt ? ` (vérifié à ${new Date(s.checkedAt).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })})` : ''}.`,
+    available: `Nouvelle version ${s.version} disponible.`,
+    downloading: `Téléchargement de la version ${s.version}… ${s.percent ?? 0} %`,
+    ready: `Version ${s.version} prête : redémarre pour l’installer.`,
+    error: `Erreur : ${s.error ?? 'inconnue'}`,
+  };
+  res.textContent = txt[s.status];
+}
+
+function renderUpdateSettings(): void {
+  const s = updateUi.state;
+  const settings = state.settings;
+  $('upd-version').textContent = s?.currentVersion ?? '—';
+  $('upd-mode').textContent = s ? { installed: '(version installée : mise à jour automatique)', portable: '(version portable : notification et lien de téléchargement)', dev: '(version de développement : vérification manuelle)' }[s.mode] : '';
+  $<HTMLInputElement>('set-autoupdate').checked = settings?.autoUpdate !== false;
+  $<HTMLInputElement>('set-prerelease').checked = typeof settings?.updateIncludePrerelease === 'boolean' ? settings.updateIncludePrerelease : !!s?.includePrerelease;
+  renderUpdateResult();
 }
 
 // ---------- Niveau d'effort de Claude (bouton ⚡ du composer) ----------
@@ -2894,6 +2980,7 @@ async function renderSettings(): Promise<void> {
   $<HTMLInputElement>('set-delegation').checked = s.delegationEnabled !== false;
   $<HTMLInputElement>('set-conv-notes').checked = s.conversationNotes !== false;
   void renderClaudeAccess();
+  renderUpdateSettings();
   try {
     const { roles, plannerRoleId } = await hub.listRoles();
     state.roles = roles;
@@ -3099,6 +3186,10 @@ function onHubEvent(ev: HubEvent): void {
       cc.progress = { done: ev.done, total: ev.total };
       const el = document.querySelector('.cc-stats .usage-empty');
       if (el && !cc.usage) el.textContent = `Calcul en cours… ${ev.done} / ${ev.total} fichiers (le premier calcul lit tous les journaux, ensuite seules les nouveautés).`;
+      break;
+    }
+    case 'update': {
+      onUpdateState(ev.state);
       break;
     }
     case 'limits': {
@@ -4129,6 +4220,7 @@ function cmdkStatic(q: string): CmdItem[] {
     { group: 'Actions', label: 'Ajouter un dossier de travail', run: () => void quickAddFolder() },
     { group: 'Actions', label: 'Ouvrir la base dans Obsidian', run: () => void hub.openInObsidian() },
     { group: 'Actions', label: "Assistant d'installation", run: () => void openOnboarding() },
+    { group: 'Actions', label: 'Rechercher une mise à jour', run: () => void checkUpdatesNow() },
     { group: 'Aller à', label: 'Discussions', run: () => setView('chat') },
     { group: 'Aller à', label: 'Workflows', run: () => setView('workflows') },
     { group: 'Aller à', label: 'Connaissances', run: () => setView('knowledge') },
@@ -4443,6 +4535,8 @@ function bindUi(): void {
       workflowAutoStart: $<HTMLInputElement>('set-autostart').checked,
       delegationEnabled: $<HTMLInputElement>('set-delegation').checked,
       conversationNotes: $<HTMLInputElement>('set-conv-notes').checked,
+      autoUpdate: $<HTMLInputElement>('set-autoupdate').checked,
+      updateIncludePrerelease: $<HTMLInputElement>('set-prerelease').checked,
     } as HubSettings;
     try {
       state.settings = await hub.saveSettings(data);
@@ -4508,6 +4602,9 @@ async function init(): Promise<void> {
   usageUi.stats = await hub.getUsage().catch(() => ({ days: {} }));
   usageUi.limits = await hub.getLimits().catch(() => ({ providers: {} }));
   renderLimitsPill();
+  const upd = await hub.getUpdateState().catch(() => null);
+  if (upd) onUpdateState(upd);
+  $('upd-check').addEventListener('click', () => void checkUpdatesNow());
   // Le compte à rebours de réinitialisation reste juste.
   setInterval(() => usageUi.open && renderLimitsMenu(), 30000);
   renderFolderButton();

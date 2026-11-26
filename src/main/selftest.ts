@@ -7,6 +7,7 @@ import type { Task, WorkflowRun } from '../shared/types';
 import { Hub, samePath } from './hub';
 import { imagePreset } from './image-models';
 import { isAllowedExternalUrl, recommendModel } from './setup';
+import { compareSemver, fetchReleases, isPrereleaseVersion, pickLatestRelease, readableUpdateError } from './update-check';
 import { ClaudeLogs } from './claude-logs';
 import { OBSIDIAN_WINGET_ARGS, obsidianStatus, registerVaults } from './obsidian';
 
@@ -71,6 +72,40 @@ async function send(convId: string, text: string, timeoutMs = 300000): Promise<T
 const norm = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
 const status = (t: Task) => `${t.status}${t.error ? ` : ${t.error}` : ''}`;
 
+/** Mises à jour : logique pure (semver, choix de release) + un appel réel à l'API publique GitHub. */
+async function testUpdateCheck(): Promise<void> {
+  console.log('Mises à jour');
+  const order = ['0.1.0-alpha.2', '0.1.0-alpha.10', '0.1.0-beta.1', '0.1.0', '0.1.1'];
+  let ok = true;
+  for (let i = 0; i < order.length - 1; i++) ok &&= compareSemver(order[i], order[i + 1]) < 0 && compareSemver(order[i + 1], order[i]) > 0;
+  check(ok, `ordre semver : ${order.join(' < ')}`);
+  check(compareSemver('v0.1.0-alpha.2', '0.1.0-alpha.2') === 0 && compareSemver('1.0.0-alpha', '1.0.0-alpha.1') < 0, 'préfixe « v » ignoré, alpha < alpha.1');
+  check(isPrereleaseVersion('0.1.0-alpha.2') && !isPrereleaseVersion('0.1.0'), 'détection des pré-versions');
+  const longErr = readableUpdateError(new Error('Cannot find latest.yml in the latest release artifacts (https://…): HttpError: 404\n    at C:\\Users\\x\\app.asar'));
+  check(/latest\.yml/.test(longErr) && !/C:\\|at /.test(longErr), `erreur lisible sans pile ni chemin : « ${longErr} »`);
+  const releases = [
+    { tag_name: 'v0.2.0', draft: true, prerelease: false, html_url: 'u-draft' },
+    { tag_name: 'v0.1.0-alpha.3', prerelease: true, html_url: 'u-a3', body: 'notes a3' },
+    { tag_name: 'v0.1.0-alpha.10', prerelease: true, html_url: 'u-a10' },
+    { tag_name: 'v0.0.9', prerelease: false, html_url: 'u-009' },
+    { tag_name: 'pas-une-version', prerelease: false },
+  ];
+  check(pickLatestRelease(releases, '0.1.0-alpha.2', true)?.tag === 'v0.1.0-alpha.10', 'pré-versions incluses : la plus récente (alpha.10), brouillon ignoré');
+  check(pickLatestRelease(releases, '0.1.0-alpha.2', false) === null, 'pré-versions exclues : rien de plus récent (0.0.9 est plus ancienne)');
+  check(pickLatestRelease(releases, '0.1.0-alpha.10', true) === null, 'déjà à jour → aucune release');
+  check(pickLatestRelease([{ tag_name: 'v0.1.0', prerelease: false, html_url: 'u' }], '0.1.0-alpha.2', false)?.version === '0.1.0', 'version finale proposée même sans pré-versions');
+  try {
+    const live = await fetchReleases();
+    const tags = live.map((r) => r.tag_name);
+    check(tags.includes('v0.1.0-alpha.2'), `API publique GitHub : ${tags.length} release(s) (${tags.join(', ')})`);
+    const picked = pickLatestRelease(live, '0.1.0-alpha.1', true);
+    check(!!picked && compareSemver(picked.version, '0.1.0-alpha.2') >= 0 && /^https:\/\/github\.com\/totoFR6974\/DASHBOARD-IA\/releases\//.test(picked.url), `depuis 0.1.0-alpha.1 → ${picked?.version} (${picked?.url})`);
+    check(isAllowedExternalUrl(picked?.url ?? '') && !isAllowedExternalUrl('https://github.com/autre/depot/releases'), 'lien de release autorisé, autres dépôts refusés');
+  } catch (err: any) {
+    check(false, `API publique GitHub injoignable : ${readableUpdateError(err)}`);
+  }
+}
+
 async function main(): Promise<void> {
   // SELFTEST_ONLY=images : seulement les images locales et leurs préréglages (aucun appel d'IA ni téléchargement).
   if (process.env.SELFTEST_ONLY === 'images') return testImages();
@@ -78,6 +113,8 @@ async function main(): Promise<void> {
   if (process.env.SELFTEST_ONLY === 'claudelogs') return testClaudeLogs();
   // SELFTEST_ONLY=claudearchive : seulement les archives des sessions Claude Code (aucun appel d'IA).
   if (process.env.SELFTEST_ONLY === 'claudearchive') return testClaudeArchive();
+  // SELFTEST_ONLY=update : comparaison de versions, choix de la release, API publique GitHub (aucun appel d'IA).
+  if (process.env.SELFTEST_ONLY === 'update') return testUpdateCheck();
   // Migration
   console.log('Migration');
   const legacy = hub.listConversations().find((c) => c.id === 'legacy-1');

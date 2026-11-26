@@ -14,7 +14,10 @@ const EXTERNAL_HOSTS = new Set(['ollama.com', 'www.ollama.com', 'claude.ai', 'ww
 export function isAllowedExternalUrl(url: string): boolean {
   try {
     const u = new URL(String(url));
-    return u.protocol === 'https:' && !u.username && !u.password && !u.port && EXTERNAL_HOSTS.has(u.hostname.toLowerCase());
+    if (u.protocol !== 'https:' || u.username || u.password || u.port) return false;
+    // Pages des versions du Hub sur GitHub (mises à jour), et seulement elles.
+    if (u.hostname.toLowerCase() === 'github.com' && /^\/totoFR6974\/DASHBOARD-IA\/releases(\/|$)/i.test(u.pathname)) return true;
+    return EXTERNAL_HOSTS.has(u.hostname.toLowerCase());
   } catch {
     return false;
   }

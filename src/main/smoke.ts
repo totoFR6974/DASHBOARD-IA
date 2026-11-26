@@ -350,6 +350,33 @@ export async function runSmoke(win: BrowserWindow, outDir: string, getWeb: () =>
   if (only === 'workflow') return smokeWorkflow(shot, js);
   if (only === 'knowledge') return smokeKnowledge(shot, js);
   if (only === 'ui') return smokeShell(shot, js);
+  if (only === 'update') {
+    // Avec HUB_FAKE_VERSION=0.1.0-alpha.1, l'appli se croit plus ancienne que la dernière release GitHub.
+    const r = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      document.querySelector('.tabs button[data-view="settings"]').click();
+      await sleep(800);
+      document.getElementById('upd-check').click();
+      for (let i = 0; i < 40 && document.getElementById('update-banner').classList.contains('hidden'); i++) await sleep(500);
+      const banner = document.getElementById('update-banner');
+      const notes = [...banner.querySelectorAll('button')].find((b) => /nouveautés/i.test(b.textContent));
+      notes?.click();
+      await sleep(400);
+      return {
+        version: document.getElementById('upd-version').textContent,
+        mode: document.getElementById('upd-mode').textContent,
+        result: document.getElementById('upd-result').textContent,
+        banner: banner.classList.contains('hidden') ? null : banner.querySelector('.update-text')?.textContent,
+        buttons: [...banner.querySelectorAll('button')].map((b) => b.textContent),
+        notes: !!banner.querySelector('.update-notes'),
+      };
+    })()`);
+    console.log(`Mise à jour : ${JSON.stringify(r)}`);
+    await js(`document.querySelector('.view.active')?.scrollTo(0, 0)`);
+    await wait(300);
+    await shot('26-mise-a-jour');
+    return;
+  }
   if (only === 'delegation') return smokeDelegation(shot, js);
   if (only === 'claudecode') return smokeClaudeCode(shot, js);
   if (only === 'stats') {

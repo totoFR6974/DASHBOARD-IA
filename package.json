@@ -1,7 +1,7 @@
 {
   "name": "hub-ia",
   "productName": "Hub IA",
-  "version": "0.1.0-alpha.2",
+  "version": "0.1.0-alpha.3",
   "private": true,
   "description": "Hub local pour piloter plusieurs IA (Claude Code, Ollama...) depuis un seul endroit",
   "author": "Hub IA",
@@ -14,9 +14,10 @@
     "smoke": "node build.mjs && electron . --smoke",
     "test:image": "esbuild scripts/test-image.ts --bundle --platform=node --format=cjs --outfile=dist/test-image.js --external:7zip-bin --log-level=warning && node dist/test-image.js",
     "icon": "electron scripts/make-icon.mjs",
-    "dist": "node build.mjs && electron-builder --win nsis portable",
-    "dist:portable": "node build.mjs && electron-builder --win portable",
-    "dist:setup": "node build.mjs && electron-builder --win nsis"
+    "dist": "node build.mjs && electron-builder --win nsis portable --publish never",
+    "dist:portable": "node build.mjs && electron-builder --win portable --publish never",
+    "dist:setup": "node build.mjs && electron-builder --win nsis --publish never",
+    "release:assets": "node scripts/release-assets.mjs"
   },
   "build": {
     "appId": "local.hubia.app",
@@ -49,8 +50,18 @@
     "win": {
       "icon": "build/icon.ico",
       "target": [
-        { "target": "nsis", "arch": ["x64"] },
-        { "target": "portable", "arch": ["x64"] }
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
       "signAndEditExecutable": true
     },
@@ -61,15 +72,23 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Hub IA",
-      "installerLanguages": ["fr_FR"],
+      "installerLanguages": [
+        "fr_FR"
+      ],
       "language": "1036",
       "deleteAppDataOnUninstall": false,
       "installerIcon": "build/icon.ico",
       "uninstallerIcon": "build/icon.ico",
-      "artifactName": "Hub IA Setup ${version}.${ext}"
+      "artifactName": "Hub-IA-Setup-${version}.${ext}"
     },
     "portable": {
-      "artifactName": "Hub IA ${version} portable.${ext}"
+      "artifactName": "Hub-IA-${version}-portable.${ext}"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "totoFR6974",
+      "repo": "DASHBOARD-IA",
+      "releaseType": "prerelease"
     }
   },
   "devDependencies": {
@@ -82,6 +101,7 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
-    "7zip-bin": "^5.2.0"
+    "7zip-bin": "^5.2.0",
+    "electron-updater": "^6.8.11"
   }
 }

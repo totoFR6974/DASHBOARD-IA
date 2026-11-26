@@ -1531,6 +1531,8 @@ export class Hub {
     if (typeof next.workflowAutoStart === 'boolean') s.workflowAutoStart = next.workflowAutoStart;
     if (typeof next.delegationEnabled === 'boolean') s.delegationEnabled = next.delegationEnabled;
     if (typeof next.conversationNotes === 'boolean') s.conversationNotes = next.conversationNotes;
+    if (typeof next.autoUpdate === 'boolean') s.autoUpdate = next.autoUpdate;
+    if (typeof next.updateIncludePrerelease === 'boolean') s.updateIncludePrerelease = next.updateIncludePrerelease;
     // Les agents se modifient via saveRoles (validation dédiée) : on ne les touche pas ici.
     this.settingsFile.flush();
     void this.listProviders(true);

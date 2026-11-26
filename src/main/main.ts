@@ -8,6 +8,7 @@ import { Hub } from './hub';
 import { runSmoke } from './smoke';
 import { WebPanels } from './web-panels';
 import { migrateDevData, resolveRootDir } from './data-root';
+import { Updater } from './updater';
 
 const appDir = app.getAppPath();
 
@@ -50,6 +51,7 @@ const windowIcon = join(__dirname, 'icon.png');
 let hub: Hub;
 let win: BrowserWindow | null = null;
 let webPanels: WebPanels | null = null;
+let updater: Updater | null = null;
 
 function createWindow(): void {
   win = new BrowserWindow({
@@ -165,6 +167,17 @@ function start(): void {
     if (win && !win.isDestroyed()) win.webContents.send('hub:event', ev);
   });
 
+  // Mises à jour (releases GitHub publiques) : installée = automatique, portable = notification, dev = manuelle.
+  updater = new Updater({
+    mode: !app.isPackaged ? 'dev' : process.env.PORTABLE_EXECUTABLE_DIR ? 'portable' : 'installed',
+    settings: () => hub.settings,
+    emit: (state) => {
+      if (win && !win.isDestroyed()) win.webContents.send('hub:event', { type: 'update', state });
+    },
+    disableAuto: smoke,
+  });
+  updater.start();
+
   // Notification Windows quand une étape manuelle (ChatGPT / Gemini web) attend l'utilisateur.
   const notified = new Set<string>();
   const keyOf = (runId: string, s: { id: string; startedAt?: number }) => `${runId}:${s.id}:${s.startedAt ?? 0}`;
@@ -199,6 +212,12 @@ function start(): void {
         const res = await dialog.showOpenDialog(win!, { title: 'Choisir un dossier de travail', properties: ['openDirectory'] });
         return res.canceled ? null : (res.filePaths[0] ?? null);
       }
+      case 'getUpdateState':
+        return updater!.getState();
+      case 'checkForUpdates':
+        return updater!.check();
+      case 'installUpdateNow':
+        return updater!.installNow();
       case 'openInObsidian':
         return openInObsidian(args[0] === undefined || args[0] === null || args[0] === '' ? undefined : String(args[0]), args[1] ? String(args[1]) : undefined);
       default:
@@ -220,6 +239,7 @@ app.on('before-quit', (e) => {
   void (webPanels?.flushAll() ?? Promise.resolve())
     .catch(() => undefined)
     .finally(() => {
+      updater?.stop();
       hub?.shutdown();
       app.quit();
     });

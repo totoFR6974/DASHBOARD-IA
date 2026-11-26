@@ -101,6 +101,9 @@
         <div id="provider-pills" class="pills"></div>
       </header>
 
+      <!-- Mise à jour disponible / en cours / prête (releases GitHub) -->
+      <div id="update-banner" class="update-banner hidden" role="status"></div>
+
     <main>
       <!-- Discussions -->
       <section id="view-chat" class="view active">
@@ -279,6 +282,16 @@
             <label class="check" title="Pendant qu'il travaille, un agent Claude peut confier une sous-tâche à un autre agent (Rédacteur, Relecteur, Illustrateur…) et récupérer le résultat. Les sous-tâches ont les mêmes droits que l'agent qui les confie, jamais plus.">
               <input type="checkbox" id="set-delegation" /> Autoriser les agents à se déléguer du travail (outil demander_a)
             </label>
+          </fieldset>
+          <fieldset class="info-card">
+            <legend>Mises à jour</legend>
+            <div class="kv-line">Version actuelle : <b id="upd-version">—</b> <span id="upd-mode" class="muted small"></span></div>
+            <label class="check"><input type="checkbox" id="set-autoupdate" /> Vérifier les mises à jour au démarrage</label>
+            <label class="check"><input type="checkbox" id="set-prerelease" /> Inclure les pré-versions (alpha / bêta)</label>
+            <div class="row" style="justify-content: flex-start">
+              <button type="button" id="upd-check" class="btn ghost small">Vérifier maintenant</button>
+              <span id="upd-result" class="muted small"></span>
+            </div>
           </fieldset>
           <div class="row">
             <span id="settings-status" class="muted"></span>

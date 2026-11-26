@@ -6,7 +6,8 @@ const common = { bundle: true, sourcemap: true, logLevel: 'warning' };
 
 await Promise.all([
   // 7zip-bin reste externe : il localise son 7za.exe à partir de son propre dossier (node_modules).
-  build({ ...common, entryPoints: ['src/main/main.ts'], outfile: 'dist/main.js', platform: 'node', format: 'cjs', external: ['electron', '7zip-bin'] }),
+  // electron-updater reste externe aussi (dépendance de production, embarquée par electron-builder).
+  build({ ...common, entryPoints: ['src/main/main.ts'], outfile: 'dist/main.js', platform: 'node', format: 'cjs', external: ['electron', '7zip-bin', 'electron-updater'] }),
   build({ ...common, entryPoints: ['src/main/selftest.ts'], outfile: 'dist/selftest.js', platform: 'node', format: 'cjs', external: ['7zip-bin'] }),
   build({ ...common, entryPoints: ['src/preload/preload.ts'], outfile: 'dist/preload.js', platform: 'node', format: 'cjs', external: ['electron'] }),
   build({ ...common, entryPoints: ['src/renderer/app.ts'], outfile: 'dist/renderer/app.js', platform: 'browser', format: 'iife' }),
