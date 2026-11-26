@@ -27,8 +27,10 @@
       "buildResources": "build"
     },
     "files": [
-      "dist/**",
-      "!dist/selftest*",
+      "dist/main.js",
+      "dist/preload.js",
+      "dist/icon.png",
+      "dist/renderer/**",
       "!dist/**/*.map",
       "package.json"
     ],
