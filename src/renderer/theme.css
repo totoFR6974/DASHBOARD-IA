@@ -260,6 +260,8 @@ input[type='checkbox'] { accent-color: var(--accent); }
 .messages { padding: 22px 22px; }
 /* flex-shrink: 0 — dans une liste qui défile (colonne flex), une bulle en overflow:hidden pouvait être écrasée à une ligne. */
 .msg { animation: msgIn 0.4s var(--ease) both; max-width: min(860px, 100%); min-width: 0; flex-shrink: 0; }
+/* Bulle déjà affichée, redessinée : pas d'animation (anti-clignotement). Les puces de délégation non plus. */
+.msg.seen, .msg.seen .deleg-chip { animation: none; }
 .msg.assistant { overflow: hidden; }
 .activity, .act { max-width: 100%; }
 @keyframes msgIn { from { opacity: 0; transform: translateY(10px) scale(0.99); } to { opacity: 1; transform: none; } }
@@ -585,7 +587,8 @@ tr.task-row.has-kids td.title { cursor: pointer; }
   background: linear-gradient(180deg, rgba(30, 32, 38, 0.94), rgba(18, 20, 25, 0.96)); border: 1px solid var(--line-strong); border-radius: 20px;
   box-shadow: 0 40px 100px -30px rgba(0, 0, 0, 0.9), inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
-.ob:not(.hidden) .ob-panel { animation: obIn 0.45s var(--ease); }
+/* Seulement à l'ouverture : la fenêtre est redessinée à chaque changement (sinon elle « clignotait »). */
+.ob:not(.hidden) .ob-panel.opening { animation: obIn 0.45s var(--ease); }
 @keyframes obIn { from { opacity: 0; transform: translateY(14px) scale(0.98); } to { opacity: 1; transform: none; } }
 .ob-steps { position: relative; display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; padding: 22px 26px 16px; border-bottom: 1px solid var(--line); }
 .ob-steps-line { position: absolute; left: calc(26px + (100% - 52px) / 12); right: calc(26px + (100% - 52px) / 12); top: 36px; height: 2px; background: rgba(255, 255, 255, 0.08); border-radius: 2px; }

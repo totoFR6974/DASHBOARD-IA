@@ -1035,9 +1035,20 @@ function renderMessages(conv: Conversation | undefined): void {
     );
     return;
   }
-  box.replaceChildren(...turns.map((t) => turnEl(conv, t)));
+  const nodes = turns.map((t) => turnEl(conv, t));
+  // Même discussion redessinée (sous-tâche qui démarre / finit, nouvelle réponse…) : les bulles déjà affichées ne
+  // rejouent pas leur animation d'entrée (sinon toute la discussion « clignotait »). Seules les nouvelles s'animent.
+  // La classe est posée AVANT l'insertion dans la page, sinon l'animation aurait déjà démarré.
+  if (lastMessagesConvId === conv.id) {
+    const before = box.querySelectorAll('.msg').length;
+    const fresh = nodes.flatMap((n) => [...(n.matches('.msg') ? [n] : []), ...n.querySelectorAll<HTMLElement>('.msg')]);
+    fresh.slice(0, before).forEach((m) => m.classList.add('seen'));
+  }
+  lastMessagesConvId = conv.id;
+  box.replaceChildren(...nodes);
   if (stick || runningTasksFor(conv.id).length) box.scrollTop = box.scrollHeight;
 }
+let lastMessagesConvId: string | null = null;
 
 // ----- Menu de choix des IA -----
 

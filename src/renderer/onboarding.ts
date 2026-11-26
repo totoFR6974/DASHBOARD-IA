@@ -52,7 +52,7 @@ export function initOnboarding(deps: OnboardingDeps): void {
   deps.hub.onEvent((ev: HubEvent) => {
     if (ev.type !== 'setup') return;
     ob.progress[ev.progress.task] = ev.progress;
-    if (ob.open) render();
+    if (ob.open && !patchProgress(ev.progress.task)) render();
   });
 }
 
@@ -121,13 +121,41 @@ function progressBlock(task: SetupProgress['task']): HTMLElement | null {
   const { h } = d();
   const p = ob.progress[task];
   if (!p) return null;
-  const pct = p.total ? Math.min(100, ((p.completed ?? 0) / p.total) * 100) : null;
+  const pct = progressPct(p);
   return h(
     'div',
-    { class: `ob-progress ${p.state}` },
-    h('div', { class: 'ob-progress-msg' }, p.state === 'done' ? '✓ ' : p.state === 'error' ? '⚠ ' : '', p.message, pct !== null ? ` — ${fmtGb(p.completed)} / ${fmtGb(p.total)}` : ''),
+    { class: `ob-progress ${p.state}`, 'data-task': task },
+    h('div', { class: 'ob-progress-msg' }, progressText(p)),
     p.state === 'running' ? h('div', { class: `progress-wrap ob-bar ${pct === null ? 'indeterminate' : ''}` }, h('div', { class: `progress-bar ${pct === null ? 'indeterminate' : ''}`, style: `width:${pct ?? 35}%` })) : null,
   );
+}
+
+function progressPct(p: SetupProgress): number | null {
+  return p.total ? Math.min(100, ((p.completed ?? 0) / p.total) * 100) : null;
+}
+
+function progressText(p: SetupProgress): string {
+  const pct = progressPct(p);
+  return `${p.state === 'done' ? '✓ ' : p.state === 'error' ? '⚠ ' : ''}${p.message}${pct !== null ? ` — ${fmtGb(p.completed)} / ${fmtGb(p.total)}` : ''}`;
+}
+
+/**
+ * Mise à jour d'une progression SUR PLACE (texte + largeur de la barre) quand c'est possible, sans redessiner la fenêtre :
+ * la reconstruire à chaque événement rejouait les animations d'entrée (la fenêtre clignotait) et relançait la barre
+ * animée. Renvoie false s'il faut un rendu complet (bloc absent, changement d'état, passage déterminé ↔ indéterminé).
+ */
+function patchProgress(task: SetupProgress['task']): boolean {
+  const p = ob.progress[task];
+  const block = el().querySelector<HTMLElement>(`.ob-progress[data-task="${task}"]`);
+  if (!p || !block || !block.classList.contains(p.state) || p.state !== 'running') return false;
+  const bar = block.querySelector<HTMLElement>('.progress-bar');
+  const pct = progressPct(p);
+  if (!bar || bar.classList.contains('indeterminate') !== (pct === null)) return false;
+  const msg = block.querySelector<HTMLElement>('.ob-progress-msg');
+  const text = progressText(p);
+  if (msg && msg.textContent !== text) msg.textContent = text;
+  if (pct !== null) bar.style.width = `${pct}%`;
+  return true;
 }
 
 function linkBtn(label: string, url: string): HTMLElement {
@@ -508,11 +536,13 @@ function render(): void {
   const steps = [stepWelcome, stepOllama, stepModel, stepObsidian, stepClaude, stepExtras, stepDone];
   const last = ob.step === STEPS.length - 1;
   const enter = ob.step !== lastRenderedStep;
+  // Animation d'apparition de la fenêtre : seulement à l'ouverture de l'assistant, jamais aux rendus suivants.
+  const opening = lastRenderedStep === -1;
   lastRenderedStep = ob.step;
   el().replaceChildren(
     h(
       'div',
-      { class: 'ob-panel', role: 'dialog', 'aria-label': 'Assistant d’installation' },
+      { class: `ob-panel ${opening ? 'opening' : ''}`, role: 'dialog', 'aria-label': 'Assistant d’installation' },
       h(
         'div',
         { class: 'ob-steps' },

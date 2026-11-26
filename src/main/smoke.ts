@@ -496,6 +496,31 @@ export async function runSmoke(win: BrowserWindow, outDir: string, getWeb: () =>
 
   await wait(2000);
   if (only === 'onboarding') return smokeOnboarding(shot, js);
+  if (only === 'obprogress') {
+    // Anti-clignotement de l'assistant : des événements de progression (téléchargement d'Ollama simulé) ne doivent PAS
+    // recréer la fenêtre ni la barre (sinon les animations d'entrée se rejouent à chaque événement).
+    await js(`(async () => {
+      for (let i = 0; i < 40 && document.getElementById('onboarding').classList.contains('hidden'); i++) await new Promise((r) => setTimeout(r, 150));
+      document.querySelectorAll('.ob-step')[1]?.click();
+    })()`);
+    await wait(500);
+    const send = (completed: number) => win.webContents.send('hub:event', { type: 'setup', progress: { task: 'ollama', state: 'running', message: 'Téléchargement d’Ollama', completed, total: 1_000_000_000 } });
+    send(100_000_000);
+    await wait(400);
+    await js(`(window.__obPanel = document.querySelector('.ob-panel'), window.__obBar = document.querySelector('.ob-progress[data-task="ollama"] .progress-bar'), true)`);
+    for (const c of [300_000_000, 600_000_000, 900_000_000]) {
+      send(c);
+      await wait(300);
+    }
+    const r = await js(`(() => {
+      const bar = document.querySelector('.ob-progress[data-task="ollama"] .progress-bar');
+      return { samePanel: window.__obPanel === document.querySelector('.ob-panel'), sameBar: window.__obBar === bar, width: bar?.style.width, opening: document.querySelector('.ob-panel')?.classList.contains('opening'), text: document.querySelector('.ob-progress[data-task="ollama"] .ob-progress-msg')?.textContent };
+    })()`);
+    console.log(`Assistant, progression : ${JSON.stringify(r)}`);
+    await shot('ob-progression');
+    if (!r.samePanel || !r.sameBar || r.width !== '90%') throw new Error('Assistant : la fenêtre ou la barre est recréée à chaque progression (clignotement)');
+    return;
+  }
   if (only === 'obsidian') return smokeObsidian(shot, js, outDir);
   // Données de test neuves → l'assistant de premier démarrage s'ouvre : on le passe pour les autres scénarios.
   await js(`(async () => {
@@ -503,6 +528,30 @@ export async function runSmoke(win: BrowserWindow, outDir: string, getWeb: () =>
     document.getElementById('ob-skip')?.click();
   })()`);
   await wait(400);
+  if (only === 'chatblink') {
+    // Anti-clignotement des discussions (avec HUB_SMOKE_SEED = base avec une discussion) : un événement de tâche qui
+    // redessine la discussion ne doit pas rejouer l'animation des bulles déjà affichées.
+    const convId = await js(`(async () => {
+      document.querySelector('.tabs button[data-view="chat"]')?.click();
+      await new Promise((r) => setTimeout(r, 300));
+      document.querySelector('.conv-item')?.click();
+      await new Promise((r) => setTimeout(r, 800));
+      return document.querySelector('.conv-item.active')?.dataset.id ?? null;
+    })()`);
+    const before = await js(`document.querySelectorAll('#messages .msg').length`);
+    const ids = await js(`(() => [...document.querySelectorAll('.conv-item')].map((e) => e.dataset.id))()`);
+    console.log(`Discussion : ${convId} (${before} bulles) ${JSON.stringify(ids)}`);
+    const conv = convId ?? ids?.[0];
+    win.webContents.send('hub:event', { type: 'task', task: { id: 'smoke-blink', title: 'x', prompt: 'x', output: '', status: 'running', providerId: 'ollama', model: 'test', agent: 'Discussion', conversationId: conv, createdAt: Date.now(), startedAt: Date.now() } });
+    await wait(500);
+    const r = await js(`(() => {
+      const msgs = [...document.querySelectorAll('#messages .msg')];
+      return { total: msgs.length, seen: msgs.filter((m) => m.classList.contains('seen')).length, animated: msgs.filter((m) => getComputedStyle(m).animationName !== 'none').length };
+    })()`);
+    console.log(`Après redessin : ${JSON.stringify(r)}`);
+    if (!before || r.seen < before || r.animated > r.total - before) throw new Error('Discussion : les bulles déjà affichées rejouent leur animation (clignotement)');
+    return;
+  }
   if (only === 'web') return smokeWeb(win, outDir, getWeb, shot, js);
   if (only === 'webmic') return smokeWebMic(win, outDir, getWeb, shot, js);
   if (only === 'weblogout') return smokeWebLogout(win, outDir, getWeb, shot, js);
