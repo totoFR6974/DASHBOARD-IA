@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: hub-file:" />
+    <title>Hub IA</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="theme.css" />
+  </head>
+  <body>
+    <!-- Fond : halos lumineux qui dérivent lentement, grille et grain discrets -->
+    <div class="backdrop" aria-hidden="true">
+      <div class="glow g1"></div>
+      <div class="glow g2"></div>
+      <div class="glow g3"></div>
+      <div class="gridlines"></div>
+      <div class="grain"></div>
+    </div>
+
+    <!-- Barre latérale -->
+    <aside class="nav" id="nav">
+      <div class="nav-brand">
+        <span class="nav-logo">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.6" /><circle cx="5" cy="5" r="1.8" /><circle cx="19" cy="5" r="1.8" /><circle cx="5" cy="19" r="1.8" /><circle cx="19" cy="19" r="1.8" /><path d="M6.4 6.4 10.1 10.1M17.6 6.4 13.9 10.1M6.4 17.6 10.1 13.9M17.6 17.6 13.9 13.9" /></svg>
+        </span>
+        <span class="nav-label nav-title">Hub IA</span>
+      </div>
+
+      <nav class="tabs nav-group">
+        <button data-view="chat" class="active" title="Discussions">
+          <svg viewBox="0 0 24 24"><path d="M20.5 12a8.5 8.5 0 0 1-12.3 7.6L3.5 20.5l1-4.5A8.5 8.5 0 1 1 20.5 12z" /></svg>
+          <span class="nav-label">Discussions</span>
+        </button>
+        <button data-view="workflows" title="Workflows">
+          <svg viewBox="0 0 24 24"><rect x="3" y="3" width="6.5" height="6.5" rx="1.6" /><rect x="14.5" y="14.5" width="6.5" height="6.5" rx="1.6" /><path d="M9.5 6.3h4a3.4 3.4 0 0 1 3.4 3.4v4.8" /></svg>
+          <span class="nav-label">Workflows</span>
+          <span id="wf-badge" class="badge warn hidden"></span>
+        </button>
+        <button data-view="knowledge" title="Connaissances">
+          <svg viewBox="0 0 24 24"><path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5z" /><path d="M5 19.5A1.5 1.5 0 0 0 6.5 21H19v-3" /><path d="M9 7.5h6M9 11h4" /></svg>
+          <span class="nav-label">Connaissances</span>
+        </button>
+        <button data-view="web" title="IA web">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M3 12h18" /><path d="M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z" /></svg>
+          <span class="nav-label">IA web</span>
+        </button>
+        <button data-view="tasks" title="Tâches">
+          <svg viewBox="0 0 24 24"><path d="M10 6h10M10 12h10M10 18h10" /><path d="m3.5 6 1.2 1.2L7 5M3.5 12l1.2 1.2L7 11M3.5 18l1.2 1.2L7 17" /></svg>
+          <span class="nav-label">Tâches</span>
+          <span id="running-badge" class="badge hidden"></span>
+        </button>
+        <button data-view="claude" title="Sessions Claude Code de ce PC">
+          <svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2.5" /><path d="m7 9.5 3 2.5-3 2.5M12.5 15H17" /></svg>
+          <span class="nav-label">Claude Code</span>
+        </button>
+        <button data-view="stats" title="Statistiques">
+          <svg viewBox="0 0 24 24"><path d="M4 20h16" /><rect x="5.5" y="11" width="3" height="6.5" rx="1" /><rect x="10.5" y="6" width="3" height="11.5" rx="1" /><rect x="15.5" y="13.5" width="3" height="4" rx="1" /></svg>
+          <span class="nav-label">Statistiques</span>
+        </button>
+      </nav>
+
+      <div class="nav-spacer"></div>
+
+      <div class="nav-section nav-label">Accès rapide</div>
+      <nav class="tabs nav-group">
+        <button type="button" id="quick-folder" class="nav-action" title="Ajouter un dossier de travail">
+          <svg viewBox="0 0 24 24"><path d="M3 7.5A2 2 0 0 1 5 5.5h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><path d="M12 11v5M9.5 13.5h5" /></svg>
+          <span class="nav-label">Ajouter un dossier</span>
+        </button>
+        <button type="button" id="quick-obsidian" class="nav-action" title="Ouvrir la base de connaissances dans Obsidian">
+          <svg viewBox="0 0 24 24"><path d="M14 4h6v6" /><path d="M20 4 11 13" /><path d="M18.5 14v4.5A1.5 1.5 0 0 1 17 20H5.5A1.5 1.5 0 0 1 4 18.5V7A1.5 1.5 0 0 1 5.5 5.5H10" /></svg>
+          <span class="nav-label">Ouvrir dans Obsidian</span>
+        </button>
+        <button data-view="settings" title="Réglages">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" /></svg>
+          <span class="nav-label">Réglages</span>
+          <span class="kbd-hint nav-label"><kbd>Ctrl</kbd><kbd>,</kbd></span>
+        </button>
+      </nav>
+    </aside>
+
+    <div class="shell">
+      <header class="topbar">
+        <button type="button" id="nav-toggle" class="icon-btn top-icon" title="Replier / déplier la barre latérale">
+          <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5" /><path d="M9.5 4v16" /></svg>
+        </button>
+        <button type="button" id="cmdk-open" class="search-pill" title="Rechercher partout (Ctrl+K)">
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.6-3.6" /></svg>
+          <span>Rechercher…</span>
+          <span class="kbd-hint"><kbd>Ctrl</kbd><kbd>K</kbd></span>
+        </button>
+        <span class="top-spacer"></span>
+        <div class="usage-picker">
+          <button type="button" id="usage-btn" class="usage-pill" title="Limites restantes — cliquer pour le détail"></button>
+          <div id="usage-menu" class="usage-menu hidden"></div>
+        </div>
+        <div class="folder-picker">
+          <button id="folder-btn" class="folder-btn" title="Dossier de travail : filtre les discussions et sert aux nouvelles">📁 Tous les dossiers ▾</button>
+          <div id="folder-menu" class="folder-menu hidden"></div>
+        </div>
+        <div id="provider-pills" class="pills"></div>
+      </header>
+
+    <main>
+      <!-- Discussions -->
+      <section id="view-chat" class="view active">
+        <aside class="sidebar">
+          <button id="new-conv-btn" class="btn primary block">+ Nouvelle discussion</button>
+          <div id="conv-list" class="conv-list"></div>
+        </aside>
+        <div class="chat">
+          <div id="chat-header" class="chat-header"></div>
+          <div id="messages" class="messages"></div>
+          <form id="composer" class="composer">
+            <textarea id="prompt" rows="3" placeholder="Écris ton message… (Entrée pour envoyer, Maj+Entrée pour aller à la ligne)"></textarea>
+            <div class="composer-actions">
+              <button type="button" id="stop-btn" class="btn danger hidden">■ Arrêter</button>
+              <button type="button" id="kn-toggle" class="btn kn-toggle" title="Base de connaissances : désactivée">📚</button>
+              <div class="effort-picker hidden" id="effort-picker">
+                <button type="button" id="effort-btn" class="btn" title="Niveau d'effort de Claude dans cette discussion">⚡ Auto ▾</button>
+                <div id="effort-menu" class="ai-menu effort-menu hidden"></div>
+              </div>
+              <div class="ai-picker">
+                <button type="button" id="ai-picker-btn" class="btn" title="Choisir les IA qui répondent dans cette discussion">🤖 ▾</button>
+                <div id="ai-menu" class="ai-menu hidden"></div>
+              </div>
+              <button type="submit" id="send-btn" class="btn primary">Envoyer</button>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <!-- Workflows : un objectif → un plan → plusieurs agents -->
+      <section id="view-workflows" class="view">
+        <aside class="sidebar">
+          <button id="new-wf-btn" class="btn primary block">+ Nouveau workflow</button>
+          <div id="wf-list" class="conv-list"></div>
+        </aside>
+        <div id="wf-main" class="wf-main"></div>
+      </section>
+
+      <!-- Connaissances : notes .md propres au hub (vault Obsidian) -->
+      <section id="view-knowledge" class="view">
+        <aside class="sidebar kn-sidebar">
+          <div class="kn-side-head">
+            <input id="kn-search" type="search" placeholder="Rechercher dans les notes…" />
+            <button id="kn-new-btn" class="btn primary small" title="Nouvelle note">+ Note</button>
+          </div>
+          <div id="kn-new-row" class="kn-new-row hidden">
+            <input id="kn-new-name" placeholder="Dossier/Nom de la note" />
+            <div class="row">
+              <button type="button" id="kn-new-cancel" class="btn ghost small">Annuler</button>
+              <button type="button" id="kn-new-create" class="btn primary small">Créer</button>
+            </div>
+          </div>
+          <div id="kn-results" class="kn-results"></div>
+          <div id="kn-tree" class="kn-tree"></div>
+        </aside>
+        <div id="kn-main" class="kn-main"></div>
+      </section>
+
+      <!-- IA web : vrais sites affichés dans l'appli -->
+      <section id="view-web" class="view">
+        <div class="web-toolbar">
+          <div id="web-tabs" class="seg"></div>
+          <label class="check" title="Afficher plusieurs sites en même temps">
+            <input type="checkbox" id="web-split" /> Côte à côte
+          </label>
+          <span class="muted web-hint">Ta connexion est mémorisée. Les autres liens s'ouvrent dans ton navigateur.</span>
+        </div>
+        <div id="web-area" class="web-area"></div>
+      </section>
+
+      <!-- Tâches -->
+      <section id="view-tasks" class="view">
+        <div class="tasks-toolbar">
+          <div id="task-stats" class="stats"></div>
+          <div class="filters">
+            <input id="tf-q" type="search" placeholder="Rechercher…" />
+            <select id="tf-provider"><option value="">Toutes les IA</option></select>
+            <select id="tf-agent"><option value="">Tous les agents</option></select>
+            <select id="tf-status">
+              <option value="">Tous les statuts</option>
+              <option value="running">En cours</option>
+              <option value="waiting">À faire (toi)</option>
+              <option value="done">Terminées</option>
+              <option value="error">Erreurs</option>
+              <option value="cancelled">Annulées</option>
+            </select>
+            <select id="tf-group">
+              <option value="">Sans regroupement</option>
+              <option value="providerId">Grouper par IA</option>
+              <option value="agent">Grouper par agent</option>
+              <option value="status">Grouper par statut</option>
+              <option value="workflowRunId">Grouper par workflow</option>
+            </select>
+            <button id="tf-clear" class="btn ghost" title="Supprime les tâches terminées, en erreur ou annulées">Vider l'historique</button>
+          </div>
+        </div>
+        <div class="tasks-body">
+          <div class="table-wrap"><table id="tasks-table"></table></div>
+          <aside id="task-detail" class="task-detail hidden"></aside>
+        </div>
+      </section>
+
+      <!-- Claude Code : sessions trouvées sur ce PC (~/.claude/projects, lecture seule) -->
+      <section id="view-claude" class="view">
+        <aside class="sidebar cc-sidebar">
+          <input id="cc-search" type="search" placeholder="Rechercher une session…" />
+          <select id="cc-project"><option value="">Tous les projets</option></select>
+          <div id="cc-filter" class="seg cc-filter"></div>
+          <div id="cc-bulk" class="cc-bulk"></div>
+          <div class="muted small cc-note">Sessions de ce PC : terminal, appli Claude, Remote Control. Mise à jour automatique.</div>
+          <div id="cc-list" class="conv-list"></div>
+        </aside>
+        <div id="cc-main" class="cc-main"></div>
+      </section>
+
+      <!-- Statistiques : consommation de tokens -->
+      <section id="view-stats" class="view">
+        <div id="stats-root" class="stats-root"></div>
+      </section>
+
+      <!-- Réglages -->
+      <section id="view-settings" class="view">
+        <form id="settings-form" class="settings">
+          <h2>Réglages</h2>
+          <fieldset>
+            <legend>Claude Code</legend>
+            <label>Chemin de claude.exe <input name="claudePath" placeholder="(détection automatique)" /></label>
+            <label>Permissions par défaut des nouvelles discussions
+              <select name="claudePermission">
+                <option value="default">Prudent : lecture seule, les actions sensibles sont refusées</option>
+                <option value="acceptEdits">Modifications de fichiers autorisées</option>
+                <option value="bypassPermissions">Tout autorisé (commandes comprises) ⚠️</option>
+              </select>
+            </label>
+            <label>Dossier de travail par défaut <input name="workspaceDir" /></label>
+            <div class="access-block">
+              <div class="access-title">Accès de Claude, même en mode « Prudent »</div>
+              <p class="muted small">
+                Coche les outils MCP que Claude peut utiliser sans confirmation (ex. Roblox Studio), et ajoute les dossiers qu'il peut lire
+                en plus de son dossier de travail (ex. ton vault, tes skills). Enregistré immédiatement.
+              </p>
+              <div id="access-servers" class="access-servers"></div>
+              <div id="access-dirs" class="access-dirs"></div>
+              <div class="row" style="justify-content: flex-start">
+                <button type="button" id="access-add-dir" class="btn ghost small">+ Ajouter un dossier lisible</button>
+                <button type="button" id="access-add-skills" class="btn ghost small" title="Ajoute ~/.claude (tes skills et réglages Claude) en lecture">+ Mes skills Claude</button>
+              </div>
+            </div>
+          </fieldset>
+          <fieldset>
+            <legend>Ollama</legend>
+            <label>Adresse du serveur <input name="ollamaUrl" /></label>
+          </fieldset>
+          <fieldset id="kn-settings" class="info-card">
+            <legend>Base de connaissances</legend>
+            <div id="kn-settings-body"></div>
+            <label class="check" title="Chaque discussion a sa note (échanges, IA, images) dans la base de son dossier de travail, mise à jour à chaque réponse. Tes ajouts sous la ligne de fin sont conservés.">
+              <input type="checkbox" id="set-conv-notes" /> Créer et tenir à jour une note par discussion
+            </label>
+          </fieldset>
+          <fieldset id="img-settings" class="info-card">
+            <legend>Images locales (ComfyUI)</legend>
+            <div id="img-settings-body"></div>
+          </fieldset>
+          <fieldset>
+            <legend>Agents des workflows</legend>
+            <p class="muted small">
+              Le planificateur lit le nom et la description de chaque agent pour lui confier les bonnes étapes.
+              Un agent « web (manuel) » crée une étape que tu fais toi-même dans l'onglet IA web (le hub te prépare le prompt).
+            </p>
+            <div class="role-head"><span>Nom</span><span>Description</span><span>IA</span><span>Modèle</span><span></span></div>
+            <div id="roles-editor" class="roles-editor"></div>
+            <div><button type="button" id="role-add" class="btn ghost small">+ Ajouter un agent</button></div>
+            <label>Planificateur (découpe l'objectif en étapes) <select id="planner-select"></select></label>
+            <label class="check"><input type="checkbox" id="set-autostart" /> Lancer les plans sans validation</label>
+            <label class="check" title="Pendant qu'il travaille, un agent Claude peut confier une sous-tâche à un autre agent (Rédacteur, Relecteur, Illustrateur…) et récupérer le résultat. Les sous-tâches ont les mêmes droits que l'agent qui les confie, jamais plus.">
+              <input type="checkbox" id="set-delegation" /> Autoriser les agents à se déléguer du travail (outil demander_a)
+            </label>
+          </fieldset>
+          <div class="row">
+            <span id="settings-status" class="muted"></span>
+            <button type="submit" class="btn primary">Enregistrer</button>
+          </div>
+          <h2>IA connectées</h2>
+          <div id="providers-detail" class="providers-detail"></div>
+          <div class="row" style="justify-content: flex-start">
+            <button type="button" id="providers-refresh" class="btn ghost">Revérifier</button>
+            <button type="button" id="open-onboarding" class="btn ghost">Assistant d'installation</button>
+          </div>
+        </form>
+      </section>
+    </main>
+    </div>
+
+    <!-- Assistant de premier démarrage -->
+    <div id="onboarding" class="ob hidden"></div>
+
+    <!-- Palette de recherche (Ctrl+K) -->
+    <div id="cmdk" class="cmdk hidden" role="dialog" aria-label="Rechercher">
+      <div class="cmdk-panel">
+        <div class="cmdk-input-row">
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.6-3.6" /></svg>
+          <input id="cmdk-input" placeholder="Discussions, workflows, notes, actions…" autocomplete="off" />
+          <span class="kbd-hint"><kbd>Échap</kbd></span>
+        </div>
+        <div id="cmdk-results" class="cmdk-results"></div>
+      </div>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

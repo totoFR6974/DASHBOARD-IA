@@ -1,0 +1,49 @@
+// Contrat commun à tous les connecteurs d'IA. Ajouter une IA = écrire une classe qui respecte ce contrat.
+import type { ChatMessage, ClaudeEffort, ClaudePermission, ProviderInfo, TaskActivity, TaskUsage } from '../../shared/types';
+
+export interface RunContext {
+  prompt: string;
+  model?: string;
+  /** Messages précédents de la discussion (sans le prompt courant). */
+  history: ChatMessage[];
+  /** Session à reprendre côté fournisseur, s'il garde son propre historique. */
+  sessionId?: string;
+  cwd: string;
+  /** Dossiers supplémentaires accessibles (ex. dossier partagé d'un workflow). */
+  addDirs?: string[];
+  permission: ClaudePermission;
+  /** Niveau d'effort (Claude : --effort low|medium|high|xhigh|max) ; absent = réglage par défaut de Claude. */
+  effort?: ClaudeEffort;
+  /** Fichier de configuration MCP supplémentaire (Claude : --mcp-config), ex. outils de délégation du hub. */
+  mcpConfigPath?: string;
+  /** Outils autorisés sans confirmation (Claude : --allowedTools). */
+  allowedTools?: string[];
+  /** Variables d'environnement en plus pour le process. */
+  extraEnv?: Record<string, string>;
+  /** Consigne système ajoutée (Claude : --append-system-prompt) : présentation du hub, agents, règles. */
+  systemAppend?: string;
+  signal: AbortSignal;
+  onDelta(text: string): void;
+  onActivity(activity: Omit<TaskActivity, 'at'>): void;
+}
+
+export interface RunResult {
+  output: string;
+  sessionId?: string;
+  usage?: TaskUsage;
+  /** Images produites (chemins absolus). */
+  images?: string[];
+}
+
+export interface Provider {
+  readonly id: string;
+  readonly name: string;
+  describe(): Promise<ProviderInfo>;
+  run(ctx: RunContext): Promise<RunResult>;
+}
+
+export class CancelledError extends Error {
+  constructor() {
+    super('Tâche annulée');
+  }
+}

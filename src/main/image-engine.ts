@@ -1,0 +1,434 @@
+// Images locales : installation de ComfyUI (portable, dans le dossier de l'appli) + pilotage de son serveur.
+// L'installation n'est lancée QUE par l'utilisateur (bouton « Installer », téléchargements affichés avant).
+// Ne dépend pas d'Electron.
+import { spawn, type ChildProcess } from 'node:child_process';
+import { createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
+import { statfs } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import type { ImageEngineStatus, ImageModelInfo, PlannedDownload } from '../shared/types';
+import { IMAGE_PRESETS, imagePreset, presetSize, type ImageModelFile, type ImageModelPreset } from './image-models';
+
+const PORT = 8188;
+export const COMFY_URL = `http://127.0.0.1:${PORT}`;
+const UA = { 'User-Agent': 'hub-ia' };
+const RELEASE_API = 'https://api.github.com/repos/Comfy-Org/ComfyUI/releases/latest';
+/** Modèle installé par défaut avec ComfyUI (le meilleur préréglage). */
+const RECOMMENDED = [...IMAGE_PRESETS].sort((a, b) => b.rank - a.rank)[0];
+/** Marge d'espace disque gardée libre après une installation. */
+const DISK_MARGIN = 2 * 1024 ** 3;
+const IDLE_STOP_MS = 10 * 60 * 1000;
+const START_TIMEOUT_MS = 180 * 1000;
+
+export class ImageEngine {
+  private child: ChildProcess | null = null;
+  private stderrTail = '';
+  private starting: Promise<void> | null = null;
+  private idleTimer: NodeJS.Timeout | null = null;
+  private planned: PlannedDownload[] | null = null;
+  private installing = false;
+  private installAbort: AbortController | null = null;
+  private progress: ImageEngineStatus['progress'];
+  private lastError: string | undefined;
+  private lastEmit = 0;
+
+  private freeBytes: number | undefined;
+
+  constructor(
+    /** Dossier d'installation : <appli>/tools/ComfyUI. */
+    readonly dir: string,
+    private emit: (status: ImageEngineStatus) => void,
+    /** Préréglage choisi par l'utilisateur (settings.imageModel). */
+    private getActive: () => string | undefined = () => undefined,
+  ) {}
+
+  /** Dossier qui contient python_embeded et ComfyUI (directement, ou un sous-dossier après extraction). */
+  root(): string | null {
+    const ok = (d: string) => existsSync(join(d, 'python_embeded', 'python.exe')) && existsSync(join(d, 'ComfyUI', 'main.py'));
+    if (ok(this.dir)) return this.dir;
+    try {
+      for (const e of readdirSync(this.dir, { withFileTypes: true })) {
+        if (e.isDirectory() && ok(join(this.dir, e.name))) return join(this.dir, e.name);
+      }
+    } catch {
+      /* pas encore installé */
+    }
+    return null;
+  }
+
+  /** Dossier ComfyUI/models. */
+  modelsDir(): string | null {
+    const r = this.root();
+    return r ? join(r, 'ComfyUI', 'models') : null;
+  }
+
+  private filePath(f: ImageModelFile): string | null {
+    const d = this.modelsDir();
+    return d ? join(d, f.subdir, f.file) : null;
+  }
+
+  private filePresent(f: ImageModelFile): boolean {
+    const p = this.filePath(f);
+    try {
+      return !!p && statSync(p).size === f.sizeBytes;
+    } catch {
+      return false;
+    }
+  }
+
+  presetInstalled(p: ImageModelPreset): boolean {
+    return p.files.every((f) => this.filePresent(f));
+  }
+
+  /** Préréglages installés, du meilleur au moins bon. */
+  models(): string[] {
+    if (!this.root()) return [];
+    return IMAGE_PRESETS.filter((p) => this.presetInstalled(p))
+      .sort((a, b) => b.rank - a.rank)
+      .map((p) => p.id);
+  }
+
+  /** Préréglage utilisé par défaut : celui choisi s'il est installé, sinon le meilleur installé. */
+  activeModel(): string | undefined {
+    const chosen = imagePreset(this.getActive());
+    const installed = this.models();
+    return chosen && installed.includes(chosen.id) ? chosen.id : installed[0];
+  }
+
+  installed(): boolean {
+    return !!this.root() && this.models().length > 0;
+  }
+
+  private modelInfos(): ImageModelInfo[] {
+    return IMAGE_PRESETS.map((p) => ({
+      id: p.id,
+      name: p.name,
+      license: p.license,
+      description: p.description,
+      sizeBytes: presetSize(p),
+      installed: !!this.root() && this.presetInstalled(p),
+      files: p.files.map((f) => ({ name: `${f.subdir}/${f.file}`, sizeBytes: f.sizeBytes, present: !!this.root() && this.filePresent(f) })),
+    }));
+  }
+
+  /** Espace libre du disque qui contient l'installation (mis en cache dans freeBytes). */
+  async refreshFreeSpace(): Promise<number | undefined> {
+    let d = this.dir;
+    while (!existsSync(d) && dirname(d) !== d) d = dirname(d);
+    try {
+      const s = await statfs(d);
+      this.freeBytes = Number(s.bavail) * Number(s.bsize);
+    } catch {
+      this.freeBytes = undefined;
+    }
+    return this.freeBytes;
+  }
+
+  get running(): boolean {
+    return !!this.child && this.child.exitCode === null;
+  }
+
+  /** État instantané (sans requête réseau). */
+  snapshot(): ImageEngineStatus {
+    return {
+      installed: this.installed(),
+      installing: this.installing,
+      running: this.running,
+      dir: this.dir,
+      models: this.models(),
+      plannedDownloads: this.planned ?? [],
+      ...(this.progress ? { progress: this.progress } : {}),
+      ...(this.lastError ? { error: this.lastError } : {}),
+      imageModels: this.modelInfos(),
+      activeModel: this.activeModel(),
+      ...(this.freeBytes !== undefined ? { freeBytes: this.freeBytes } : {}),
+    };
+  }
+
+  /** État complet : calcule (une fois) les téléchargements prévus si ComfyUI n'est pas installé. */
+  async status(): Promise<ImageEngineStatus> {
+    await this.refreshFreeSpace();
+    if (!this.installed() && !this.planned && !this.installing) {
+      try {
+        this.planned = await this.computePlanned();
+        this.lastError = undefined;
+      } catch (err: any) {
+        this.lastError = `Impossible de préparer l'installation : ${err.message}`;
+      }
+    }
+    return this.snapshot();
+  }
+
+  private push(force = false): void {
+    const now = Date.now();
+    if (!force && now - this.lastEmit < 500) return;
+    this.lastEmit = now;
+    this.emit(this.snapshot());
+  }
+
+  /** Téléchargements nécessaires à une 1re installation : archive portable ComfyUI (GitHub) + fichiers du modèle conseillé. */
+  private async computePlanned(): Promise<PlannedDownload[]> {
+    const comfy = this.root() ? [] : [await this.comfyAsset()];
+    return [...comfy, ...RECOMMENDED.files.map((f) => ({ name: `${RECOMMENDED.name} — ${f.subdir}/${f.file}`, url: f.url, sizeBytes: f.sizeBytes }))];
+  }
+
+  /** Archive portable ComfyUI la plus adaptée (dernière version GitHub). */
+  private async comfyAsset(): Promise<PlannedDownload> {
+    const res = await fetch(RELEASE_API, { headers: { ...UA, Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(15000) });
+    if (!res.ok) throw new Error(`GitHub a répondu ${res.status}`);
+    const release: any = await res.json();
+    const assets: any[] = (release.assets ?? []).filter((a: any) => /windows_portable.*nvidia.*\.7z$/i.test(a.name ?? ''));
+    if (assets.length === 0) throw new Error(`aucune archive Windows NVIDIA dans la version ${release.tag_name ?? '?'}`);
+    // Variante la plus adaptée à une carte récente (RTX 50) : celle sans suffixe CUDA (= build par défaut, le plus récent),
+    // sinon le numéro CUDA le plus élevé.
+    const cuda = (n: string) => Number(/cu(\d{3})/i.exec(n)?.[1] ?? 0);
+    const plain = assets.filter((a) => !/cu\d{3}/i.test(a.name));
+    const asset = plain[0] ?? [...assets].sort((a, b) => cuda(b.name) - cuda(a.name))[0];
+    return { name: `ComfyUI portable ${release.tag_name ?? ''} (${asset.name})`.replace(/\s+/g, ' '), url: asset.browser_download_url, sizeBytes: asset.size ?? 0 };
+  }
+
+  cancelInstall(): void {
+    this.installAbort?.abort();
+  }
+
+  /** 1re installation : ComfyUI + le modèle conseillé. */
+  async install(): Promise<void> {
+    if (this.installed()) return;
+    return this.installModel(RECOMMENDED.id);
+  }
+
+  /** Installe un préréglage (et ComfyUI s'il manque). Téléchargements reprenables, espace disque vérifié. */
+  async installModel(id: string): Promise<void> {
+    const preset = imagePreset(id);
+    if (!preset) throw new Error(`Modèle d'image inconnu : ${id}`);
+    if (this.installing) throw new Error('Installation déjà en cours');
+    this.installing = true;
+    this.lastError = undefined;
+    this.installAbort = new AbortController();
+    const signal = this.installAbort.signal;
+    this.push(true);
+    try {
+      mkdirSync(this.dir, { recursive: true });
+      const comfy = this.root() ? null : await this.comfyAsset();
+      const missing = preset.files.filter((f) => !this.filePresent(f));
+      // Espace : fichiers manquants (moins ce qui est déjà téléchargé en .part) + archive ComfyUI et son extraction.
+      const partDone = (f: ImageModelFile) => {
+        const p = this.filePath(f);
+        try {
+          return p ? statSync(`${p}.part`).size : 0;
+        } catch {
+          return 0;
+        }
+      };
+      const needed = missing.reduce((s, f) => s + f.sizeBytes - partDone(f), 0) + (comfy ? comfy.sizeBytes * 3 : 0);
+      const free = await this.refreshFreeSpace();
+      if (free !== undefined && free < needed + DISK_MARGIN) {
+        throw new Error(`espace disque insuffisant : il faut ${gb(needed + DISK_MARGIN)} Go (marge comprise), ${gb(free)} Go libres`);
+      }
+
+      if (comfy) {
+        const archive = join(this.dir, 'comfyui-portable.7z');
+        await this.download(comfy, archive, signal);
+        this.progress = { step: 'Extraction de ComfyUI…', receivedBytes: 0, totalBytes: 0 };
+        this.push(true);
+        await extract7z(archive, this.dir, signal);
+        rmSync(archive, { force: true });
+        if (!this.root()) throw new Error("l'archive extraite ne contient pas ComfyUI (python_embeded / ComfyUI\\main.py)");
+      }
+
+      for (const f of preset.files) {
+        if (this.filePresent(f)) continue;
+        const dest = this.filePath(f)!;
+        mkdirSync(dirname(dest), { recursive: true });
+        await this.download({ name: `${preset.name} — ${f.file}`, url: f.url, sizeBytes: f.sizeBytes }, dest, signal);
+      }
+      this.planned = null;
+      this.progress = undefined;
+    } catch (err: any) {
+      this.progress = undefined;
+      this.lastError = signal.aborted ? 'Installation annulée' : `Installation échouée : ${err.message}`;
+      throw new Error(this.lastError);
+    } finally {
+      this.installing = false;
+      this.installAbort = null;
+      this.push(true);
+    }
+  }
+
+  /** Supprime les fichiers d'un préréglage (ceux qu'aucun autre modèle installé n'utilise), dans ComfyUI/models seulement. */
+  deleteModel(id: string): void {
+    const preset = imagePreset(id);
+    if (!preset) throw new Error(`Modèle d'image inconnu : ${id}`);
+    if (this.installing) throw new Error('Une installation est en cours');
+    const others = IMAGE_PRESETS.filter((p) => p.id !== preset.id && this.presetInstalled(p)).flatMap((p) => p.files.map((f) => `${f.subdir}/${f.file}`));
+    for (const f of preset.files) {
+      if (others.includes(`${f.subdir}/${f.file}`)) continue;
+      const p = this.filePath(f);
+      if (!p) continue;
+      rmSync(p, { force: true });
+      rmSync(`${p}.part`, { force: true });
+    }
+    this.push(true);
+  }
+
+  /** Téléchargement en flux vers <dest>.part (reprise si un .part existe), vérification de la taille, puis renommage. */
+  private async download(item: PlannedDownload, dest: string, signal: AbortSignal): Promise<void> {
+    const part = `${dest}.part`;
+    let start = 0;
+    try {
+      start = statSync(part).size;
+    } catch {
+      start = 0;
+    }
+    if (item.sizeBytes && start >= item.sizeBytes) {
+      rmSync(part, { force: true });
+      start = 0;
+    }
+    const res = await fetch(item.url, { headers: { ...UA, ...(start ? { Range: `bytes=${start}-` } : {}) }, redirect: 'follow', signal });
+    if (!res.ok || !res.body) throw new Error(`${item.name} : HTTP ${res.status}`);
+    const resumed = start > 0 && res.status === 206;
+    if (!resumed) start = 0; // le serveur a renvoyé le fichier entier : on repart de zéro
+    const total = (Number(res.headers.get('content-length')) || 0) + start || item.sizeBytes || 0;
+    this.progress = { step: `Téléchargement : ${item.name}${resumed ? ' (reprise)' : ''}`, receivedBytes: start, totalBytes: total };
+    this.push(true);
+    const out = createWriteStream(part, { flags: resumed ? 'a' : 'w' });
+    let received = start;
+    try {
+      for await (const chunk of res.body as any as AsyncIterable<Uint8Array>) {
+        received += chunk.length;
+        if (!out.write(chunk)) await new Promise<void>((r) => out.once('drain', () => r()));
+        this.progress = { step: `Téléchargement : ${item.name}`, receivedBytes: received, totalBytes: total };
+        this.push();
+      }
+      await new Promise<void>((resolve, reject) => out.end((err?: Error | null) => (err ? reject(err) : resolve())));
+    } catch (err) {
+      // Le .part est gardé : un nouvel essai reprendra là où on s'est arrêté.
+      await new Promise<void>((r) => out.end(() => r()));
+      throw err;
+    }
+    const expected = item.sizeBytes || total;
+    if (expected && statSync(part).size !== expected) {
+      rmSync(part, { force: true });
+      throw new Error(`${item.name} : taille inattendue (${statSync(part).size} au lieu de ${expected})`);
+    }
+    renameSync(part, dest);
+  }
+
+  // ---------- Serveur ----------
+
+  private async alive(): Promise<boolean> {
+    try {
+      const res = await fetch(`${COMFY_URL}/system_stats`, { signal: AbortSignal.timeout(2000) });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Démarre le serveur ComfyUI si besoin et attend qu'il réponde. */
+  async ensureServer(onInfo: (text: string) => void, signal?: AbortSignal): Promise<void> {
+    this.clearIdle();
+    if (await this.alive()) return;
+    if (!this.starting) {
+      this.starting = this.startServer(onInfo, signal).finally(() => (this.starting = null));
+    }
+    return this.starting;
+  }
+
+  private async startServer(onInfo: (text: string) => void, signal?: AbortSignal): Promise<void> {
+    const root = this.root();
+    if (!root) throw new Error('ComfyUI n’est pas installé (Réglages › Images locales)');
+    onInfo('Démarrage de ComfyUI…');
+    this.stderrTail = '';
+    const child = spawn(
+      join(root, 'python_embeded', 'python.exe'),
+      ['-s', join('ComfyUI', 'main.py'), '--listen', '127.0.0.1', '--port', String(PORT), '--disable-auto-launch'],
+      { cwd: root, windowsHide: true, env: { ...process.env, PYTHONIOENCODING: 'utf-8' } },
+    );
+    this.child = child;
+    const keep = (chunk: Buffer) => (this.stderrTail = (this.stderrTail + chunk.toString('utf8')).slice(-3000));
+    child.stdout?.on('data', keep);
+    child.stderr?.on('data', keep);
+    child.on('exit', () => {
+      if (this.child === child) this.child = null;
+      this.push(true);
+    });
+    this.push(true);
+    const deadline = Date.now() + START_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      if (signal?.aborted) throw new Error('Annulé pendant le démarrage de ComfyUI');
+      if (child.exitCode !== null) throw new Error(`ComfyUI s'est arrêté au démarrage : ${this.stderrTail.trim().split('\n').slice(-5).join(' | ')}`);
+      if (await this.alive()) {
+        onInfo('ComfyUI est prêt');
+        return;
+      }
+      await sleep(1500);
+    }
+    this.stop();
+    throw new Error('ComfyUI ne répond pas après 3 minutes');
+  }
+
+  /** Programme l'arrêt du serveur après 10 min sans image (libère la carte graphique). */
+  scheduleIdleStop(): void {
+    this.clearIdle();
+    this.idleTimer = setTimeout(() => this.stop(), IDLE_STOP_MS);
+  }
+
+  private clearIdle(): void {
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = null;
+  }
+
+  /** Arrête le serveur lancé par le hub (et tous ses sous-process). */
+  stop(): void {
+    this.clearIdle();
+    const child = this.child;
+    if (!child || child.exitCode !== null || !child.pid) return;
+    if (process.platform === 'win32') spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true });
+    else child.kill('SIGTERM');
+    this.child = null;
+    this.push(true);
+  }
+}
+
+function gb(bytes: number): string {
+  return (bytes / 1024 ** 3).toFixed(1).replace('.', ',');
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/** Taille d'un fichier distant (HEAD en suivant les redirections ; repli sur l'en-tête x-linked-size de Hugging Face). */
+async function remoteSize(url: string): Promise<number> {
+  try {
+    const res = await fetch(url, { method: 'HEAD', headers: UA, redirect: 'follow', signal: AbortSignal.timeout(15000) });
+    const n = Number(res.headers.get('content-length'));
+    if (res.ok && n > 0) return n;
+  } catch {
+    /* repli ci-dessous */
+  }
+  const res = await fetch(url, { method: 'HEAD', headers: UA, redirect: 'manual', signal: AbortSignal.timeout(15000) });
+  const linked = Number(res.headers.get('x-linked-size'));
+  if (linked > 0) return linked;
+  throw new Error(`taille introuvable pour ${url}`);
+}
+
+/** Extrait une archive .7z avec 7za (paquet npm 7zip-bin, embarqué : rien à installer). */
+function extract7z(archive: string, dest: string, signal: AbortSignal): Promise<void> {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { path7za } = require('7zip-bin') as { path7za: string };
+  return new Promise((resolve, reject) => {
+    const child = spawn(path7za, ['x', archive, `-o${dest}`, '-y', '-bso0', '-bsp0'], { windowsHide: true });
+    let err = '';
+    child.stderr.on('data', (c: Buffer) => (err = (err + c.toString()).slice(-2000)));
+    const onAbort = () => child.kill();
+    signal.addEventListener('abort', onAbort, { once: true });
+    child.on('error', (e) => reject(e));
+    child.on('close', (code) => {
+      signal.removeEventListener('abort', onAbort);
+      if (signal.aborted) reject(new Error('annulé'));
+      else if (code === 0) resolve();
+      else reject(new Error(`7za a échoué (code ${code}) ${err.trim()}`));
+    });
+  });
+}

@@ -1,0 +1,15 @@
+node_modules/
+dist/
+data/
+workspace/
+release/
+vault/
+tools/
+build/*.yml
+vaults/
+# Captures de test : contiennent des chemins, sessions et coûts personnels
+docs/captures/
+# Fichiers locaux
+*.log
+.env
+.env.*
