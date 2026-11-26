@@ -1,6 +1,7 @@
 // Test visuel automatique (`npm run smoke`) : pilote l'interface comme un utilisateur et prend des captures
 // dans data/smoke/. Utilise un dossier de données séparé pour ne pas toucher à tes vraies discussions.
 import type { BrowserWindow } from 'electron';
+import { clipboard } from 'electron';
 import type { WebPanels } from './web-panels';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -350,6 +351,39 @@ export async function runSmoke(win: BrowserWindow, outDir: string, getWeb: () =>
   if (only === 'workflow') return smokeWorkflow(shot, js);
   if (only === 'knowledge') return smokeKnowledge(shot, js);
   if (only === 'ui') return smokeShell(shot, js);
+  if (only === 'copy') {
+    // Boutons « Copier » (avec HUB_SMOKE_SEED). Le presse-papiers est relu côté process principal (module clipboard
+    // d'Electron), uniquement ici en mode test : aucune API de lecture n'est exposée à l'interface.
+    win.show();
+    win.focus();
+    await wait(300);
+    clipboard.writeText('(vide)');
+    const r = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      document.querySelector('.tabs button[data-view="tasks"]').click();
+      await sleep(700);
+      const row = [...document.querySelectorAll('tr.task-row')].find((tr) => tr.textContent.includes('trouve un nom'));
+      row?.click();
+      await sleep(500);
+      const titles = [...document.querySelectorAll('#task-detail .block-title-row')].map((b) => b.textContent.trim());
+      const btn = [...document.querySelectorAll('#task-detail .block-title-row')].find((b) => b.textContent.includes('Réponse'))?.querySelector('.copy-btn');
+      btn?.click();
+      await sleep(250);
+      return { titles, found: !!btn, label: btn?.textContent, both: !!document.querySelector('#task-detail .copy-both') };
+    })()`);
+    const copiedReply = await clipboard.readText(); // asynchrone dans cette version d'Electron
+    await shot('31-copier');
+    const r2 = await js(`(async () => {
+      document.querySelector('#task-detail .copy-both')?.click();
+      await new Promise((r) => setTimeout(r, 250));
+      const prompt = [...document.querySelectorAll('#task-detail .block-title-row')].find((b) => b.textContent.includes('Demande'))?.querySelector('.copy-btn');
+      return { bothLabel: document.querySelector('#task-detail .copy-both')?.textContent };
+    })()`);
+    const copiedBoth = await clipboard.readText();
+    console.log(`Copier réponse : ${JSON.stringify(r)} | presse-papiers (${typeof copiedReply}) = ${JSON.stringify(String(copiedReply))}`);
+    console.log(`Copier demande + réponse : ${JSON.stringify(r2)} | presse-papiers (${typeof copiedBoth}) = ${JSON.stringify(String(copiedBoth))}`);
+    return;
+  }
   if (only === 'tasks') {
     // Sous-tâches repliées / dépliées (avec HUB_SMOKE_SEED : une principale + 3 sous-tâches dont une en cours),
     // puis une longue session Claude Code pour vérifier que les bulles ne sont pas écrasées.

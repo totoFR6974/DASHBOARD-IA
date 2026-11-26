@@ -844,11 +844,60 @@ function buildTurns(conv: Conversation): Turn[] {
   return turns;
 }
 
+// ---------- Boutons « Copier » ----------
+
+const COPY_SVG = '<svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>';
+
+/** Texte brut + chemins des images éventuelles (en fin de texte). */
+function withImages(text: string, images?: string[]): string {
+  return images?.length ? `${text}${text ? '\n\n' : ''}${images.join('\n')}` : text;
+}
+
+/**
+ * Petit bouton qui copie le texte BRUT (pas le HTML rendu) dans le presse-papiers, puis affiche « Copié ✓ ».
+ * `label` : texte affiché à côté de l'icône (sinon icône seule). Le clic ne remonte pas à la ligne/bulle parente.
+ */
+function copyButton(getText: () => string, label?: string, extraClass = ''): HTMLButtonElement {
+  const btn = h('button', { type: 'button', class: `copy-btn ${label ? 'with-label' : ''} ${extraClass}`, title: label ?? 'Copier', 'aria-label': label ?? 'Copier' });
+  const idle = () => {
+    btn.classList.remove('done', 'fail');
+    btn.innerHTML = `${COPY_SVG}${label ? `<span>${esc(label)}</span>` : ''}`;
+  };
+  idle();
+  let timer = 0;
+  btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    window.clearTimeout(timer);
+    try {
+      await navigator.clipboard.writeText(getText());
+      btn.classList.add('done');
+      btn.innerHTML = '<span>Copié ✓</span>';
+    } catch {
+      btn.classList.add('fail');
+      btn.innerHTML = '<span>Échec</span>';
+    }
+    timer = window.setTimeout(idle, 1500);
+  });
+  return btn;
+}
+
+/** Titre de bloc (Demande / Réponse…) avec son bouton Copier. */
+function blockTitleCopy(title: string, getText: () => string, style?: string): HTMLElement {
+  return h('div', { class: 'block-title block-title-row', style }, h('span', {}, title), copyButton(getText));
+}
+
+/** Bulle utilisateur avec bouton Copier (visible au survol). */
+function userBubble(text: string): HTMLElement {
+  return h('div', { class: 'msg user' }, copyButton(() => text, undefined, 'msg-copy'), text);
+}
+
 function replyEl(m: ChatMessage): HTMLElement {
   const t = m.taskId ? state.tasks.get(m.taskId) : undefined;
   return h(
     'div',
     { class: `msg assistant ${t?.status === 'error' ? 'error' : ''}` },
+    copyButton(() => withImages(m.content, m.images ?? t?.images), undefined, 'msg-copy'),
     replyHead(m.providerId ?? t?.providerId, m.model ?? t?.model),
     activityEl(t),
     delegationChips(t),
@@ -884,7 +933,7 @@ function turnEl(conv: Conversation, turn: Turn): HTMLElement {
   ].sort((a, b) => a.rank - b.rank || a.at - b.at);
 
   const block = h('div', { class: 'turn' });
-  if (turn.user) block.append(h('div', { class: 'msg user' }, turn.user.content));
+  if (turn.user) block.append(userBubble(turn.user.content));
   if (items.length) {
     const multi = items.length > 1;
     block.append(h('div', { class: `replies ${multi ? 'multi' : ''}`, style: multi ? `--cols:${Math.min(items.length, 3)}` : undefined }, ...items.map((x) => x.el())));
@@ -1900,7 +1949,9 @@ function renderStepDetail(run: WorkflowRun, force: boolean): void {
       : null,
     s.status === 'waiting' ? manualPanel(run, s) : null,
     s.instructions ? h('details', { class: 'wf-prompt' }, h('summary', {}, 'Instructions'), h('div', { class: 'box pre' }, s.instructions)) : null,
-    s.prompt && s.status !== 'waiting' ? h('details', { class: 'wf-prompt' }, h('summary', {}, 'Prompt envoyé'), h('div', { class: 'box pre' }, s.prompt)) : null,
+    s.prompt && s.status !== 'waiting'
+      ? h('details', { class: 'wf-prompt' }, h('summary', {}, 'Prompt envoyé', copyButton(() => s.prompt ?? '', undefined, 'summary-copy')), h('div', { class: 'box pre' }, s.prompt))
+      : null,
     t?.activity.length ? h('div', { class: 'block-title' }, `Activité (${t.activity.length})`) : null,
     t?.activity.length ? h('div', { class: 'box' }, ...t.activity.map((a) => h('div', { class: `act ${a.kind}`, style: 'white-space:normal', title: fmtTime(a.at) }, a.text))) : null,
     ...delegationList(t),
@@ -1917,7 +1968,7 @@ function renderStepDetail(run: WorkflowRun, force: boolean): void {
           '↻ Réessayer cette étape',
         )
       : null,
-    s.status !== 'waiting' ? h('div', { class: 'block-title' }, 'Résultat') : null,
+    s.status !== 'waiting' ? blockTitleCopy('Résultat', () => withImages(output ?? '', s.images ?? t?.images)) : null,
     s.status !== 'waiting' ? h('div', { class: 'box msg-body wf-output', id: 'wf-step-out', html: output ? md(output) : `<span class="muted">${emptyText}</span>` }) : null,
     thumbs(s.images ?? t?.images),
     h(
@@ -2250,7 +2301,12 @@ function renderTaskDetail(): void {
 
   const parts: (HTMLElement | null)[] = [
     h('div', { class: 'row', style: 'justify-content:space-between' }, h('span', { class: `status ${t.status}` }, STATUS_LABEL[t.status]), h('button', { class: 'btn ghost small', onclick: () => selectTask(null) }, '✕')),
-    h('h3', {}, t.title),
+    h(
+      'div',
+      { class: 'task-title-row' },
+      h('h3', {}, t.title),
+      copyButton(() => `Demande :\n${t.prompt}\n\nRéponse :\n${withImages(t.output, t.images)}`, 'Copier demande + réponse', 'copy-both'),
+    ),
     t.parentTaskId
       ? h(
           'div',
@@ -2271,7 +2327,7 @@ function renderTaskDetail(): void {
       run ? h('button', { class: 'btn small', onclick: () => openWorkflow(run.id, t.stepId) }, 'Ouvrir le workflow') : null,
       t.status === 'running' ? h('button', { class: 'btn danger small', onclick: () => void hub.cancelTask(t.id) }, 'Arrêter') : null,
     ),
-    h('div', { class: 'block-title' }, 'Demande'),
+    blockTitleCopy('Demande', () => t.prompt),
     h('div', { class: 'box pre' }, t.prompt),
     t.activity.length ? h('div', { class: 'block-title' }, `Activité (${t.activity.length})`) : null,
     t.activity.length
@@ -2280,7 +2336,7 @@ function renderTaskDetail(): void {
     ...delegationList(t),
     t.error ? h('div', { class: 'block-title', style: 'color:var(--err)' }, 'Erreur') : null,
     t.error ? h('div', { class: 'box pre' }, t.error) : null,
-    h('div', { class: 'block-title' }, 'Réponse'),
+    blockTitleCopy('Réponse', () => withImages(t.output, t.images)),
     h('div', { class: 'box msg-body', html: t.output ? md(t.output) : '<span class="muted">—</span>' }),
     thumbs(t.images),
   ];
@@ -4254,13 +4310,14 @@ function renderClaudeReader(): void {
   else {
     if (r.total > r.messages.length) body.append(h('div', { class: 'muted small cc-more' }, `${r.total} messages au total : affichage des ${r.messages.length} derniers.`));
     for (const m of r.messages) {
-      if (m.role === 'user') body.append(h('div', { class: 'msg user' }, m.text));
+      if (m.role === 'user') body.append(userBubble(m.text));
       else {
         const tools = m.tools.slice(0, 6);
         body.append(
           h(
             'div',
             { class: 'msg assistant' },
+            m.text ? copyButton(() => m.text, undefined, 'msg-copy') : null,
             tools.length ? h('div', { class: 'activity' }, ...tools.map((t) => h('div', { class: 'act tool', title: t }, t)), m.tools.length > 6 ? h('div', { class: 'act' }, `+ ${m.tools.length - 6} outil(s)`) : null) : null,
             m.text ? h('div', { class: 'msg-body', html: md(m.text) }) : null,
           ),

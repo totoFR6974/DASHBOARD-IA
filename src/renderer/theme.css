@@ -491,6 +491,31 @@ tr.group td { background: transparent; color: var(--accent); }
 tr.task-row.is-child td { background: rgba(255, 255, 255, 0.015); animation: riseIn 0.25s var(--ease) both; }
 tr.task-row.has-kids td.title { cursor: pointer; }
 
+/* ---------- Boutons « Copier » ---------- */
+.copy-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px; flex-shrink: 0;
+  height: 24px; min-width: 24px; padding: 0 6px; border-radius: 7px; cursor: pointer;
+  background: rgba(255, 255, 255, 0.04); border: 1px solid var(--line); color: var(--muted);
+  font-size: 11.5px; font-weight: 500; letter-spacing: 0; text-transform: none;
+  transition: color 0.2s, border-color 0.2s, background 0.2s, opacity 0.2s;
+}
+.copy-btn svg { width: 13px; height: 13px; }
+.copy-btn:hover { color: #ffd6bd; border-color: rgba(243, 122, 50, 0.55); background: var(--accent-soft); }
+.copy-btn.done { color: var(--ok); border-color: rgba(143, 220, 107, 0.45); background: rgba(143, 220, 107, 0.08); animation: popIn 0.25s var(--ease); }
+.copy-btn.fail { color: var(--err); border-color: rgba(255, 110, 110, 0.5); }
+.block-title-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.task-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.task-title-row h3 { flex: 1; min-width: 0; }
+.copy-both { margin-top: 1px; }
+.wf-prompt summary { display: flex; align-items: center; gap: 8px; }
+.summary-copy { margin-left: auto; }
+/* Bulles : bouton en haut à droite, visible au survol (toujours accessible au clavier) */
+.msg { position: relative; }
+.msg-copy { position: absolute; top: 6px; right: 6px; opacity: 0; z-index: 2; background: rgba(20, 22, 27, 0.85); }
+.msg:hover > .msg-copy, .msg-copy:focus-visible, .msg-copy.done, .msg-copy.fail { opacity: 1; }
+.msg.user .msg-copy { background: rgba(0, 0, 0, 0.25); border-color: rgba(255, 255, 255, 0.25); color: #fff; }
+@media (hover: none) { .msg-copy { opacity: 1; } }
+
 /* ---------- Palette de recherche (Ctrl+K) ---------- */
 .cmdk { position: fixed; inset: 0; z-index: 100; display: grid; place-items: start center; padding-top: 12vh; background: rgba(4, 5, 7, 0.55); backdrop-filter: blur(6px); animation: fadeIn 0.18s ease; }
 .cmdk-panel {
