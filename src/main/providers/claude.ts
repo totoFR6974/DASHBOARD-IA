@@ -75,6 +75,7 @@ export class ClaudeProvider implements Provider {
       const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--permission-mode', ctx.permission];
       if (ctx.model && ctx.model !== 'default') args.push('--model', ctx.model);
       if (ctx.sessionId) args.push('--resume', ctx.sessionId);
+      if (ctx.sessionId && ctx.forkSession) args.push('--fork-session');
       if (ctx.systemAppend) args.push('--append-system-prompt', ctx.systemAppend);
       if (ctx.effort && ctx.effort !== 'default') args.push('--effort', ctx.effort);
       // Options à valeurs multiples (--mcp-config, --allowedTools, --add-dir) : chacune s'arrête à l'option suivante,

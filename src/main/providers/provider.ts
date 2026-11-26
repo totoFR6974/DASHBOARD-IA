@@ -14,6 +14,8 @@ export interface RunContext {
   permission: ClaudePermission;
   /** Niveau d'effort (Claude : --effort low|medium|high|xhigh|max) ; absent = réglage par défaut de Claude. */
   effort?: ClaudeEffort;
+  /** Claude : avec sessionId, reprendre l'historique dans une NOUVELLE session (--fork-session). */
+  forkSession?: boolean;
   /** Fichier de configuration MCP supplémentaire (Claude : --mcp-config), ex. outils de délégation du hub. */
   mcpConfigPath?: string;
   /** Outils autorisés sans confirmation (Claude : --allowedTools). */

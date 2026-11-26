@@ -107,6 +107,8 @@ interface LaunchOptions {
   permission: ClaudePermission;
   addDirs?: string[];
   effort?: ClaudeEffort;
+  /** Claude : reprendre sessionId dans une nouvelle session (--fork-session). */
+  forkSession?: boolean;
 }
 
 const MAX_TASKS = 2000;
@@ -693,6 +695,7 @@ export class Hub {
           addDirs: addDirs.length ? addDirs : undefined,
           permission: run.permission,
           effort: run.effort,
+          forkSession: run.forkSession,
           systemAppend,
           ...(allowedTools.length ? { allowedTools } : {}),
           ...(mcp ? { mcpConfigPath: mcp.configPath, extraEnv: { MCP_TOOL_TIMEOUT: String(DELEGATION_TIMEOUT_MS) } } : {}),
@@ -986,8 +989,12 @@ export class Hub {
     return res;
   }
 
-  /** Discussion du hub qui reprend une session Claude Code : la suite passera par `claude --resume <id>`. */
-  async continueClaudeSession(id: string): Promise<Conversation> {
+  /**
+   * Discussion du hub qui reprend une session Claude Code.
+   * - 'resume' : même session (`claude --resume <id>`) — à n'utiliser que si elle n'est plus ouverte ailleurs ;
+   * - 'fork'   : copie indépendante (`--resume <id> --fork-session`) — tout l'historique, nouvelle session, originale intacte.
+   */
+  async continueClaudeSession(id: string, mode: 'resume' | 'fork' = 'fork'): Promise<Conversation> {
     const logs = this.claudeLogs();
     await logs.scan();
     const s = logs.session(String(id));
@@ -1002,11 +1009,16 @@ export class Hub {
       agent: 'Claude Code',
       ...(s.cwd && existsSync(s.cwd) ? { cwd: s.cwd } : {}),
     });
-    conv.title = s.title.slice(0, 80);
+    const fork = mode !== 'resume';
+    conv.title = `${fork ? '⑂ ' : ''}${s.title}`.slice(0, 80);
     conv.providerSessions = { claude: s.id };
+    if (fork) conv.claudeForkPending = true;
+    const where = `${s.prompts} message(s) · projet ${s.project}${s.cwd ? ` (\`${s.cwd}\`)` : ''}`;
     conv.messages.push({
       role: 'assistant',
-      content: `Session Claude Code reprise : **${s.title}**\n\n${s.prompts} message(s) · projet ${s.project}${s.cwd ? ` (\`${s.cwd}\`)` : ''}. Ta prochaine question continue cette session, avec tout son historique.`,
+      content: fork
+        ? `**Copie indépendante** de la session Claude Code : **${s.title}**\n\n${where}. Ta prochaine question part de tout son historique, mais dans une **nouvelle session** : l'originale (terminal, appli Claude) n'est pas modifiée, et ce que tu écris ici n'y apparaîtra pas.`
+        : `Session Claude Code **reprise ici** : **${s.title}**\n\n${where}. Ta prochaine question continue **cette même session**. Ne l'utilise plus en même temps dans l'appli Claude ou un terminal : les deux suites se sépareraient (l'appli Claude n'affiche pas ce qui est écrit depuis le hub).`,
       providerId: 'claude',
       at: Date.now(),
     });
@@ -1288,9 +1300,15 @@ export class Hub {
         permission: conv.permission ?? this.settings.claudePermission,
         addDirs,
         effort: conv.effort,
+        // Copie indépendante d'une session Claude Code : le 1er envoi crée une NOUVELLE session (--fork-session)
+        // avec tout l'historique ; l'originale n'est jamais modifiée. Les envois suivants reprennent la copie.
+        forkSession: info.id === 'claude' && !!sessionId && !!conv.claudeForkPending,
       },
       (result) => {
         if (result?.sessionId) conv.providerSessions[info.id] = result.sessionId;
+        if (info.id === 'claude' && conv.claudeForkPending && task.status === 'done' && result?.sessionId && result.sessionId !== sessionId) {
+          delete conv.claudeForkPending;
+        }
         const content =
           task.status === 'done'
             ? task.output

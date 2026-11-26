@@ -4273,28 +4273,51 @@ function renderClaudeReader(): void {
     s.hasArchiveCopy
       ? h('button', { type: 'button', class: 'btn ghost small cc-del-copy', disabled: cc.busy, title: 'Supprime la copie archivée dans le hub', onclick: () => void ccArchiveAction('delete', [s.id]) }, 'Supprimer la copie')
       : null,
-    h(
-      'button',
-      {
-        type: 'button',
-        class: 'btn primary small',
-        disabled: !!s.originalMissing,
-        title: s.originalMissing
-          ? 'Impossible : Claude Code a supprimé l’original de cette session, `claude --resume` ne la retrouve plus. Elle reste lisible ici.'
-          : 'Crée une discussion du hub qui continue cette session (claude --resume)',
-        onclick: async () => {
-          try {
-            const conv = await hub.continueClaudeSession(s.id);
-            if (!state.conversations.some((c) => c.id === conv.id)) state.conversations.unshift(conv);
-            setView('chat');
-            selectConversation(conv.id);
-          } catch (err: any) {
-            toast(err.message ?? String(err));
-          }
-        },
-      },
-      'Continuer dans le hub',
-    ),
+    ...(() => {
+      // Deux façons de continuer : copie indépendante (sûre, par défaut) ou reprise de la même session
+      // (seulement si elle n'est plus ouverte ailleurs : l'appli Claude n'afficherait pas ce qui est écrit ici).
+      const go = async (mode: 'resume' | 'fork') => {
+        try {
+          const conv = await hub.continueClaudeSession(s.id, mode);
+          if (!state.conversations.some((c) => c.id === conv.id)) state.conversations.unshift(conv);
+          setView('chat');
+          selectConversation(conv.id);
+        } catch (err: any) {
+          toast(err.message ?? String(err));
+        }
+      };
+      const missing = 'Impossible : Claude Code a supprimé l’original de cette session, `claude --resume` ne la retrouve plus. Elle reste lisible ici.';
+      return [
+        h(
+          'button',
+          {
+            type: 'button',
+            class: 'btn primary small',
+            disabled: !!s.originalMissing,
+            title: s.originalMissing
+              ? missing
+              : 'Nouvelle session qui part de tout l’historique de celle-ci. L’originale (terminal, appli Claude) n’est jamais modifiée : tu peux continuer à l’utiliser de son côté.',
+            onclick: () => void go('fork'),
+          },
+          '⑂ Copie indépendante',
+        ),
+        h(
+          'button',
+          {
+            type: 'button',
+            class: 'btn small',
+            disabled: !!s.originalMissing || s.active,
+            title: s.originalMissing
+              ? missing
+              : s.active
+                ? 'Session encore active ailleurs (modifiée il y a moins de 2 min) : la reprendre ici créerait deux suites différentes. Utilise « Copie indépendante », ou ferme-la d’abord.'
+                : 'Continue CETTE session depuis le hub (claude --resume). Ne l’utilise plus en même temps dans l’appli Claude ou un terminal : l’appli Claude n’affiche pas ce qui est écrit depuis le hub.',
+            onclick: () => void go('resume'),
+          },
+          'Reprendre ici',
+        ),
+      ];
+    })(),
     s.cwd ? h('button', { type: 'button', class: 'btn ghost small', onclick: () => void hub.openPath(s.cwd!) }, '📂 Ouvrir le dossier') : null,
   );
   const meta = h(
@@ -4304,7 +4327,13 @@ function renderClaudeReader(): void {
   );
   const warn = s.originalMissing
     ? h('div', { class: 'cc-warn small' }, '📦 Copie archivée par le hub : Claude Code a supprimé l’original (nettoyage automatique). La conversation reste lisible ici, mais ne peut plus être continuée.')
-    : h('div', { class: 'cc-warn small' }, '⚠️ Si cette session est encore ouverte ailleurs (terminal, appli Claude), mieux vaut la fermer avant de la continuer ici, pour éviter deux suites différentes.');
+    : h(
+        'div',
+        { class: 'cc-warn small' },
+        s.active
+          ? '⚠️ Session active en ce moment ailleurs (terminal, appli Claude). Pour la continuer dans le hub, utilise « Copie indépendante » : l’originale reste intacte. « Reprendre ici » est désactivé pour éviter deux suites différentes.'
+          : 'ℹ️ « Copie indépendante » : nouvelle session avec tout l’historique, l’originale n’est pas modifiée. « Reprendre ici » : même session — ne l’utilise plus ailleurs ensuite (l’appli Claude n’affiche pas ce qui est écrit depuis le hub).',
+      );
   const body = h('div', { class: 'messages cc-messages' });
   if (!r) body.append(h('div', { class: 'muted', style: 'padding:20px' }, 'Lecture…'));
   else {

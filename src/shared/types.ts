@@ -232,6 +232,8 @@ export interface Conversation {
   permission: ClaudePermission;
   /** Niveau d'effort de Claude dans cette discussion (absent = par défaut). */
   effort?: ClaudeEffort;
+  /** Copie indépendante d'une session Claude Code pas encore créée : le prochain envoi fera --fork-session. */
+  claudeForkPending?: boolean;
   messages: ChatMessage[];
   /** Les IA de la discussion peuvent consulter la base de connaissances. */
   useKnowledge?: boolean;
@@ -680,7 +682,8 @@ export interface HubApi {
   listClaudeSessions(): Promise<ClaudeSessionInfo[]>;
   readClaudeSession(id: string): Promise<{ session: ClaudeSessionInfo | null; messages: ClaudeSessionMessage[]; total: number }>;
   /** Crée une discussion du hub qui reprend cette session (claude --resume). */
-  continueClaudeSession(id: string): Promise<Conversation>;
+  /** 'fork' (défaut) = copie indépendante (nouvelle session) ; 'resume' = même session (à ne plus utiliser ailleurs). */
+  continueClaudeSession(id: string, mode?: 'resume' | 'fork'): Promise<Conversation>;
   /** Copie les sessions dans les archives du hub et les masque de la liste (rien ne change dans ~/.claude). */
   archiveClaudeSessions(ids: string[]): Promise<ClaudeArchiveResult>;
   /** Remet les sessions dans la liste ; la copie archivée est conservée. */
