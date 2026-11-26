@@ -477,6 +477,11 @@ tr.group td { background: transparent; color: var(--accent); }
 .update-progress span { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--accent-2), #ffb27a); transition: width 0.4s var(--ease); }
 .update-notes { max-height: 220px; overflow: auto; font-size: 13px; padding: 8px 10px; border-radius: 10px; background: rgba(0, 0, 0, 0.25); border: 1px solid var(--line); }
 
+/* ---------- Réglages › Images locales : dossier ComfyUI ---------- */
+.comfy-dir { display: flex; flex-direction: column; gap: 6px; padding: 8px 0; }
+.comfy-dir code { font-size: 12px; background: rgba(0, 0, 0, 0.3); padding: 2px 6px; border-radius: 6px; word-break: break-all; }
+.comfy-suggest { color: #ffd6bd; }
+
 /* ---------- Palette de recherche (Ctrl+K) ---------- */
 .cmdk { position: fixed; inset: 0; z-index: 100; display: grid; place-items: start center; padding-top: 12vh; background: rgba(4, 5, 7, 0.55); backdrop-filter: blur(6px); animation: fadeIn 0.18s ease; }
 .cmdk-panel {

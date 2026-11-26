@@ -2,9 +2,10 @@
 // L'installation n'est lancée QUE par l'utilisateur (bouton « Installer », téléchargements affichés avant).
 // Ne dépend pas d'Electron.
 import { spawn, type ChildProcess } from 'node:child_process';
-import { createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
+import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { statfs } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import type { ImageEngineStatus, ImageModelInfo, PlannedDownload } from '../shared/types';
 import { IMAGE_PRESETS, imagePreset, presetSize, type ImageModelFile, type ImageModelPreset } from './image-models';
 
@@ -34,25 +35,51 @@ export class ImageEngine {
   private freeBytes: number | undefined;
 
   constructor(
-    /** Dossier d'installation : <appli>/tools/ComfyUI. */
+    /** Dossier d'installation par défaut : <données de l'appli>/tools/ComfyUI. */
     readonly dir: string,
     private emit: (status: ImageEngineStatus) => void,
     /** Préréglage choisi par l'utilisateur (settings.imageModel). */
     private getActive: () => string | undefined = () => undefined,
+    /** ComfyUI déjà installé ailleurs, choisi par l'utilisateur (settings.comfyuiDir) : prioritaire s'il est valide. */
+    private getCustomDir: () => string | undefined = () => undefined,
+    /** ComfyUI trouvé automatiquement (proposé dans Réglages, jamais activé en silence). */
+    private getSuggestion: () => string | undefined = () => undefined,
   ) {}
 
-  /** Dossier qui contient python_embeded et ComfyUI (directement, ou un sous-dossier après extraction). */
+  /** ComfyUI choisi par l'utilisateur, s'il est valide. */
+  private customRoot(): string | null {
+    const c = this.getCustomDir()?.trim();
+    return c ? findComfyRoot(c) : null;
+  }
+
+  /** Dossier qui contient python_embeded et ComfyUI : celui choisi par l'utilisateur, sinon celui de l'appli. */
   root(): string | null {
-    const ok = (d: string) => existsSync(join(d, 'python_embeded', 'python.exe')) && existsSync(join(d, 'ComfyUI', 'main.py'));
-    if (ok(this.dir)) return this.dir;
+    return this.customRoot() ?? findComfyRoot(this.dir);
+  }
+
+  /** Dossier réellement utilisé (pour l'affichage et l'espace disque). */
+  activeDir(): string {
+    return this.customRoot() ?? this.dir;
+  }
+
+  /** Vérifie que 7za (extraction de l'archive ComfyUI) se lance : crée puis extrait une petite archive de test. */
+  async diagnose7z(): Promise<{ ok: boolean; path7za: string; message: string }> {
+    let exe = '';
+    const tmp = mkdtempSync(join(tmpdir(), 'hub-ia-7z-'));
     try {
-      for (const e of readdirSync(this.dir, { withFileTypes: true })) {
-        if (e.isDirectory() && ok(join(this.dir, e.name))) return join(this.dir, e.name);
-      }
-    } catch {
-      /* pas encore installé */
+      exe = resolve7za();
+      const src = join(tmp, 'src');
+      mkdirSync(src);
+      writeFileSync(join(src, 'test.txt'), 'hub-ia-7z-ok', 'utf8');
+      await run7za(exe, ['a', join(tmp, 'test.7z'), join(src, 'test.txt'), '-bso0', '-bsp0'], new AbortController().signal);
+      await extract7z(join(tmp, 'test.7z'), join(tmp, 'out'), new AbortController().signal);
+      const ok = readFileSync(join(tmp, 'out', 'test.txt'), 'utf8') === 'hub-ia-7z-ok';
+      return { ok, path7za: exe, message: ok ? '7za fonctionne (archive de test créée et extraite)' : 'contenu extrait inattendu' };
+    } catch (err: any) {
+      return { ok: false, path7za: exe, message: err.message };
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
     }
-    return null;
   }
 
   /** Dossier ComfyUI/models. */
@@ -112,7 +139,7 @@ export class ImageEngine {
 
   /** Espace libre du disque qui contient l'installation (mis en cache dans freeBytes). */
   async refreshFreeSpace(): Promise<number | undefined> {
-    let d = this.dir;
+    let d = this.activeDir();
     while (!existsSync(d) && dirname(d) !== d) d = dirname(d);
     try {
       const s = await statfs(d);
@@ -133,7 +160,10 @@ export class ImageEngine {
       installed: this.installed(),
       installing: this.installing,
       running: this.running,
-      dir: this.dir,
+      dir: this.activeDir(),
+      defaultDir: this.dir,
+      ...(this.getCustomDir()?.trim() ? { customDir: this.getCustomDir()!.trim(), customDirValid: !!this.customRoot() } : {}),
+      ...(!this.root() && this.getSuggestion() ? { suggestedDir: this.getSuggestion() } : {}),
       models: this.models(),
       plannedDownloads: this.planned ?? [],
       ...(this.progress ? { progress: this.progress } : {}),
@@ -227,12 +257,15 @@ export class ImageEngine {
 
       if (comfy) {
         const archive = join(this.dir, 'comfyui-portable.7z');
-        await this.download(comfy, archive, signal);
+        // Archive déjà entièrement téléchargée (essai précédent dont l'extraction a échoué) : on ne la retélécharge pas.
+        const complete = existsSync(archive) && (!comfy.sizeBytes || statSync(archive).size === comfy.sizeBytes);
+        if (!complete) await this.download(comfy, archive, signal);
         this.progress = { step: 'Extraction de ComfyUI…', receivedBytes: 0, totalBytes: 0 };
         this.push(true);
+        // En cas d'échec, l'archive est gardée pour réessayer sans retélécharger.
         await extract7z(archive, this.dir, signal);
+        if (!findComfyRoot(this.dir)) throw new Error("l'archive extraite ne contient pas ComfyUI (python_embeded / ComfyUI\\main.py)");
         rmSync(archive, { force: true });
-        if (!this.root()) throw new Error("l'archive extraite ne contient pas ComfyUI (python_embeded / ComfyUI\\main.py)");
       }
 
       for (const f of preset.files) {
@@ -413,10 +446,76 @@ async function remoteSize(url: string): Promise<number> {
   throw new Error(`taille introuvable pour ${url}`);
 }
 
-/** Extrait une archive .7z avec 7za (paquet npm 7zip-bin, embarqué : rien à installer). */
-function extract7z(archive: string, dest: string, signal: AbortSignal): Promise<void> {
+/**
+ * Chemin réel d'un fichier embarqué dans l'appli packagée : un exécutable ne peut pas être lancé depuis
+ * l'archive app.asar ; electron-builder le déballe (asarUnpack) dans app.asar.unpacked, au même chemin relatif.
+ */
+export function unpackedPath(p: string): string {
+  return p.replace(/([\\/])app\.asar(?=[\\/])/, '$1app.asar.unpacked');
+}
+
+/** Exécutable 7za embarqué (paquet npm 7zip-bin), corrigé pour l'appli packagée. */
+export function resolve7za(): string {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { path7za } = require('7zip-bin') as { path7za: string };
+  const exe = unpackedPath(path7za);
+  if (!existsSync(exe)) throw new Error(`outil d'extraction 7za introuvable (${exe}) : réinstalle l'application`);
+  return exe;
+}
+
+/**
+ * Dossier ComfyUI portable valide (python_embeded\python.exe + ComfyUI\main.py) : le dossier lui-même,
+ * ou un de ses sous-dossiers directs (ex. tools\ComfyUI\ComfyUI_windows_portable). null sinon.
+ */
+export function findComfyRoot(dir: string): string | null {
+  const ok = (d: string) => existsSync(join(d, 'python_embeded', 'python.exe')) && existsSync(join(d, 'ComfyUI', 'main.py'));
+  try {
+    if (ok(dir)) return dir;
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.isDirectory() && ok(join(dir, e.name))) return join(dir, e.name);
+    }
+  } catch {
+    /* dossier absent ou illisible */
+  }
+  return null;
+}
+
+/**
+ * ComfyUI déjà installé ailleurs sur ce PC, à proposer : le projet de développement d'où les données ont été migrées
+ * (son chemin est écrit dans le marqueur « .migre-depuis-le-projet » de la racine des données) → <projet>\tools\ComfyUI.
+ */
+export function detectExistingComfy(dataRoot: string): string | null {
+  try {
+    const marker = readFileSync(join(dataRoot, '.migre-depuis-le-projet'), 'utf8');
+    const m = /copiées depuis (.+?) le \d{4}-/.exec(marker);
+    if (!m) return null;
+    const candidate = resolve(m[1].trim(), 'tools', 'ComfyUI');
+    return findComfyRoot(candidate) ? candidate : null;
+  } catch {
+    return null;
+  }
+}
+
+function run7za(exe: string, args: string[], signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(exe, args, { windowsHide: true });
+    let err = '';
+    child.stderr.on('data', (c: Buffer) => (err = (err + c.toString()).slice(-2000)));
+    const onAbort = () => child.kill();
+    signal.addEventListener('abort', onAbort, { once: true });
+    child.on('error', (e) => reject(e));
+    child.on('close', (code) => {
+      signal.removeEventListener('abort', onAbort);
+      if (signal.aborted) reject(new Error('annulé'));
+      else if (code === 0) resolve();
+      else reject(new Error(`7za a échoué (code ${code}) ${err.trim()}`));
+    });
+  });
+}
+
+/** Extrait une archive .7z avec 7za (paquet npm 7zip-bin, embarqué : rien à installer). */
+function extract7z(archive: string, dest: string, signal: AbortSignal): Promise<void> {
+  const path7za = resolve7za();
   return new Promise((resolve, reject) => {
     const child = spawn(path7za, ['x', archive, `-o${dest}`, '-y', '-bso0', '-bsp0'], { windowsHide: true });
     let err = '';

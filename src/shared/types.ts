@@ -289,6 +289,8 @@ export interface HubSettings {
   updateIncludePrerelease?: boolean;
   /** Modèle d'image utilisé par défaut (id de préréglage : 'z-image-turbo', 'sdxl'…). */
   imageModel?: string;
+  /** ComfyUI portable déjà installé ailleurs, utilisé à la place de <données>/tools/ComfyUI (vide = dossier de l'appli). */
+  comfyuiDir?: string;
   /** L'assistant de premier démarrage a été terminé ou passé. */
   onboardingDone: boolean;
 }
@@ -390,8 +392,15 @@ export interface ImageEngineStatus {
   installed: boolean;
   installing: boolean;
   running: boolean;
-  /** Dossier d'installation (dans le dossier de l'appli). */
+  /** Dossier ComfyUI réellement utilisé (choisi par l'utilisateur, sinon celui de l'appli). */
   dir: string;
+  /** Dossier d'installation par défaut (dans les données de l'appli). */
+  defaultDir?: string;
+  /** ComfyUI déjà installé choisi par l'utilisateur (settings.comfyuiDir) et sa validité. */
+  customDir?: string;
+  customDirValid?: boolean;
+  /** ComfyUI trouvé ailleurs sur ce PC, proposé (non activé) quand rien n'est installé. */
+  suggestedDir?: string;
   /** Modèles d'image (checkpoints) disponibles. */
   models: string[];
   /** Téléchargements prévus par « Installer » (affichés pour confirmation). */
@@ -645,6 +654,10 @@ export interface HubApi {
   deleteImageModel(id: string): Promise<void>;
   /** Choisit le modèle d'image utilisé par défaut. */
   setImageModel(id: string): Promise<ImageEngineStatus>;
+  /** Utilise un ComfyUI déjà installé (dossier vérifié) ; null = revenir au dossier de l'appli. */
+  setComfyuiDir(dir: string | null): Promise<ImageEngineStatus>;
+  /** Vérifie que l'outil d'extraction (7za) se lance dans cette installation. */
+  diagnoseImageTools(): Promise<{ ok: boolean; path7za: string; message: string }>;
   /** Tokens consommés par IA et par jour (barre de tokens). */
   getUsage(): Promise<UsageStats>;
   /** Limites restantes connues (Claude : relevées à chaque réponse). */
@@ -762,6 +775,8 @@ export const HUB_METHODS = [
   'installImageModel',
   'deleteImageModel',
   'setImageModel',
+  'setComfyuiDir',
+  'diagnoseImageTools',
   'listKnowledgeBases',
   'setConversationKnowledgeBase',
   'registerObsidianVaults',

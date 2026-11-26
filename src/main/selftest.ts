@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import type { Task, WorkflowRun } from '../shared/types';
 import { Hub, samePath } from './hub';
 import { imagePreset } from './image-models';
+import { detectExistingComfy, findComfyRoot, unpackedPath } from './image-engine';
 import { isAllowedExternalUrl, recommendModel } from './setup';
 import { compareSemver, fetchReleases, isPrereleaseVersion, pickLatestRelease, readableUpdateError } from './update-check';
 import { ClaudeLogs } from './claude-logs';
@@ -106,6 +107,56 @@ async function testUpdateCheck(): Promise<void> {
   }
 }
 
+/** 7za dans l'appli packagée + ComfyUI déjà installé ailleurs (aucun téléchargement, aucun appel d'IA). */
+async function testImageFix(): Promise<void> {
+  console.log('Correctif images (7za packagé, ComfyUI existant)');
+  check(
+    unpackedPath('C:\\Prog\\Hub IA\\resources\\app.asar\\node_modules\\7zip-bin\\win\\x64\\7za.exe') === 'C:\\Prog\\Hub IA\\resources\\app.asar.unpacked\\node_modules\\7zip-bin\\win\\x64\\7za.exe',
+    'app.asar → app.asar.unpacked (Windows)',
+  );
+  check(unpackedPath('/opt/x/app.asar/node_modules/a') === '/opt/x/app.asar.unpacked/node_modules/a', 'app.asar → app.asar.unpacked (/)');
+  check(unpackedPath('C:\\dev\\node_modules\\7zip-bin\\7za.exe') === 'C:\\dev\\node_modules\\7zip-bin\\7za.exe', 'chemin hors asar inchangé');
+  check(unpackedPath('C:\\x\\app.asar.unpacked\\a') === 'C:\\x\\app.asar.unpacked\\a', 'déjà unpacked : inchangé');
+
+  const tmp = mkdtempSync(join(tmpdir(), 'hub-ia-imgfix-'));
+  try {
+    const portable = join(tmp, 'proj', 'tools', 'ComfyUI', 'ComfyUI_windows_portable');
+    mkdirSync(join(portable, 'python_embeded'), { recursive: true });
+    mkdirSync(join(portable, 'ComfyUI'), { recursive: true });
+    writeFileSync(join(portable, 'python_embeded', 'python.exe'), '');
+    writeFileSync(join(portable, 'ComfyUI', 'main.py'), '');
+    check(findComfyRoot(join(tmp, 'proj', 'tools', 'ComfyUI')) === portable, 'ComfyUI trouvé dans le sous-dossier portable');
+    check(findComfyRoot(portable) === portable, 'ComfyUI trouvé dans le dossier lui-même');
+    check(findComfyRoot(join(tmp, 'vide')) === null, 'dossier sans ComfyUI → null');
+
+    const dataRoot = join(tmp, 'Hub IA');
+    mkdirSync(dataRoot, { recursive: true });
+    check(detectExistingComfy(dataRoot) === null, 'pas de marqueur de migration → pas de proposition');
+    writeFileSync(join(dataRoot, '.migre-depuis-le-projet'), `Données copiées depuis ${join(tmp, 'proj')} le 2026-11-26T19:00:00.000Z :\ndata/db.json\n`, 'utf8');
+    check(detectExistingComfy(dataRoot) === join(tmp, 'proj', 'tools', 'ComfyUI'), 'ComfyUI du projet de dev détecté via le marqueur');
+
+    const hub = new Hub(join(dataRoot, 'data'), dataRoot, { toolsDir: join(dataRoot, 'tools', 'ComfyUI') });
+    let st = await hub.imageStatus();
+    check(!st.installed && st.suggestedDir === join(tmp, 'proj', 'tools', 'ComfyUI'), `non installé + dossier proposé (${st.suggestedDir})`);
+    let refused = false;
+    try {
+      await hub.setComfyuiDir(join(tmp, 'vide'));
+    } catch {
+      refused = true;
+    }
+    check(refused, 'dossier invalide refusé');
+    st = await hub.setComfyuiDir(st.suggestedDir!);
+    check(st.dir === portable && st.customDirValid === true && !st.suggestedDir, `dossier choisi utilisé (${st.dir})`);
+    st = await hub.setComfyuiDir(null);
+    check(!st.customDir && st.dir === join(dataRoot, 'tools', 'ComfyUI'), 'retour au dossier de l’appli');
+    hub.shutdown();
+    const diag = await new Hub(join(tmp, 'd2', 'data'), join(tmp, 'd2')).diagnoseImageTools();
+    check(diag.ok, `7za se lance en dev (${diag.message})`);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
 async function main(): Promise<void> {
   // SELFTEST_ONLY=images : seulement les images locales et leurs préréglages (aucun appel d'IA ni téléchargement).
   if (process.env.SELFTEST_ONLY === 'images') return testImages();
@@ -115,6 +166,8 @@ async function main(): Promise<void> {
   if (process.env.SELFTEST_ONLY === 'claudearchive') return testClaudeArchive();
   // SELFTEST_ONLY=update : comparaison de versions, choix de la release, API publique GitHub (aucun appel d'IA).
   if (process.env.SELFTEST_ONLY === 'update') return testUpdateCheck();
+  // SELFTEST_ONLY=imagefix : 7za depuis app.asar.unpacked, ComfyUI déjà installé (dossier choisi / détecté).
+  if (process.env.SELFTEST_ONLY === 'imagefix') return testImageFix();
   // Migration
   console.log('Migration');
   const legacy = hub.listConversations().find((c) => c.id === 'legacy-1');

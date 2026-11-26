@@ -350,6 +350,34 @@ export async function runSmoke(win: BrowserWindow, outDir: string, getWeb: () =>
   if (only === 'workflow') return smokeWorkflow(shot, js);
   if (only === 'knowledge') return smokeKnowledge(shot, js);
   if (only === 'ui') return smokeShell(shot, js);
+  if (only === 'images') {
+    // 7za (depuis app.asar.unpacked dans l'appli packagée) + ComfyUI déjà installé (HUB_TEST_COMFY, lecture seule).
+    const comfy = process.env.HUB_TEST_COMFY ?? '';
+    const r = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const diag = await window.hub.diagnoseImageTools();
+      let st = await window.hub.imageStatus();
+      const before = { installed: st.installed, suggested: st.suggestedDir ?? null };
+      if (${JSON.stringify(comfy)}) st = await window.hub.setComfyuiDir(${JSON.stringify(comfy)});
+      const providers = await window.hub.listProviders(true);
+      const comfyui = providers.find((p) => p.id === 'comfyui');
+      const roles = await window.hub.listRoles();
+      document.querySelector('.tabs button[data-view="settings"]').click();
+      await sleep(1500);
+      document.getElementById('img-settings')?.scrollIntoView({ block: 'start' });
+      await sleep(400);
+      return {
+        diag,
+        before,
+        after: { installed: st.installed, dir: st.dir, customDirValid: st.customDirValid, models: st.models, active: st.activeModel },
+        comfyui: comfyui ? { available: comfyui.available, models: comfyui.models, detail: comfyui.detail } : null,
+        illustrateur: roles.roles.some((x) => x.providerId === 'comfyui'),
+      };
+    })()`);
+    console.log(`Images : ${JSON.stringify(r)}`);
+    await shot('27-images-reglages');
+    return;
+  }
   if (only === 'update') {
     // Avec HUB_FAKE_VERSION=0.1.0-alpha.1, l'appli se croit plus ancienne que la dernière release GitHub.
     const r = await js(`(async () => {

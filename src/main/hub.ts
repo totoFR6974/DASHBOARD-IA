@@ -41,7 +41,7 @@ import type {
   SetupStatus,
 } from '../shared/types';
 import { CLAUDE_EFFORTS } from '../shared/types';
-import { ImageEngine } from './image-engine';
+import { detectExistingComfy, findComfyRoot, ImageEngine } from './image-engine';
 import { ClaudeLogs } from './claude-logs';
 import { Setup } from './setup';
 import { Knowledge } from './knowledge';
@@ -246,6 +246,8 @@ export class Hub {
       opts.toolsDir ?? join(baseDir, 'tools', 'ComfyUI'),
       (status) => this.emit({ type: 'imageEngine', status }),
       () => this.settings.imageModel,
+      () => this.settings.comfyuiDir,
+      () => detectExistingComfy(this.baseDir) ?? undefined,
     );
     this.db = new JsonFile<Db>(join(dataDir, 'db.json'), { conversations: [], tasks: [], workflows: [] });
     if (!Array.isArray(this.db.data.workflows)) this.db.data.workflows = [];
@@ -1511,6 +1513,33 @@ export class Hub {
   stopImageEngine(): void {
     this.images.stop();
     void this.listProviders(true);
+  }
+
+  /** Utilise un ComfyUI portable déjà installé (ex. celui du projet de dev) ; null = dossier de l'appli. */
+  async setComfyuiDir(dir: string | null): Promise<ImageEngineStatus> {
+    const d = dir?.trim();
+    if (d) {
+      if (!findComfyRoot(d)) {
+        throw new Error(`Ce dossier ne contient pas ComfyUI portable (il faut python_embeded\\python.exe et ComfyUI\\main.py) : ${d}`);
+      }
+      if (this.images.running) this.images.stop();
+      this.settings.comfyuiDir = resolve(d);
+    } else {
+      if (this.images.running) this.images.stop();
+      delete this.settings.comfyuiDir;
+    }
+    // Modèle actif encore disponible dans ce ComfyUI ? Sinon le meilleur installé.
+    const models = this.images.models();
+    if (!this.settings.imageModel || !models.includes(this.settings.imageModel)) this.settings.imageModel = models[0];
+    this.settingsFile.save();
+    await this.listProviders(true);
+    const status = await this.images.status();
+    this.emit({ type: 'imageEngine', status });
+    return status;
+  }
+
+  diagnoseImageTools(): Promise<{ ok: boolean; path7za: string; message: string }> {
+    return this.images.diagnose7z();
   }
 
   // ---------- Réglages ----------

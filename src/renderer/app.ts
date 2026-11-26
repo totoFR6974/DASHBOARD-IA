@@ -2822,6 +2822,7 @@ function renderImageCard(): void {
   const parts: (HTMLElement | null)[] = [
     h('div', { class: 'row', style: 'justify-content:flex-start' }, h('span', { class: `status ${cls}`, id: 'img-status' }, label), h('span', { class: 'muted small img-dir', title: s.dir }, s.dir)),
     s.error ? h('div', { class: 'wf-error' }, `⚠️ ${s.error}`) : null,
+    comfyDirBlock(s),
     s.installing && p
       ? h(
           'div',
@@ -2848,9 +2849,55 @@ function renderImageCard(): void {
       s.running ? h('button', { type: 'button', class: 'btn small', id: 'img-stop', onclick: () => void hub.stopImageEngine() }, 'Arrêter ComfyUI') : null,
       s.installed ? h('button', { type: 'button', class: 'btn ghost small', onclick: () => void hub.openPath(s.dir) }, '📂 Dossier') : null,
     ),
-    h('p', { class: 'muted small' }, 'Tout est installé dans le dossier de l’appli (portable). ComfyUI démarre tout seul quand une image est demandée.'),
+    h(
+      'p',
+      { class: 'muted small' },
+      s.customDir
+        ? 'Utilise le ComfyUI choisi ci-dessus (rien n’est copié). ComfyUI démarre tout seul quand une image est demandée.'
+        : 'Tout est installé dans le dossier de l’appli. ComfyUI démarre tout seul quand une image est demandée.',
+    ),
   ];
   box.replaceChildren(...compact(parts));
+}
+
+/** Dossier ComfyUI : déjà installé ailleurs (choisi ou détecté) ou dossier de l'appli. */
+function comfyDirBlock(s: ImageEngineStatus): HTMLElement {
+  const use = async (dir: string | null) => {
+    try {
+      state.image = await hub.setComfyuiDir(dir);
+      renderImageCard();
+    } catch (err: any) {
+      toast(err.message ?? String(err));
+    }
+  };
+  const pick = async () => {
+    const dir = await hub.pickFolder();
+    if (dir) await use(dir);
+  };
+  return h(
+    'div',
+    { class: 'comfy-dir' },
+    s.customDir
+      ? h(
+          'div',
+          { class: 'small' },
+          s.customDirValid ? '✓ ComfyUI déjà installé utilisé : ' : '⚠️ Dossier ComfyUI choisi introuvable ou incomplet : ',
+          h('code', {}, s.customDir),
+        )
+      : null,
+    !s.customDir && s.suggestedDir
+      ? h('div', { class: 'comfy-suggest small' }, '💡 ComfyUI trouvé sur ce PC : ', h('code', {}, s.suggestedDir), ' — inutile de retélécharger.')
+      : null,
+    h(
+      'div',
+      { class: 'row', style: 'justify-content:flex-start' },
+      !s.customDir && s.suggestedDir
+        ? h('button', { type: 'button', class: 'btn primary small', id: 'img-use-suggested', onclick: () => void use(s.suggestedDir!) }, 'Utiliser ce dossier')
+        : null,
+      h('button', { type: 'button', class: 'btn ghost small', id: 'img-pick-comfy', onclick: () => void pick() }, 'Utiliser un ComfyUI déjà installé…'),
+      s.customDir ? h('button', { type: 'button', class: 'btn ghost small', id: 'img-default-comfy', onclick: () => void use(null) }, 'Revenir au dossier de l’appli') : null,
+    ),
+  );
 }
 
 /** Réglages › Images locales : un modèle par ligne (licence, taille, état) avec Installer / Utiliser / Supprimer. */
