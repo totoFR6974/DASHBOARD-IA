@@ -18,7 +18,8 @@ const smoke = !!smokeArg;
 /**
  * Racine des données (discussions, profil web, workspace, vault, ComfyUI) — voir data-root.ts :
  * - dev ET version installée : %APPDATA%\Hub IA (un seul profil → les connexions ChatGPT/Gemini restent) ;
- * - version portable : « Hub IA - données » à côté de l'exe ;
+ * - version portable : comme la version installée, sauf si hub-ia-portable.txt est posé à côté de l'exe
+ *   (alors « Hub IA - données » à côté de l'exe) ;
  * - tests visuels de dev (--smoke) : le dossier du projet.
  */
 const rootDir = resolveRootDir({

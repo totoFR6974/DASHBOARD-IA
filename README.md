@@ -92,7 +92,7 @@ Données de la personne qui reçoit l'appli :
 |---|---|
 | Développement (`npm start`) | dossier du projet |
 | Installé | `%APPDATA%\Hub IA` (jamais dans le dossier d'installation, réécrit par les mises à jour) |
-| Portable | `Hub IA - données\` à côté de l'exe |
+| Portable | `%APPDATA%\Hub IA` (comme la version installée) ; `Hub IA - données\` à côté de l'exe si un fichier `hub-ia-portable.txt` y est posé |
 
 Limites : l'appli n'est pas signée (pas de certificat de signature de code), donc Windows SmartScreen
 affiche un avertissement au premier lancement (« Informations complémentaires » › « Exécuter quand même »).

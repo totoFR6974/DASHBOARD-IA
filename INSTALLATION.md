@@ -66,8 +66,10 @@ depuis les **Réglages**.
 
 Discussions, notes, réglages et connexions restent sur ton PC :
 
-- **Version installée** : `%APPDATA%\Hub IA` (colle ce chemin dans la barre d'adresse de l'Explorateur).
-- **Version portable** : le dossier **« Hub IA - données »**, juste à côté du fichier `.exe`.
+- **Version installée et version portable** : `%APPDATA%\Hub IA` (colle ce chemin dans la barre d'adresse
+  de l'Explorateur). Les deux versions partagent les mêmes données sur un même PC.
+- **Tout garder à côté de l'exe** (clé USB…) : crée un fichier vide nommé `hub-ia-portable.txt` à côté de
+  l'exe portable ; les données iront alors dans le dossier **« Hub IA - données »** juste à côté.
 
 Pour sauvegarder ou déplacer tes données, copie ce dossier. Les connexions ChatGPT et Gemini sont
 protégées par ton compte Windows : sur un autre PC, il faudra simplement te reconnecter.
@@ -76,6 +78,7 @@ protégées par ton compte Windows : sur un autre PC, il faudra simplement te re
 
 - **Version installée** : Paramètres Windows › Applications › **Hub IA** › Désinstaller.
   Tes données dans `%APPDATA%\Hub IA` sont conservées. Supprime ce dossier si tu veux tout effacer.
-- **Version portable** : supprime le fichier `.exe` et le dossier « Hub IA - données ».
+- **Version portable** : supprime le fichier `.exe` (et `%APPDATA%\Hub IA`, ou le dossier « Hub IA - données »
+  si tu utilisais `hub-ia-portable.txt`).
 
 Ollama s'enlève séparément (Paramètres Windows › Applications › Ollama).

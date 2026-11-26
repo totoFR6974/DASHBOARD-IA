@@ -17,11 +17,17 @@ export interface RootOptions {
   override?: string;
 }
 
+/** Fichier à poser à côté de l'exe portable pour garder les données à côté de lui (clé USB…). */
+export const PORTABLE_MARKER = 'hub-ia-portable.txt';
+
 export function resolveRootDir(o: RootOptions): string {
   if (o.override) return o.override;
   // Tests visuels de dev : restent dans le projet (captures sous data/<dossier de test>).
   if (!o.isPackaged && o.smoke) return o.appDir;
-  if (o.isPackaged && o.portableDir) return join(o.portableDir, 'Hub IA - données');
+  // Version portable : par défaut les MÊMES données que la version installée (sinon chaque lancement de l'exe
+  // portable ressemblait à une installation neuve : assistant, discussions vides, connexions perdues, stats recalculées).
+  // Mode « tout à côté de l'exe » sur demande : fichier hub-ia-portable.txt à côté de l'exe.
+  if (o.isPackaged && o.portableDir && existsSync(join(o.portableDir, PORTABLE_MARKER))) return join(o.portableDir, 'Hub IA - données');
   return join(o.appDataDir, 'Hub IA');
 }
 
