@@ -102,12 +102,12 @@ sont activés dans l'appli packagée.
 
 ## Mises à jour automatiques
 
-L'appli lit les releases **publiques** de ce dépôt GitHub (aucun jeton) ≈ 10 s après le lancement puis toutes les 6 h
+L'appli lit les releases **publiques** de ce dépôt GitHub (aucun jeton) ≈ 10 s après le lancement puis toutes les 10 min
 (désactivable dans Réglages › Mises à jour) :
 
-- **Version installée** : `electron-updater` télécharge la nouvelle version en arrière-plan (bannière avec la progression),
-  puis l'installe à la fermeture ou tout de suite avec « Redémarrer maintenant ». Il s'appuie sur `latest.yml` joint à la
-  release. L'appli n'étant pas signée, aucune vérification d'éditeur n'est faite (l'intégrité du fichier reste vérifiée
+- **Version installée** : une bannière annonce la nouvelle version ; **rien n'est téléchargé sans clic** sur
+  « Télécharger et installer » (`electron-updater` télécharge avec la progression, puis installe et relance l'appli).
+  Il s'appuie sur `latest.yml` joint à la release. L'appli n'étant pas signée, aucune vérification d'éditeur n'est faite (l'intégrité du fichier reste vérifiée
   par le sha512 de `latest.yml`).
 - **Version portable** : bannière « Nouvelle version disponible » avec un lien vers la release (elle ne peut pas se
   remplacer elle-même).

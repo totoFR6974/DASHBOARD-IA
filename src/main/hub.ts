@@ -34,6 +34,9 @@ import type {
   LimitWindow,
   ClaudeAccess,
   ClaudeEffort,
+  VoiceModelId,
+  VoiceStatus,
+  VoiceVariant,
   ClaudeLogUsage,
   ClaudeSessionInfo,
   ClaudeArchiveResult,
@@ -42,6 +45,7 @@ import type {
 } from '../shared/types';
 import { CLAUDE_EFFORTS } from '../shared/types';
 import { detectExistingComfy, findComfyRoot, ImageEngine } from './image-engine';
+import { isVoiceModel, isVoiceVariant, VoiceModels } from './voice';
 import { ClaudeLogs } from './claude-logs';
 import { Setup } from './setup';
 import { Knowledge } from './knowledge';
@@ -161,6 +165,8 @@ export class Hub {
   readonly vaults: Vaults;
   private obsidianInstall: import('node:child_process').ChildProcess | null = null;
   readonly images: ImageEngine;
+  /** Dictée vocale : modèles Whisper locaux (<données>/models/whisper). */
+  readonly voice: VoiceModels;
 
   /**
    * @param dataDir  dossier des données (db.json, settings.json)
@@ -251,6 +257,7 @@ export class Hub {
       () => this.settings.comfyuiDir,
       () => detectExistingComfy(this.baseDir) ?? undefined,
     );
+    this.voice = new VoiceModels({ modelsDir: join(dataDir, 'models'), emit: (status) => this.emit({ type: 'voice', status }) });
     this.db = new JsonFile<Db>(join(dataDir, 'db.json'), { conversations: [], tasks: [], workflows: [] });
     if (!Array.isArray(this.db.data.workflows)) this.db.data.workflows = [];
     if (!this.db.data.usage) {
@@ -1028,6 +1035,29 @@ export class Hub {
     return conv;
   }
 
+  // ---------- Dictée vocale ----------
+
+  voiceStatus(): VoiceStatus {
+    return this.voice.status();
+  }
+
+  voicePlannedBytes(model: VoiceModelId, variant: VoiceVariant): Promise<number> {
+    if (!isVoiceModel(model) || !isVoiceVariant(variant)) throw new Error('Modèle de dictée inconnu');
+    return this.voice.plannedBytes(model, variant);
+  }
+
+  downloadVoiceModel(model: VoiceModelId, variant: VoiceVariant): Promise<VoiceStatus> {
+    return this.voice.download(model, variant);
+  }
+
+  cancelVoiceDownload(): void {
+    this.voice.cancel();
+  }
+
+  deleteVoiceModel(model: VoiceModelId): VoiceStatus {
+    return this.voice.remove(model);
+  }
+
   claudeLogin(): void {
     const claude = this.providers.get('claude') as ClaudeProvider | undefined;
     claude?.openLogin();
@@ -1585,6 +1615,8 @@ export class Hub {
     if (typeof next.conversationNotes === 'boolean') s.conversationNotes = next.conversationNotes;
     if (typeof next.autoUpdate === 'boolean') s.autoUpdate = next.autoUpdate;
     if (typeof next.updateIncludePrerelease === 'boolean') s.updateIncludePrerelease = next.updateIncludePrerelease;
+    if (next.voiceModel === 'auto' || isVoiceModel(next.voiceModel)) s.voiceModel = next.voiceModel;
+    if (next.voiceLanguage === 'fr' || next.voiceLanguage === 'en' || next.voiceLanguage === 'auto') s.voiceLanguage = next.voiceLanguage;
     // Les agents se modifient via saveRoles (validation dédiée) : on ne les touche pas ici.
     this.settingsFile.flush();
     void this.listProviders(true);
@@ -1592,6 +1624,11 @@ export class Hub {
   }
 
   /** Arrête les tâches en cours et écrit tout sur le disque (fermeture de l'appli). */
+  /** Nombre de tâches réellement en train de tourner (IA au travail ; les étapes manuelles en attente ne comptent pas). */
+  activeTaskCount(): number {
+    return this.running.size;
+  }
+
   shutdown(): void {
     for (const c of this.running.values()) c.abort();
     for (const id of [...this.delegation.keys()]) this.endDelegation(id);

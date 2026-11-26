@@ -11,7 +11,15 @@ await Promise.all([
   build({ ...common, entryPoints: ['src/main/selftest.ts'], outfile: 'dist/selftest.js', platform: 'node', format: 'cjs', external: ['7zip-bin'] }),
   build({ ...common, entryPoints: ['src/preload/preload.ts'], outfile: 'dist/preload.js', platform: 'node', format: 'cjs', external: ['electron'] }),
   build({ ...common, entryPoints: ['src/renderer/app.ts'], outfile: 'dist/renderer/app.js', platform: 'browser', format: 'iife' }),
+  // Dictée vocale : Whisper (Transformers.js, Apache 2.0) dans un worker à part, chargé à la demande.
+  build({ ...common, sourcemap: false, minify: true, entryPoints: ['src/renderer/voice-worker.ts'], outfile: 'dist/renderer/voice-worker.js', platform: 'browser', format: 'iife', logLevel: 'error' }),
 ]);
+
+// Moteur ONNX Runtime Web (MIT) pour la dictée : version « asyncify » (WebGPU + WASM), servie par hub-asset://app/ort/.
+mkdirSync('dist/renderer/ort', { recursive: true });
+for (const f of ['ort-wasm-simd-threaded.asyncify.mjs', 'ort-wasm-simd-threaded.asyncify.wasm']) {
+  cpSync(`node_modules/onnxruntime-web/dist/${f}`, `dist/renderer/ort/${f}`);
+}
 
 try {
   const { ensureFuses } = await import('./scripts/fuses.mjs');

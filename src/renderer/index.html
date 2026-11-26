@@ -2,7 +2,9 @@
 <html lang="fr">
   <head>
     <meta charset="utf-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: hub-file:" />
+    <!-- Dictée vocale locale : 'wasm-unsafe-eval' (moteur ONNX en WebAssembly), hub-asset: (moteur + modèles Whisper
+         servis par l'appli, jamais internet), worker-src blob: (le worker de transcription est lancé depuis un blob). -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' hub-asset:; connect-src 'self' hub-asset:; worker-src blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: hub-file:" />
     <title>Hub IA</title>
     <link rel="stylesheet" href="styles.css" />
     <link rel="stylesheet" href="theme.css" />
@@ -118,6 +120,7 @@
             <textarea id="prompt" rows="3" placeholder="Écris ton message… (Entrée pour envoyer, Maj+Entrée pour aller à la ligne)"></textarea>
             <div class="composer-actions">
               <button type="button" id="stop-btn" class="btn danger hidden">■ Arrêter</button>
+              <button type="button" id="mic-btn" class="btn mic-btn" title="Dictée vocale (Ctrl+Maj+Espace)">🎤</button>
               <button type="button" id="kn-toggle" class="btn kn-toggle" title="Base de connaissances : désactivée">📚</button>
               <div class="effort-picker hidden" id="effort-picker">
                 <button type="button" id="effort-btn" class="btn" title="Niveau d'effort de Claude dans cette discussion">⚡ Auto ▾</button>
@@ -228,6 +231,10 @@
       <section id="view-settings" class="view">
         <form id="settings-form" class="settings">
           <h2>Réglages</h2>
+          <fieldset id="voice-settings" class="info-card">
+            <legend>🎤 Dictée vocale</legend>
+            <div id="voice-settings-body"></div>
+          </fieldset>
           <fieldset>
             <legend>Claude Code</legend>
             <label>Chemin de claude.exe <input name="claudePath" placeholder="(détection automatique)" /></label>

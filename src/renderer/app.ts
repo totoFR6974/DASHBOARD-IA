@@ -1,5 +1,6 @@
 // Interface du hub : discussions, IA web, liste des tâches, réglages.
 import { initOnboarding, isOnboardingOpen, openOnboarding } from './onboarding';
+import { attachMic, initVoice, micButton, onVoiceStatus, renderVoiceSettings } from './voice';
 import type {
   AgentRole,
   ChatMessage,
@@ -1100,15 +1101,28 @@ function renderUpdateBanner(): void {
     );
   } else if (s.status === 'ready') {
     parts.push(
-      h('span', { class: 'update-text' }, `Mise à jour ${s.version} prête.`),
-      h('button', { type: 'button', class: 'btn primary small', onclick: () => void hub.installUpdateNow().catch((e: any) => toast(e.message ?? String(e))) }, 'Redémarrer maintenant'),
-      h('button', { type: 'button', class: 'btn ghost small', title: 'Elle s’installera quand tu fermeras l’application', onclick: () => ((updateUi.dismissed = key), renderUpdateBanner()) }, 'À la fermeture'),
+      h('span', { class: 'update-text' }, `Mise à jour ${s.version} téléchargée : installation…`),
+      h('button', { type: 'button', class: 'btn primary small', onclick: () => void hub.installUpdateNow().catch((e: any) => toast(e.message ?? String(e))) }, 'Installer maintenant'),
       notesBtn,
     );
   } else {
+    // Version installée : téléchargement puis installation (l'appli redémarre) sur demande uniquement.
+    // Portable / dev : ouvre la page de la release (le fichier portable ne peut pas se remplacer lui-même).
+    const installed = s.mode === 'installed';
     parts.push(
       h('span', { class: 'update-text' }, `Nouvelle version ${s.version} disponible (tu as ${s.currentVersion}).`),
-      h('button', { type: 'button', class: 'btn primary small', onclick: () => s.url && void hub.openExternal(s.url).catch((e: any) => toast(e.message ?? String(e))) }, 'Télécharger'),
+      installed
+        ? h(
+            'button',
+            {
+              type: 'button',
+              class: 'btn primary small',
+              title: 'Télécharge la mise à jour, puis ferme et relance l’application sur la nouvelle version',
+              onclick: () => void hub.installUpdateNow().catch((e: any) => toast(e.message ?? String(e))),
+            },
+            'Télécharger et installer',
+          )
+        : h('button', { type: 'button', class: 'btn primary small', onclick: () => s.url && void hub.openExternal(s.url).catch((e: any) => toast(e.message ?? String(e))) }, 'Télécharger'),
       notesBtn,
       later,
     );
@@ -1534,7 +1548,7 @@ function renderNewWorkflow(): void {
       h('h2', {}, 'Nouveau workflow'),
       h('p', { class: 'muted' }, 'Un seul objectif : le planificateur le découpe en étapes et confie chacune à l’agent adapté. Les étapes indépendantes tournent en parallèle, les résultats passent d’une étape à l’autre.'),
       h('label', { class: 'inline wf-template-row' }, '📋 Partir d’un modèle :', tplSel),
-      goal,
+      h('div', { class: 'mic-field' }, goal, micButton(() => goal, 'mic-float')),
       h(
         'div',
         { class: 'wf-new-opts' },
@@ -2675,6 +2689,7 @@ function renderKnowledgeMain(): void {
     pathInput,
     h('div', { class: 'seg kn-mode' }, modeBtn('edit', 'Édition', 'kn-mode-edit'), modeBtn('preview', 'Aperçu', 'kn-mode-preview')),
     h('span', { id: 'kn-status', class: `kn-status muted small ${state.kn.dirty ? 'dirty' : ''}` }, knStatusText()),
+    state.kn.mode === 'edit' ? micButton(() => document.getElementById('kn-editor') as HTMLTextAreaElement | null, 'small') : null,
     h('button', { type: 'button', class: 'btn ghost small', id: 'kn-delete', title: 'Mettre la note à la corbeille (dossier .corbeille du vault, récupérable)', onclick: () => void deleteCurrentNote() }, '🗑'),
   );
 
@@ -3126,6 +3141,7 @@ async function renderSettings(): Promise<void> {
   $<HTMLInputElement>('set-delegation').checked = s.delegationEnabled !== false;
   $<HTMLInputElement>('set-conv-notes').checked = s.conversationNotes !== false;
   void renderClaudeAccess();
+  void renderVoiceSettings($('voice-settings-body'));
   renderUpdateSettings();
   try {
     const { roles, plannerRoleId } = await hub.listRoles();
@@ -3336,6 +3352,10 @@ function onHubEvent(ev: HubEvent): void {
     }
     case 'update': {
       onUpdateState(ev.state);
+      break;
+    }
+    case 'voice': {
+      onVoiceStatus(ev.status);
       break;
     }
     case 'limits': {
@@ -4573,6 +4593,9 @@ function bindShell(): void {
 
 function bindUi(): void {
   bindShell();
+  // Dictée vocale : bouton 🎤 du composer (les champs Workflow / Notes ont le leur, créé au rendu).
+  initVoice({ hub, toast, getSettings: () => state.settings });
+  attachMic($<HTMLButtonElement>('mic-btn'), () => ($<HTMLTextAreaElement>('prompt').disabled ? null : $<HTMLTextAreaElement>('prompt')));
   document
     .querySelectorAll<HTMLButtonElement>('.tabs button[data-view]')
     .forEach((b) => b.addEventListener('click', () => setView(b.dataset.view as View)));

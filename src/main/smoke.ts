@@ -3,7 +3,7 @@
 import type { BrowserWindow } from 'electron';
 import { clipboard } from 'electron';
 import type { WebPanels } from './web-panels';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -351,6 +351,17 @@ export async function runSmoke(win: BrowserWindow, outDir: string, getWeb: () =>
   if (only === 'workflow') return smokeWorkflow(shot, js);
   if (only === 'knowledge') return smokeKnowledge(shot, js);
   if (only === 'ui') return smokeShell(shot, js);
+  if (only === 'titlebar') {
+    // Capture de la fenêtre entière (boutons natifs Windows dessinés par-dessus la barre du haut compris).
+    await wait(1500);
+    const { desktopCapturer } = await import('electron');
+    const b = win.getBounds();
+    const sources = await desktopCapturer.getSources({ types: ['window'], thumbnailSize: { width: b.width, height: b.height } });
+    const mine = sources.find((s) => s.id === win.getMediaSourceId()) ?? sources.find((s) => s.name === 'Hub IA');
+    if (mine) writeFileSync(join(outDir, '33-fenetre-entiere.png'), mine.thumbnail.toPNG());
+    console.log(`Capture fenêtre : ${mine ? `${mine.thumbnail.getSize().width}x${mine.thumbnail.getSize().height}` : 'introuvable'}`);
+    return;
+  }
   if (only === 'copy') {
     // Boutons « Copier » (avec HUB_SMOKE_SEED). Le presse-papiers est relu côté process principal (module clipboard
     // d'Electron), uniquement ici en mode test : aucune API de lecture n'est exposée à l'interface.
@@ -382,6 +393,48 @@ export async function runSmoke(win: BrowserWindow, outDir: string, getWeb: () =>
     const copiedBoth = await clipboard.readText();
     console.log(`Copier réponse : ${JSON.stringify(r)} | presse-papiers (${typeof copiedReply}) = ${JSON.stringify(String(copiedReply))}`);
     console.log(`Copier demande + réponse : ${JSON.stringify(r2)} | presse-papiers (${typeof copiedBoth}) = ${JSON.stringify(String(copiedBoth))}`);
+    return;
+  }
+  if (only === 'voice') {
+    // Dictée vocale sans micro : HUB_VOICE_WAV = WAV de test (synthèse vocale Windows). Même pipeline que le micro.
+    const wav = process.env.HUB_VOICE_WAV ? readFileSync(process.env.HUB_VOICE_WAV).toString('base64') : '';
+    const r = await js(`(async () => {
+      const t = window.__hubVoiceTest;
+      if (!t) return { error: 'crochets de test absents' };
+      const out = { variant: await t.detectVariant() };
+      try {
+        const t0 = performance.now();
+        out.ready = await t.prepare();
+        out.prepareMs = Math.round(performance.now() - t0);
+        if (${JSON.stringify(!!wav)}) out.gpu = await t.transcribeWav(${JSON.stringify(wav)});
+      } catch (e) { out.gpuError = String(e && e.message || e); }
+      if (${JSON.stringify(process.env.HUB_VOICE_TEST_WASM === '1')} && ${JSON.stringify(!!wav)}) {
+        try {
+          await t.prepare('wasm');
+          out.wasm = await t.transcribeWav(${JSON.stringify(wav)});
+        } catch (e) { out.wasmError = String(e && e.message || e); }
+      }
+      return out;
+    })()`);
+    const norm = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+    // Tolérant aux accents et aux petites variantes (« dicté » / « dictée ») : on vérifie la reconnaissance, pas l'orthographe.
+    const ok = (txt?: string) => !!txt && norm(txt).includes('test') && norm(txt).includes('dict');
+    console.log(`Dictée : ${JSON.stringify(r)}`);
+    console.log(`Dictée vérification : ${ok(r?.gpu?.text) ? 'OK' : 'ÉCHEC'}${r?.wasm ? ` | processeur : ${ok(r.wasm.text) ? 'OK' : 'ÉCHEC'}` : ''}`);
+    await js(`(async () => {
+      document.querySelector('.tabs button[data-view="chat"]').click();
+      await new Promise((r) => setTimeout(r, 300));
+      await window.hub.createConversation({});
+      await new Promise((r) => setTimeout(r, 600));
+      document.querySelector('.conv-item')?.click();
+      await new Promise((r) => setTimeout(r, 400));
+      const p = document.getElementById('prompt');
+      if (p && ${JSON.stringify(!!r?.gpu?.text)}) { p.value = ${JSON.stringify(r?.gpu?.text ?? '')}; p.dispatchEvent(new Event('input')); }
+      window.__hubVoiceTest.simulateRecording(true);
+    })()`);
+    await wait(500);
+    await shot('32-dictee');
+    await js(`window.__hubVoiceTest.simulateRecording(false)`);
     return;
   }
   if (only === 'tasks') {

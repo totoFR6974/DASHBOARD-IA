@@ -1,6 +1,6 @@
 // Mises à jour automatiques depuis les releases GitHub publiques du dépôt (aucun jeton dans l'appli).
-// - Version installée (NSIS) : electron-updater — vérifie, télécharge en arrière-plan, installe à la fermeture
-//   (ou tout de suite avec « Redémarrer et mettre à jour »). Il lit release/latest.yml joint à la release.
+// - Version installée (NSIS) : electron-updater — vérifie toutes les 10 min, affiche une bannière, et ne télécharge
+//   qu'au clic sur « Télécharger et installer » (puis installe et relance). Il lit release/latest.yml joint à la release.
 // - Version portable : electron-updater ne sait pas la remplacer → vérification via l'API GitHub et bannière
 //   « Nouvelle version disponible » avec lien de téléchargement.
 // - Dev (non packagé) : rien d'automatique ; « Vérifier maintenant » fait la vérification via l'API (tests).
@@ -14,7 +14,8 @@ import type { UpdateState } from '../shared/types';
 import { fetchReleases, isPrereleaseVersion, pickLatestRelease, readableUpdateError } from './update-check';
 
 const FIRST_CHECK_MS = 10_000;
-const PERIOD_MS = 6 * 60 * 60 * 1000;
+/** Vérification toutes les 10 min (rien n'est téléchargé sans clic sur « Télécharger et installer »). */
+const PERIOD_MS = 10 * 60 * 1000;
 
 export interface UpdaterOptions {
   mode: UpdateState['mode'];
@@ -56,7 +57,7 @@ export class Updater {
     return { ...this.state, includePrerelease: this.includePrerelease(), autoCheck: this.autoCheck() };
   }
 
-  /** Démarre la vérification automatique (≈ 10 s après le lancement, puis toutes les 6 h). */
+  /** Démarre la vérification automatique (≈ 10 s après le lancement, puis toutes les 10 min). */
   start(): void {
     if (this.o.mode === 'installed') this.setupAutoUpdater();
     if (this.o.mode === 'dev' || this.o.disableAuto) return;
@@ -78,14 +79,22 @@ export class Updater {
       // Chargé à la demande : seulement dans la version installée.
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const { autoUpdater } = require('electron-updater');
-      autoUpdater.autoDownload = true;
-      autoUpdater.autoInstallOnAppQuit = true;
+      // Rien n'est téléchargé tout seul : la bannière propose « Télécharger et installer ».
+      autoUpdater.autoDownload = false;
+      autoUpdater.autoInstallOnAppQuit = false;
       autoUpdater.logger = { info: () => {}, warn: (m: unknown) => console.warn('[maj]', m), error: (m: unknown) => console.error('[maj]', m), debug: () => {} };
       autoUpdater.on('checking-for-update', () => this.set({ status: 'checking', error: undefined }));
-      autoUpdater.on('update-available', (info: any) => this.set({ status: 'downloading', version: info?.version, notes: notesOf(info), url: releaseUrl(info?.version), percent: 0 }));
+      autoUpdater.on('update-available', (info: any) => this.set({ status: 'available', version: info?.version, notes: notesOf(info), url: releaseUrl(info?.version), percent: undefined, checkedAt: Date.now() }));
       autoUpdater.on('update-not-available', () => this.set({ status: 'up-to-date', checkedAt: Date.now(), version: undefined, percent: undefined }));
       autoUpdater.on('download-progress', (p: any) => this.set({ status: 'downloading', percent: Math.round(p?.percent ?? 0) }));
-      autoUpdater.on('update-downloaded', (info: any) => this.set({ status: 'ready', version: info?.version, notes: notesOf(info) ?? this.state.notes, url: releaseUrl(info?.version), percent: 100, checkedAt: Date.now() }));
+      autoUpdater.on('update-downloaded', (info: any) => {
+        this.set({ status: 'ready', version: info?.version, notes: notesOf(info) ?? this.state.notes, url: releaseUrl(info?.version), percent: 100, checkedAt: Date.now() });
+        // Téléchargement lancé par « Télécharger et installer » : on installe dès qu'il est fini.
+        if (this.installAfterDownload) {
+          this.installAfterDownload = false;
+          setImmediate(() => this.autoUpdater.quitAndInstall(false, true));
+        }
+      });
       autoUpdater.on('error', (err: unknown) => this.set({ status: 'error', error: readableUpdateError(err), checkedAt: Date.now() }));
       this.autoUpdater = autoUpdater;
     } catch (err) {
@@ -126,12 +135,27 @@ export class Updater {
     }
   }
 
-  /** Version installée : quitte et installe la mise à jour téléchargée. */
+  /**
+   * « Télécharger et installer » (version installée) : télécharge la mise à jour disponible (progression dans la
+   * bannière) puis quitte et installe, l'appli se relance ensuite. Si elle est déjà téléchargée : installe tout de suite.
+   */
   installNow(): void {
-    if (this.o.mode !== 'installed' || !this.autoUpdater || this.state.status !== 'ready') throw new Error('Aucune mise à jour prête à installer.');
-    // isSilent=false (assistant visible si besoin), isForceRunAfter=true (relance l'appli ensuite).
-    setImmediate(() => this.autoUpdater.quitAndInstall(false, true));
+    if (this.o.mode !== 'installed' || !this.autoUpdater) throw new Error('Mise à jour automatique indisponible dans cette version (utilise « Télécharger »).');
+    if (this.state.status === 'ready') {
+      // isSilent=false (assistant visible si besoin), isForceRunAfter=true (relance l'appli ensuite).
+      setImmediate(() => this.autoUpdater.quitAndInstall(false, true));
+      return;
+    }
+    if (this.state.status !== 'available') throw new Error('Aucune mise à jour disponible.');
+    this.installAfterDownload = true;
+    this.set({ status: 'downloading', percent: 0 });
+    void Promise.resolve(this.autoUpdater.downloadUpdate()).catch((err: unknown) => {
+      this.installAfterDownload = false;
+      this.set({ status: 'error', error: readableUpdateError(err), checkedAt: Date.now() });
+    });
   }
+
+  private installAfterDownload = false;
 }
 
 function releaseUrl(version?: string): string | undefined {

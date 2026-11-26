@@ -1,7 +1,8 @@
 // Process principal Electron : fenêtre, sécurité, pont IPC vers le Hub.
-import { app, BrowserWindow, dialog, ipcMain, Notification, protocol, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Notification, protocol, session, shell } from 'electron';
 import { readFile } from 'node:fs/promises';
-import { copyFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
+import { copyFileSync, createReadStream, existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
+import { Readable } from 'node:stream';
 import { extname, join, resolve, sep } from 'node:path';
 import { HUB_METHODS, type HubMethod } from '../shared/types';
 import { Hub } from './hub';
@@ -47,7 +48,12 @@ if (smoke && process.env.HUB_SMOKE_SEED && existsSync(process.env.HUB_SMOKE_SEED
 app.setPath('userData', join(dataDir, 'profile'));
 
 // Protocole des images locales : hub-file://local/<chemin absolu encodé>.
-protocol.registerSchemesAsPrivileged([{ scheme: 'hub-file', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
+// hub-asset : fichiers internes de la dictée vocale (moteur ONNX WASM, worker, modèles Whisper téléchargés), servis
+// à l'interface sans ouvrir sa CSP à internet. corsEnabled : le worker (blob:) doit pouvoir les lire.
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'hub-file', privileges: { standard: true, secure: true, supportFetchAPI: true } },
+  { scheme: 'hub-asset', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } },
+]);
 const IMAGE_TYPES: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' };
 
 /** Icône de fenêtre : copiée dans dist/ par build.mjs (dev comme version packagée). */
@@ -68,6 +74,11 @@ function createWindow(): void {
     title: 'Hub IA',
     ...(existsSync(windowIcon) ? { icon: windowIcon } : {}),
     autoHideMenuBar: true,
+    // Pas de barre de titre Windows : les boutons natifs (réduire / agrandir / fermer) sont dessinés par-dessus
+    // la barre du haut de l'appli (zone de déplacement définie en CSS avec -webkit-app-region).
+    ...(process.platform === 'win32'
+      ? { titleBarStyle: 'hidden' as const, titleBarOverlay: { color: '#00000000', symbolColor: '#c9ccd2', height: 64 } }
+      : {}),
     // En test, la fenêtre s'affiche sans prendre le focus : une fenêtre cachée ne se redessine pas.
     show: false,
     webPreferences: {
@@ -79,7 +90,31 @@ function createWindow(): void {
     },
   });
   win.once('ready-to-show', () => (smoke ? win!.showInactive() : win!.show()));
-  win.loadFile(join(__dirname, 'renderer', 'index.html'));
+  // Fermeture pendant qu'une IA travaille : la réponse en cours serait perdue → on demande confirmation.
+  let closeConfirmed = false;
+  win.on('close', (e) => {
+    if (smoke || closeConfirmed || !hub) return;
+    const n = hub.activeTaskCount();
+    if (n === 0) return;
+    e.preventDefault();
+    const choice = dialog.showMessageBoxSync(win!, {
+      type: 'warning',
+      title: 'Hub IA',
+      message: n > 1 ? `${n} tâches sont en cours.` : 'Une tâche est en cours.',
+      detail:
+        'Si tu fermes maintenant, les IA qui travaillent sont arrêtées et leur réponse en cours est perdue (la tâche apparaîtra « Interrompue » ; tu pourras la relancer).',
+      buttons: ['Fermer quand même', 'Annuler'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    });
+    if (choice === 0) {
+      closeConfirmed = true;
+      win!.close();
+    }
+  });
+  // En test, ?smoke=1 active les crochets de test de l'interface (ex. transcription d'un fichier audio).
+  win.loadFile(join(__dirname, 'renderer', 'index.html'), smoke ? { query: { smoke: '1' } } : undefined);
 
   // Aucun lien ne s'ouvre dans l'appli : ils partent dans le navigateur par défaut.
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -145,6 +180,75 @@ function registerHubFileProtocol(): void {
   });
 }
 
+/**
+ * hub-asset://app/<fichier>    → dist/renderer/ort/* (moteur ONNX Runtime WASM) et dist/renderer/voice-worker.js ;
+ * hub-asset://models/<chemin>  → <données>/models/whisper/… (modèles téléchargés par le hub).
+ * Liste blanche stricte d'extensions, aucun chemin hors de ces deux dossiers.
+ */
+const ASSET_TYPES: Record<string, string> = {
+  '.wasm': 'application/wasm',
+  '.mjs': 'text/javascript',
+  '.js': 'text/javascript',
+  '.json': 'application/json',
+  '.onnx': 'application/octet-stream',
+  '.txt': 'text/plain',
+};
+
+function registerHubAssetProtocol(): void {
+  const rendererDir = resolve(join(__dirname, 'renderer'));
+  protocol.handle('hub-asset', async (req) => {
+    const cors = { 'Access-Control-Allow-Origin': '*' };
+    try {
+      const url = new URL(req.url);
+      const rel = decodeURIComponent(url.pathname).replace(/^\/+/, '');
+      let abs: string;
+      let allowed: boolean;
+      if (url.hostname === 'app') {
+        abs = resolve(rendererDir, rel);
+        allowed = abs.startsWith(join(rendererDir, 'ort') + sep) || abs === join(rendererDir, 'voice-worker.js');
+      } else if (url.hostname === 'models') {
+        const root = resolve(hub.voice.whisperDir);
+        abs = resolve(root, rel.replace(/^whisper\//, ''));
+        allowed = abs.startsWith(root + sep);
+      } else {
+        return new Response('Introuvable', { status: 404, headers: cors });
+      }
+      const type = ASSET_TYPES[extname(abs).toLowerCase()];
+      if (!type || !allowed) return new Response('Accès refusé', { status: 403, headers: cors });
+      if (url.hostname === 'models') {
+        // Modèles (jusqu'à plusieurs centaines de Mo) : lus en flux.
+        const size = statSync(abs).size;
+        return new Response(Readable.toWeb(createReadStream(abs)) as any, { headers: { ...cors, 'Content-Type': type, 'Content-Length': String(size) } });
+      }
+      // Fichiers de l'appli (éventuellement dans app.asar : lus via fs, qui sait lire l'archive).
+      return new Response(await readFile(abs), { headers: { ...cors, 'Content-Type': type, 'Cache-Control': 'no-cache' } });
+    } catch {
+      return new Response('Introuvable', { status: 404, headers: cors });
+    }
+  });
+}
+
+/**
+ * Micro (dictée vocale) : autorisé UNIQUEMENT pour la fenêtre principale du hub et UNIQUEMENT en audio (jamais la caméra).
+ * Les panneaux ChatGPT / Gemini ont leurs propres sessions et leur propre politique (web-panels.ts), inchangées.
+ * Les autres permissions de la fenêtre principale gardent le comportement par défaut (ex. presse-papiers des boutons Copier).
+ */
+function registerMainWindowPermissions(): void {
+  const ses = session.defaultSession;
+  ses.setPermissionRequestHandler((wc, permission, callback, details) => {
+    if (permission === 'media') {
+      const types = (details as { mediaTypes?: string[] }).mediaTypes ?? [];
+      callback(!!win && wc === win.webContents && types.length > 0 && types.every((t) => t === 'audio'));
+      return;
+    }
+    callback(true);
+  });
+  ses.setPermissionCheckHandler((wc, permission, _origin, details) => {
+    if (permission === 'media') return !!win && wc === win.webContents && (details as { mediaType?: string }).mediaType !== 'video';
+    return true;
+  });
+}
+
 /** Ouvre le vault (ou une note) dans Obsidian s'il est installé, sinon le dossier dans l'Explorateur. */
 async function openInObsidian(path?: string, baseId?: string): Promise<void> {
   const info = hub.knowledgeInfo(baseId);
@@ -167,6 +271,8 @@ function start(): void {
   const toolsDir = !app.isPackaged && !existsSync(rootTools) && existsSync(projectTools) ? projectTools : rootTools;
   hub = new Hub(dataDir, smoke ? dataDir : rootDir, { toolsDir });
   registerHubFileProtocol();
+  registerHubAssetProtocol();
+  registerMainWindowPermissions();
 
   hub.onEvent((ev) => {
     if (win && !win.isDestroyed()) win.webContents.send('hub:event', ev);

@@ -123,6 +123,38 @@ export interface ClaudeSessionMessage {
   at: number;
 }
 
+// ---------- Dictée vocale (Whisper local) ----------
+
+export type VoiceModelId = 'base' | 'small';
+/** webgpu-f16 / webgpu-f32 : carte graphique (WebGPU) ; wasm : processeur seul. */
+export type VoiceVariant = 'webgpu-f16' | 'webgpu-f32' | 'wasm';
+export type VoiceLanguage = 'fr' | 'en' | 'auto';
+
+/** Modèles Whisper (dépôts officiels onnx-community sur Hugging Face, versions ONNX). */
+export const VOICE_MODELS: Record<VoiceModelId, { repo: string; label: string }> = {
+  base: { repo: 'onnx-community/whisper-base', label: 'Rapide (Whisper base)' },
+  small: { repo: 'onnx-community/whisper-small', label: 'Précis (Whisper small)' },
+};
+
+/**
+ * Variantes (fichiers ONNX + réglages d'exécution) :
+ * - webgpu-f16 : carte graphique avec shader-f16 (RTX…) → encodeur fp16 + décodeur q4 ;
+ * - webgpu-f32 : carte graphique sans fp16 → encodeur fp32 + décodeur q4 ;
+ * - wasm       : processeur seul (PC modeste) → encodeur et décodeur quantifiés 8 bits.
+ */
+export const VOICE_VARIANTS: Record<VoiceVariant, { encoder: string; decoder: string; dtype: Record<string, string>; device: 'webgpu' | 'wasm' }> = {
+  'webgpu-f16': { encoder: 'onnx/encoder_model_fp16.onnx', decoder: 'onnx/decoder_model_merged_q4.onnx', dtype: { encoder_model: 'fp16', decoder_model_merged: 'q4' }, device: 'webgpu' },
+  'webgpu-f32': { encoder: 'onnx/encoder_model.onnx', decoder: 'onnx/decoder_model_merged_q4.onnx', dtype: { encoder_model: 'fp32', decoder_model_merged: 'q4' }, device: 'webgpu' },
+  wasm: { encoder: 'onnx/encoder_model_quantized.onnx', decoder: 'onnx/decoder_model_merged_quantized.onnx', dtype: { encoder_model: 'q8', decoder_model_merged: 'q8' }, device: 'wasm' },
+};
+
+export interface VoiceStatus {
+  models: { id: VoiceModelId; label: string; repo: string; installedVariants: VoiceVariant[]; diskBytes: number }[];
+  downloading: boolean;
+  progress?: { step: string; receivedBytes: number; totalBytes: number };
+  error?: string;
+}
+
 /** Accès supplémentaires donnés à Claude, valables même en mode « Prudent ». */
 export interface ClaudeAccess {
   /** Serveurs MCP vus par Claude (relevés au démarrage de ses sessions). */
@@ -276,6 +308,9 @@ export interface HubSettings {
   claudeAllowedMcp: string[];
   /** Dossiers que Claude peut lire en plus de son dossier de travail. */
   claudeExtraDirs: string[];
+  /** Dictée vocale : modèle ('auto' = selon la machine) et langue. */
+  voiceModel?: VoiceModelId | 'auto';
+  voiceLanguage?: VoiceLanguage;
   /**
    * Base de connaissances (dossier de notes .md = vault Obsidian), propre au hub.
    * Chemin relatif = relatif au dossier de l'appli (portable). Idem pour workspaceDir.
@@ -551,6 +586,7 @@ export type HubEvent =
   | { type: 'imageEngine'; status: ImageEngineStatus }
   | { type: 'usage'; usage: UsageStats }
   | { type: 'limits'; limits: LimitsState }
+  | { type: 'voice'; status: VoiceStatus }
   | { type: 'update'; state: UpdateState }
   | { type: 'setup'; progress: SetupProgress }
   /** Une session Claude Code est apparue ou a changé (surveillance de ~/.claude/projects). */
@@ -676,6 +712,13 @@ export interface HubApi {
   getClaudeAccess(): Promise<ClaudeAccess>;
   /** Ouvre une fenêtre de terminal qui lance « claude auth login » (connexion au compte Claude dans le navigateur). */
   claudeLogin(): Promise<void>;
+  // Dictée vocale (modèles Whisper locaux)
+  voiceStatus(): Promise<VoiceStatus>;
+  /** Octets restant à télécharger pour une variante (0 si déjà installée). */
+  voicePlannedBytes(model: VoiceModelId, variant: VoiceVariant): Promise<number>;
+  downloadVoiceModel(model: VoiceModelId, variant: VoiceVariant): Promise<VoiceStatus>;
+  cancelVoiceDownload(): Promise<void>;
+  deleteVoiceModel(model: VoiceModelId): Promise<VoiceStatus>;
   saveClaudeAccess(allowed: string[], extraDirs: string[]): Promise<ClaudeAccess>;
   /** Conso Claude Code de tout ce PC depuis le début (lit ~/.claude/projects ; refresh = relever les nouveautés). */
   claudeLogUsage(refresh?: boolean): Promise<ClaudeLogUsage>;
@@ -792,6 +835,11 @@ export const HUB_METHODS = [
   'refreshLimits',
   'getClaudeAccess',
   'claudeLogin',
+  'voiceStatus',
+  'voicePlannedBytes',
+  'downloadVoiceModel',
+  'cancelVoiceDownload',
+  'deleteVoiceModel',
   'saveClaudeAccess',
   'claudeLogUsage',
   'listClaudeSessions',
