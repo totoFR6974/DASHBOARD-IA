@@ -13,6 +13,11 @@ await Promise.all([
   build({ ...common, entryPoints: ['src/renderer/app.ts'], outfile: 'dist/renderer/app.js', platform: 'browser', format: 'iife' }),
   // Dictée vocale : Whisper (Transformers.js, Apache 2.0) dans un worker à part, chargé à la demande.
   build({ ...common, sourcemap: false, minify: true, entryPoints: ['src/renderer/voice-worker.ts'], outfile: 'dist/renderer/voice-worker.js', platform: 'browser', format: 'iife', logLevel: 'error' }),
+  // Détourage d'images : BiRefNet (MIT) via Transformers.js, même moteur ONNX que la dictée, worker chargé à la demande.
+  build({ ...common, sourcemap: false, minify: true, entryPoints: ['src/renderer/cutout-worker.ts'], outfile: 'dist/renderer/cutout-worker.js', platform: 'browser', format: 'iife', logLevel: 'error' }),
+  // Pièces jointes PDF : pdf.js (Apache 2.0) embarqué dans un bundle à part, exécuté dans un thread à la demande
+  // (texte des PDF pour les IA sans outils, ex. Ollama). Rien n'est chargé depuis node_modules à l'exécution.
+  build({ ...common, sourcemap: false, minify: true, entryPoints: ['src/main/pdf-text.ts'], outfile: 'dist/pdf-text.js', platform: 'node', format: 'cjs', logLevel: 'error' }),
 ]);
 
 // Moteur ONNX Runtime Web (MIT) pour la dictée : version « asyncify » (WebGPU + WASM), servie par hub-asset://app/ort/.
@@ -34,6 +39,7 @@ mkdirSync('dist/renderer', { recursive: true });
 cpSync('src/renderer/index.html', 'dist/renderer/index.html');
 cpSync('src/renderer/styles.css', 'dist/renderer/styles.css');
 cpSync('src/renderer/theme.css', 'dist/renderer/theme.css');
+cpSync('src/renderer/image-viewer.css', 'dist/renderer/image-viewer.css');
 // Police Inter (SIL OFL 1.1) embarquée : rien n'est chargé depuis internet.
 mkdirSync('dist/renderer/fonts', { recursive: true });
 for (const f of ['inter-latin-wght-normal.woff2', 'inter-latin-ext-wght-normal.woff2']) {

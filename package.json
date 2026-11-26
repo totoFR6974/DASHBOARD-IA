@@ -1,7 +1,7 @@
 {
   "name": "hub-ia",
   "productName": "Hub IA",
-  "version": "0.1.0-alpha.8",
+  "version": "0.1.0-alpha.9",
   "private": true,
   "description": "Hub local pour piloter plusieurs IA (Claude Code, Ollama...) depuis un seul endroit",
   "author": "Hub IA",
@@ -17,6 +17,9 @@
     "dist": "node build.mjs && electron-builder --win nsis portable --publish never",
     "dist:portable": "node build.mjs && electron-builder --win portable --publish never",
     "dist:setup": "node build.mjs && electron-builder --win nsis --publish never",
+    "dist:mac": "node build.mjs && electron-builder --mac dmg zip --arm64 --publish never",
+    "icon:mac": "electron scripts/make-icns.mjs",
+    "test:platform": "esbuild scripts/test-platform.ts --bundle --platform=node --format=cjs --outfile=dist/test-platform.js --external:7zip-bin --log-level=warning && node dist/test-platform.js",
     "release:assets": "node scripts/release-assets.mjs"
   },
   "build": {
@@ -30,6 +33,7 @@
     "files": [
       "dist/main.js",
       "dist/preload.js",
+      "dist/pdf-text.js",
       "dist/icon.png",
       "dist/renderer/**",
       "!dist/**/*.map",
@@ -79,10 +83,41 @@
       "deleteAppDataOnUninstall": false,
       "installerIcon": "build/icon.ico",
       "uninstallerIcon": "build/icon.ico",
-      "artifactName": "Hub-IA-Setup-${version}.${ext}"
+      "artifactName": "Hub-IA-Windows-Setup-${version}.${ext}"
     },
     "portable": {
-      "artifactName": "Hub-IA-${version}-portable.${ext}"
+      "artifactName": "Hub-IA-Windows-Portable-${version}.${ext}"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "build/icon.icns",
+      "category": "public.app-category.productivity",
+      "artifactName": "Hub-IA-Mac-AppleSilicon-${version}.${ext}",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "notarize": false,
+      "darkModeSupport": true,
+      "minimumSystemVersion": "12.0",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Hub IA utilise le micro uniquement pour la dictée vocale, reconnue sur ce Mac (rien n'est envoyé sur internet)."
+      }
+    },
+    "dmg": {
+      "title": "Hub IA ${version}"
     },
     "publish": {
       "provider": "github",
@@ -99,6 +134,7 @@
     "electron": "^45.5.0",
     "electron-builder": "^26.18.0",
     "esbuild": "^0.28.2",
+    "pdfjs-dist": "6.5.438",
     "typescript": "^7.0.2"
   },
   "dependencies": {

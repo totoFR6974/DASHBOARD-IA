@@ -77,9 +77,12 @@ npm run dist
 
 Produit dans `release/` :
 
-- `Hub-IA-Setup-<version>.exe` (+ `.blockmap` et `latest.yml`, utilisés par la mise à jour automatique) : installateur
+- `Hub-IA-Windows-Setup-<version>.exe` (+ `.blockmap` et `latest.yml`, utilisés par la mise à jour automatique) : installateur
   (par utilisateur, sans droits administrateur, raccourcis bureau + menu Démarrer) ;
-- `Hub-IA-<version>-portable.exe` : version sans installation.
+- `Hub-IA-Windows-Portable-<version>.exe` : version sans installation.
+
+Le préfixe de plateforme (`Windows-` / `Mac-`) groupe les fichiers de chaque système dans la liste des releases GitHub.
+Le `.dmg` Mac (`Hub-IA-Mac-AppleSilicon-<version>.dmg`) est construit par GitHub Actions et joint à la même release.
 
 Envoie l'un ou l'autre avec **[INSTALLATION.md](INSTALLATION.md)** (guide pas à pas pour la personne qui reçoit l'appli).
 `npm run dist:setup` ou `npm run dist:portable` ne produit qu'un des deux. `npm run icon` régénère l'icône (`build/`).
@@ -100,6 +103,36 @@ affiche un avertissement au premier lancement (« Informations complémentaires 
 Le chiffrement des cookies et le verrouillage de l'archive (`onlyLoadAppFromAsar`, contrôle d'intégrité)
 sont activés dans l'appli packagée.
 
+## Version Mac (Apple Silicon)
+
+Un `.dmg` **arm64 uniquement** (M1, M2, M3, M4… ; pas de version Intel ni universelle), plus un `.zip` de la même appli :
+`Hub-IA-Mac-AppleSilicon-<version>.dmg`. Il ne se fabrique que sur macOS : on le construit avec **GitHub Actions**
+(`.github/workflows/build-mac.yml`, runner `macos-14`, gratuit pour un dépôt public).
+
+- **Lancer le build** : pousser un tag `v<version>` (le workflow attend que la release du tag existe, jusqu'à 20 min,
+  puis y joint le `.dmg` et le `.zip`), ou onglet **Actions › Build Mac (Apple Silicon) › Run workflow** (champ « tag »
+  pour compléter une release existante, vide pour seulement récupérer le `.dmg` dans les artefacts du run).
+  Le workflow vérifie que `package.json` est à la version du tag, n'envoie que les fichiers `Hub-IA-Mac-*` (jamais
+  `latest-mac.yml` ni `.blockmap`) et ne touche à aucun fichier Windows. Seul le `GITHUB_TOKEN` fourni par GitHub est utilisé.
+- **Sur un Mac** : `npm run dist:mac` produit la même chose dans `release/`.
+- **Signature** : « ad hoc » (obligatoire pour lancer du code arm64), sans compte Apple Developer ni notarisation
+  (contrainte zéro coût) → Gatekeeper avertit au premier lancement (voir [INSTALLATION.md](INSTALLATION.md#mac-apple-silicon)).
+  electron-builder applique les fuses Electron (chiffrement des cookies via le Trousseau, archive verrouillée)
+  **avant** de signer ; le workflow vérifie signature et fuses après coup.
+- **Icône** : `build/icon.icns`, généré depuis `build/icon.png` par `npm run icon:mac` (fonctionne aussi sous Windows).
+- **Données** : `~/Library/Application Support/Hub IA` (pas de mode portable sur Mac).
+- **Code propre à chaque système** : `src/main/platform.ts` (chemins des outils, PATH du Finder, arrêt des groupes de
+  process, ouverture de liens, puce Apple), `src/main/window-chrome.ts` (barre de titre, menu macOS),
+  `src/renderer/platform.ts` (« ⌘ » au lieu de « Ctrl »). `npm run test:platform` teste ces fonctions pour les deux
+  systèmes, depuis n'importe lequel.
+
+Différences avec Windows : la barre de titre garde les « feux tricolores » à gauche et un menu d'application standard
+(⌘C ⌘V ⌘Q ⌘W…) ; le hub complète le PATH (une appli ouverte depuis le Finder n'a pas celui du Terminal) pour trouver
+`claude`, `ollama`, `node`… ; l'assistant installe **Ollama.app** (ollama.com, signature vérifiée, ou Homebrew en repli)
+et conseille un modèle selon la **mémoire unifiée** (8 Go → qwen3:4b · 16 Go → qwen3:8b · 24 Go et plus → qwen3:14b) ;
+les **images locales** passent par **ComfyUI Desktop** installé à part (aucune installation automatique de ComfyUI ;
+le hub télécharge les modèles dans son dossier et l'ouvre au besoin, ou utilise un serveur ComfyUI local déjà lancé).
+
 ## Mises à jour automatiques
 
 L'appli lit les releases **publiques** de ce dépôt GitHub (aucun jeton) ≈ 10 s après le lancement puis toutes les 10 min
@@ -111,6 +144,9 @@ L'appli lit les releases **publiques** de ce dépôt GitHub (aucun jeton) ≈ 10
   par le sha512 de `latest.yml`).
 - **Version portable** : bannière « Nouvelle version disponible » avec un lien vers la release (elle ne peut pas se
   remplacer elle-même).
+- **Mac** : comme la version portable (la mise à jour automatique de macOS, Squirrel.Mac, exige une appli signée
+  Developer ID). Seules les releases qui contiennent un `.dmg` Apple Silicon sont proposées, et « Télécharger » ouvre
+  directement ce `.dmg`.
 - **Développement** : pas de vérification automatique ; « Vérifier maintenant » interroge l'API GitHub
   (`HUB_FAKE_VERSION=0.1.0-alpha.1` simule une version plus ancienne pour tester).
 
@@ -130,6 +166,7 @@ Les pré-versions (alpha/bêta) sont proposées tant que la version installée e
 npm run selftest   # teste Claude et Ollama sans interface (messages, historique, reprise de session, annulation)
 npm run smoke      # pilote l'interface et enregistre des captures dans data/smoke/
 npm run typecheck
+npm run test:platform   # fonctions propres à Windows / macOS (chemins, PATH, mise à jour .dmg/.exe, ComfyUI Desktop, icône)
 ```
 
 ## Structure

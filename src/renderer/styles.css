@@ -370,9 +370,19 @@ mark { background: color-mix(in srgb, var(--warn) 35%, transparent); color: var(
 .kn-preview .wikilink { color: var(--accent); text-decoration: none; border-bottom: 1px dashed var(--accent); }
 .kn-main .empty { padding: 30px; }
 
-/* Bouton 📚 du composer */
+/* Bouton « base de connaissances » (icône livres) du composer */
 .kn-toggle { font-size: 15px; padding: 6px 10px; opacity: .6; }
 .kn-toggle.active { opacity: 1; background: color-mix(in srgb, var(--accent) 22%, var(--bg-3)); border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+
+/* Icônes « sticker » (icons.ts) : couleurs réglables, styles de taille posés en ligne par icon(). */
+:root { --icon-fill: #4f5257; --icon-fill-robot: #5e6166; --icon-stroke: #fff; }
+.ico { pointer-events: none; }
+/* Sélecteurs à icône : l'icône est posée sur le bord gauche du <select> (une <option> ne peut pas contenir de SVG). */
+.sel-ico { position: relative; display: inline-flex; align-items: center; min-width: 0; }
+.sel-ico > .ico { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); z-index: 1; }
+.sel-ico.sel-ico > select { padding-left: 29px; }
+/* Micro de la dictée : boîte ajustée à l'icône, pour qu'elle tourne sur son centre pendant la transcription. */
+button.mic-btn .mic-ico, button.mic-btn.busy .mic-ico { display: inline-flex; }
 
 /* Vignettes d'images */
 .thumbs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
@@ -380,6 +390,17 @@ mark { background: color-mix(in srgb, var(--warn) 35%, transparent); color: var(
 .thumb:hover { transform: scale(1.03); border-color: var(--accent); }
 .thumbs.small { margin-top: 6px; gap: 5px; }
 .thumbs.small .thumb { width: 48px; height: 48px; border-radius: 6px; }
+/* Détourage : images transparentes sur damier (on voit la transparence), bouton « Détourer » sous chaque image. */
+.thumb-wrap { display: inline-flex; flex-direction: column; align-items: stretch; gap: 4px; }
+.thumb.transparent { object-fit: contain; background-color: #f2f2f2; background-image: linear-gradient(45deg, #cfcfcf 25%, transparent 25%), linear-gradient(-45deg, #cfcfcf 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #cfcfcf 75%), linear-gradient(-45deg, transparent 75%, #cfcfcf 75%); background-size: 16px 16px; background-position: 0 0, 0 8px, 8px -8px, -8px 0; }
+.thumbs.small .thumb.transparent { background-size: 8px 8px; background-position: 0 0, 0 4px, 4px -4px, -4px 0; }
+.thumb-cut, .thumb-badge { font-size: 11.5px; line-height: 1.2; padding: 4px 6px; border-radius: 7px; border: 1px solid var(--line); background: var(--bg-3, var(--bg)); color: var(--muted); text-align: center; }
+.thumb-cut { cursor: pointer; }
+.thumb-cut:hover:not(:disabled) { color: var(--text, inherit); border-color: var(--accent); }
+.thumb-cut:disabled { opacity: .7; cursor: progress; }
+.thumb-badge { border-style: dashed; }
+.bg-toggle { white-space: nowrap; }
+.cutout-role { display: flex; align-items: center; gap: 6px; font-size: 13px; margin: 6px 0; }
 
 /* Workflows : modèles */
 .wf-template-row { display: flex; align-items: center; gap: 8px; color: var(--muted); }
@@ -399,6 +420,58 @@ mark { background: color-mix(in srgb, var(--warn) 35%, transparent); color: var(
 .progress-bar { height: 100%; background: linear-gradient(90deg, var(--accent-2), var(--accent)); transition: width .3s ease; }
 .progress-bar.indeterminate { width: 35%; animation: indet 1.2s ease-in-out infinite; }
 @keyframes indet { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
+
+/* ---------- Images jointes aux messages (📎, glisser-déposer, Ctrl+V) ---------- */
+.composer { flex-wrap: wrap; }
+.attach-strip { flex-basis: 100%; order: -1; display: flex; flex-direction: column; gap: 6px; }
+.attach-thumbs { display: flex; flex-wrap: wrap; gap: 8px; }
+.attach-item { position: relative; width: 72px; height: 72px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); overflow: hidden; }
+.attach-item img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.attach-item.loading { display: flex; align-items: center; justify-content: center; color: var(--muted, #8a8f98); animation: attach-pulse 1s ease-in-out infinite alternate; }
+@keyframes attach-pulse { from { opacity: .45; } to { opacity: 1; } }
+.attach-remove { position: absolute; top: 3px; right: 3px; width: 20px; height: 20px; border-radius: 50%; border: none; background: rgba(0, 0, 0, .65); color: #fff; font-size: 14px; line-height: 20px; padding: 0; cursor: pointer; }
+.attach-remove:hover { background: var(--err); }
+.attach-note { font-size: 12px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--muted, #8a8f98); }
+.attach-note.ok { color: var(--ok); }
+.attach-note.warn { color: var(--warn); }
+.attach-note.error { color: var(--err); }
+.attach-btn.active { border-color: var(--accent); color: var(--accent); }
+.chat.drag-over { outline: 2px dashed var(--accent); outline-offset: -6px; }
+.msg.user.with-images .thumbs { margin-top: 6px; }
+.msg.user.with-images .thumb { width: auto; height: auto; max-width: 260px; max-height: 180px; object-fit: contain; background: #fff; }
+/* Fichiers joints de tout type : puces (avant l'envoi et dans les bulles) + zone de dépôt */
+.chat.drag-over { position: relative; }
+.chat.drag-over::after {
+  content: '📎 Dépose tes fichiers ici'; position: absolute; inset: 10px; z-index: 50; pointer-events: none;
+  display: flex; align-items: center; justify-content: center; border-radius: 16px;
+  border: 2px dashed var(--accent); background: rgba(15, 17, 21, .92); color: var(--accent); font-size: 18px; font-weight: 600;
+}
+.attach-file { display: inline-flex; flex-direction: column; gap: 3px; max-width: 260px; }
+.file-chip {
+  position: relative; display: inline-flex; align-items: center; gap: 8px; min-height: 44px; max-width: 260px; padding: 6px 30px 6px 10px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: inherit; font: inherit; text-align: left;
+}
+.file-chip .fc-icon { font-size: 20px; line-height: 1; flex-shrink: 0; }
+.file-chip .fc-text { display: flex; flex-direction: column; min-width: 0; }
+.file-chip .fc-name { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.file-chip .fc-size { font-size: 11px; color: var(--muted, #8a8f98); }
+.file-chip .attach-remove { top: 50%; transform: translateY(-50%); right: 6px; }
+.attach-file .attach-note { font-size: 11px; line-height: 1.3; }
+.bubble-files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; white-space: normal; }
+.bubble-file { display: inline-flex; align-items: stretch; border-radius: 10px; overflow: hidden; border: 1px solid rgba(255, 255, 255, .35); background: rgba(0, 0, 0, .22); max-width: 280px; }
+.bubble-file .file-chip { border: none; border-radius: 0; background: transparent; padding-right: 10px; min-height: 40px; cursor: pointer; color: #fff; }
+.bubble-file .file-chip:hover { background: rgba(255, 255, 255, .12); }
+.bubble-file .file-chip.risky { cursor: default; }
+.bubble-file .file-chip.risky:hover { background: transparent; }
+.bubble-file .file-chip .fc-size { color: rgba(255, 255, 255, .78); }
+.bubble-file .fc-reveal { border: none; border-left: 1px solid rgba(255, 255, 255, .25); background: transparent; color: #fff; padding: 0 10px; cursor: pointer; font-size: 15px; }
+.bubble-file .fc-reveal:hover { background: rgba(255, 255, 255, .12); }
+/* Réglages › Modèle vision */
+.vision-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; margin-top: 6px; }
+.vision-row.recommended { border-color: var(--accent); }
+.vision-info { min-width: 0; }
+.vision-rec { margin-left: 6px; color: var(--accent); border-color: var(--accent); }
+.vision-ok { color: var(--ok); font-size: 13px; white-space: nowrap; }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 10px; border: 2px solid var(--bg); }

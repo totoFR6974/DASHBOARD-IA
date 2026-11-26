@@ -15,6 +15,8 @@ export interface ProviderInfo {
   keepsOwnHistory: boolean;
   /** Le fournisseur peut agir sur des fichiers (dossier de travail, permissions). */
   usesWorkspace: boolean;
+  /** Modèles capables de lire des images (Ollama : capacité « vision » de /api/show). */
+  visionModels?: string[];
 }
 
 /** 'waiting' = étape manuelle qui attend l'utilisateur (ChatGPT / Gemini web). */
@@ -155,6 +157,49 @@ export interface VoiceStatus {
   error?: string;
 }
 
+// ---------- Détourage d'images (fond transparent, BiRefNet local) ----------
+
+/** fp16 : carte graphique avec shader-f16 (moitié moins lourd) ; fp32 : partout (carte graphique sans fp16 ou processeur). */
+export type CutoutVariant = 'fp16' | 'fp32';
+
+/**
+ * Modèle de détourage : BiRefNet lite (ZhengPeng7, licence MIT), dans la réécriture « WebGPU » du graphe ONNX
+ * d'onnx-community (wonfy/BiRefNet_lite-ONNX-webgpu, MIT, poids inchangés) : l'export onnx-community d'origine
+ * dépasse les 16 « storage buffers » WebGPU d'une carte (Split à 32 sorties, Concat à 1024 entrées) et manque de
+ * mémoire en WASM (std::bad_alloc). Révision figée + empreintes SHA-256 vérifiées au téléchargement.
+ * RMBG-1.4 / RMBG-2.0 (BRIA, non commerciaux) sont exclus.
+ */
+export const CUTOUT_MODEL = {
+  repo: 'wonfy/BiRefNet_lite-ONNX-webgpu',
+  /** Commit Hugging Face figé (aucune mise à jour silencieuse du modèle). */
+  revision: 'c40eaa22fb1af9edcf75c7b79d25ed8a8e901140',
+  label: 'BiRefNet lite',
+  license: 'MIT',
+  /** Fichiers communs (configuration lue par Transformers.js). */
+  common: ['config.json', 'preprocessor_config.json'],
+  /** fp16 : poids fp16, entrée/sortie float32 (123 Mo) ; fp32 : 245 Mo. */
+  variants: { fp16: 'onnx/model_fp16.onnx', fp32: 'onnx/model.onnx' } as Record<CutoutVariant, string>,
+  /** Empreintes SHA-256 des fichiers ONNX (métadonnées LFS du commit figé). */
+  sha256: {
+    'onnx/model_fp16.onnx': '2290313b335cfdb867eefac47b46aa2b225793fc3deb4da8dbc86e71e9cff2d7',
+    'onnx/model.onnx': 'b69359ea66471e57f59099d2e84146091a0534d0d56aa2e33d6bc1ef5e92ccca',
+  } as Record<string, string>,
+};
+
+/** Suffixe des images détourées (enregistrées à côté de l'original). */
+export const CUTOUT_SUFFIX = '-detoure.png';
+
+export interface CutoutStatus {
+  repo: string;
+  label: string;
+  license: string;
+  installedVariants: CutoutVariant[];
+  diskBytes: number;
+  downloading: boolean;
+  progress?: { step: string; receivedBytes: number; totalBytes: number };
+  error?: string;
+}
+
 /** Accès supplémentaires donnés à Claude, valables même en mode « Prudent ». */
 export interface ClaudeAccess {
   /** Serveurs MCP vus par Claude (relevés au démarrage de ses sessions). */
@@ -238,9 +283,25 @@ export interface ChatMessage {
   model?: string;
   /** Tour de parole : le message utilisateur et toutes les réponses qu'il a déclenchées partagent ce turnId. */
   turnId?: string;
-  /** Images de la réponse (chemins absolus). */
+  /** Images (chemins absolus) : produites par la réponse, ou jointes par l'utilisateur à son message. */
   images?: string[];
+  /** Autres fichiers joints par l'utilisateur (texte, code, PDF, DOCX, binaires) : chemins absolus des copies du hub. */
+  files?: string[];
   at: number;
+}
+
+/** Type d'une pièce jointe : ce qu'une IA sans outils (Ollama) peut en lire. */
+export type AttachmentKind = 'image' | 'text' | 'pdf' | 'docx' | 'binary';
+
+/** Pièce jointe enregistrée par le hub (puces avant l'envoi et dans les bulles). */
+export interface AttachmentInfo {
+  path: string;
+  /** Nom affiché (nom assaini, sans le préfixe ajouté par le hub). */
+  name: string;
+  size: number;
+  kind: AttachmentKind;
+  /** Fichier qui s'exécuterait à l'ouverture (.exe, .bat, .js, .lnk…) : seulement « Afficher dans le dossier ». */
+  risky: boolean;
 }
 
 /** Une IA cochée dans une discussion, avec son modèle. */
@@ -269,6 +330,8 @@ export interface Conversation {
   messages: ChatMessage[];
   /** Les IA de la discussion peuvent consulter la base de connaissances. */
   useKnowledge?: boolean;
+  /** Images (ComfyUI) de cette discussion : détourées automatiquement (fond transparent, original conservé). */
+  transparentBg?: boolean;
   /** Base de connaissances liée (défaut : celle du dossier de travail ; 'hub' = base Hub). */
   knowledgeBaseId?: string;
   /** Note de la discussion dans sa base (chemin relatif), tenue à jour automatiquement. */
@@ -320,6 +383,10 @@ export interface HubSettings {
   knowledgeBaseMap: Record<string, string>;
   /** Une note par discussion, créée et tenue à jour dans la base liée. */
   conversationNotes: boolean;
+  /** Recherche par le sens : modèle d'embeddings Ollama (défaut : bge-m3, nomic-embed-text sur un petit PC). */
+  embedModel?: string;
+  /** Discussions 📚 avec une IA locale : passages trouvés par le sens plutôt que par mots-clés (défaut : non). */
+  semanticContext?: boolean;
   /** Vérifier les mises à jour au démarrage (défaut : oui). */
   autoUpdate?: boolean;
   /** Inclure les pré-versions alpha/bêta (défaut : oui si la version actuelle en est une). */
@@ -328,6 +395,8 @@ export interface HubSettings {
   imageModel?: string;
   /** ComfyUI portable déjà installé ailleurs, utilisé à la place de <données>/tools/ComfyUI (vide = dossier de l'appli). */
   comfyuiDir?: string;
+  /** Micro des panneaux web, par panneau ('chatgpt', 'gemini') ; absent = demander à la première utilisation. */
+  webMic?: Record<string, WebMicChoice>;
   /** L'assistant de premier démarrage a été terminé ou passé. */
   onboardingDone: boolean;
 }
@@ -342,8 +411,14 @@ export interface SetupStatus {
   gpu: { name: string; vramGb: number } | null;
   /** Modèle local conseillé selon la mémoire de la carte graphique (taille approximative). */
   recommendedModel: { name: string; approxGb: number; reason: string };
+  /** Modèle vision conseillé (lire les images) ; null si ce PC est trop juste pour la vision. */
+  recommendedVisionModel?: { name: string; approxGb: number; reason: string } | null;
   /** winget (gestionnaire de paquets Windows) disponible : installation automatique d'Ollama possible. */
   winget: boolean;
+  /** Système du hub ('win32', 'darwin'…) : adapte les textes et les boutons de l'assistant. */
+  platform?: string;
+  /** macOS : Homebrew présent (installation automatique d'Obsidian possible, repli pour Ollama). */
+  brew?: boolean;
   comfyInstalled: boolean;
   /** Obsidian (lecture/organisation des notes du hub). */
   obsidian?: { installed: boolean; version?: string; running: boolean };
@@ -404,6 +479,50 @@ export interface KnowledgeInfo {
   noteCount: number;
   /** Obsidian semble installé (le bouton « Ouvrir dans Obsidian » marchera). */
   obsidianInstalled: boolean;
+}
+
+// ---------- Recherche par le sens (embeddings Ollama) ----------
+
+export interface EmbedModelInfo {
+  name: string;
+  label: string;
+  license: string;
+  /** Taille du téléchargement (octets, d'après le registre Ollama). */
+  approxBytes: number;
+  dim: number;
+}
+
+export interface SemanticHit {
+  path: string;
+  title: string;
+  /** Titre de section du passage (« Partie › Sous-partie »). */
+  heading?: string;
+  excerpt: string;
+  /** Similarité cosinus (0 à 1). */
+  score: number;
+}
+
+export interface SemanticStatus {
+  baseId: string;
+  /** Modèle d'embeddings réglé. */
+  model: string;
+  models: EmbedModelInfo[];
+  /** Ollama répond. */
+  ollama: boolean;
+  modelInstalled: boolean;
+  /** Notes et morceaux indexés avec le modèle réglé. */
+  notes: number;
+  chunks: number;
+  indexedAt: number | null;
+  /** Modèle de l'index existant (s'il diffère du modèle réglé, il faut réindexer). */
+  indexedModel?: string;
+  /** Notes nouvelles, modifiées ou effacées depuis la dernière indexation. */
+  stale: number;
+  indexing: boolean;
+  progress?: { done: number; total: number };
+  error?: string;
+  /** Passages donnés aux IA locales dans les discussions 📚. */
+  semanticContext?: boolean;
 }
 
 /** Modèle de workflow réutilisable (enregistré dans le vault, dossier « Modèles »). */
@@ -476,6 +595,8 @@ export interface AgentRole {
   description: string;
   providerId: string;
   model?: string;
+  /** Agent d'images : chaque image générée est aussi détourée (PNG à fond transparent, original conservé). */
+  transparent?: boolean;
 }
 
 export type StepStatus = 'pending' | 'running' | 'waiting' | 'done' | 'error' | 'cancelled' | 'skipped';
@@ -569,7 +690,7 @@ export interface NewConversationInput {
   permission?: ClaudePermission;
 }
 
-export type ConversationPatch = Partial<Pick<Conversation, 'title' | 'agent' | 'participants' | 'cwd' | 'permission' | 'useKnowledge' | 'effort'>>;
+export type ConversationPatch = Partial<Pick<Conversation, 'title' | 'agent' | 'participants' | 'cwd' | 'permission' | 'useKnowledge' | 'effort' | 'transparentBg'>>;
 
 export type HubEvent =
   | { type: 'task'; task: Task }
@@ -582,11 +703,17 @@ export type HubEvent =
   | { type: 'workflowDeleted'; id: string }
   | { type: 'roles'; roles: AgentRole[]; plannerRoleId: string }
   | { type: 'knowledgeChanged' }
+  /** Recherche par le sens : progression / fin d'une indexation. */
+  | { type: 'semantic'; status: SemanticStatus }
   | { type: 'templates'; templates: WorkflowTemplate[] }
   | { type: 'imageEngine'; status: ImageEngineStatus }
   | { type: 'usage'; usage: UsageStats }
   | { type: 'limits'; limits: LimitsState }
   | { type: 'voice'; status: VoiceStatus }
+  /** Modèle de détourage : état du téléchargement. */
+  | { type: 'cutout'; status: CutoutStatus }
+  /** Le hub demande à l'interface de détourer une image (octets fournis) ; réponse par cutoutDone(id, …). */
+  | { type: 'cutoutRequest'; id: string; path: string; data: Uint8Array }
   | { type: 'update'; state: UpdateState }
   | { type: 'setup'; progress: SetupProgress }
   /** Une session Claude Code est apparue ou a changé (surveillance de ~/.claude/projects). */
@@ -598,17 +725,18 @@ export type HubEvent =
 
 /**
  * État des mises à jour. mode : installed = version installée (téléchargement + installation automatiques),
- * portable = notification + lien de téléchargement, dev = vérification manuelle seulement.
+ * portable = notification + lien de téléchargement, mac = comme portable (Squirrel.Mac exige une appli signée
+ * Developer ID : bannière + téléchargement du .dmg), dev = vérification manuelle seulement.
  */
 export interface UpdateState {
-  mode: 'installed' | 'portable' | 'dev';
+  mode: 'installed' | 'portable' | 'mac' | 'dev';
   status: 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'up-to-date' | 'error';
   currentVersion: string;
   /** Version trouvée sur GitHub (si plus récente). */
   version?: string;
   /** Notes de la release (Markdown). */
   notes?: string;
-  /** Page de la release sur GitHub. */
+  /** Page de la release sur GitHub (Mac : lien direct du .dmg arm64 de la release). */
   url?: string;
   /** Téléchargement en cours (version installée), 0–100. */
   percent?: number;
@@ -629,7 +757,21 @@ export interface HubApi {
   updateConversation(id: string, patch: ConversationPatch): Promise<Conversation>;
   deleteConversation(id: string): Promise<void>;
   /** Une tâche par IA participante (même turnId). */
-  sendMessage(conversationId: string, text: string): Promise<Task[]>;
+  /** images : chemins renvoyés par saveAttachment (pièces jointes de ce message : images ET autres fichiers). */
+  sendMessage(conversationId: string, text: string, images?: string[]): Promise<Task[]>;
+  /**
+   * Enregistre une pièce jointe (copie) dans <données>/attachments/<discussion> ; renvoie son chemin absolu.
+   * Image PNG / JPEG reconnue à ses octets (20 Mo max), sinon n'importe quel fichier (50 Mo max) sous un nom assaini.
+   */
+  saveAttachment(conversationId: string, data: Uint8Array, name?: string): Promise<string>;
+  /** Supprime une pièce jointe pas encore envoyée (retirée avant l'envoi). */
+  deleteAttachment(path: string): Promise<void>;
+  /** Nom, taille et type de pièces jointes du hub (les chemins hors du dossier des pièces jointes sont ignorés). */
+  attachmentInfo(paths: string[]): Promise<AttachmentInfo[]>;
+  /** Fichiers copiés dans l'Explorateur / le Finder (presse-papiers du système) → pièces jointes de la discussion. */
+  pasteClipboardFiles(conversationId: string): Promise<string[]>;
+  /** Ouvre une pièce jointe (application par défaut, refusé pour un exécutable) ou l'affiche dans son dossier. */
+  openAttachment(path: string, reveal?: boolean): Promise<void>;
   cancelTask(taskId: string): Promise<void>;
   clearFinishedTasks(): Promise<void>;
   getSettings(): Promise<HubSettings>;
@@ -666,6 +808,14 @@ export interface HubApi {
   /** Déplace la note dans la corbeille du vault (.corbeille), sans suppression définitive. */
   deleteNote(path: string, baseId?: string): Promise<void>;
   searchNotes(query: string, baseId?: string): Promise<KnowledgeSearchHit[]>;
+  /** Recherche par le sens : état de l'index d'une base. */
+  semanticStatus(baseId?: string): Promise<SemanticStatus>;
+  /** (Ré)indexe une base (incrémental ; full = tout recalculer). Progression : événements 'semantic'. */
+  semanticIndex(baseId?: string, full?: boolean): Promise<SemanticStatus>;
+  /** Meilleurs passages pour une question (index mis à jour au passage s'il existe). */
+  semanticSearch(query: string, baseId?: string, limit?: number): Promise<SemanticHit[]>;
+  /** Modèle d'embeddings et passages donnés aux IA locales. */
+  setSemanticOptions(opts: { model?: string; semanticContext?: boolean }): Promise<SemanticStatus>;
   /** Ouvre le vault (ou une note) dans Obsidian ; à défaut, ouvre le dossier dans l'Explorateur. */
   openInObsidian(path?: string, baseId?: string): Promise<void>;
   /** Bases de connaissances du hub (Hub + une par dossier de travail utilisé). */
@@ -719,6 +869,19 @@ export interface HubApi {
   downloadVoiceModel(model: VoiceModelId, variant: VoiceVariant): Promise<VoiceStatus>;
   cancelVoiceDownload(): Promise<void>;
   deleteVoiceModel(model: VoiceModelId): Promise<VoiceStatus>;
+  // Détourage (fond transparent, modèle BiRefNet local)
+  cutoutStatus(): Promise<CutoutStatus>;
+  /** Octets restant à télécharger pour une variante (0 si déjà installée). */
+  cutoutPlannedBytes(variant: CutoutVariant): Promise<number>;
+  downloadCutoutModel(variant: CutoutVariant): Promise<CutoutStatus>;
+  cancelCutoutDownload(): Promise<void>;
+  deleteCutoutModel(): Promise<CutoutStatus>;
+  /** Détoure une image affichée dans le hub : PNG enregistré à côté (…-detoure.png), ajouté aux tâches/messages qui la montrent. */
+  cutoutImage(path: string): Promise<string>;
+  /** Réponse de l'interface à un événement 'cutoutRequest' (PNG détouré, ou erreur). */
+  cutoutDone(id: string, png: Uint8Array | null, error?: string): Promise<void>;
+  /** Active / désactive le détourage automatique des images d'un agent d'images (ex. Illustrateur). */
+  setRoleTransparent(roleId: string, on: boolean): Promise<{ roles: AgentRole[]; plannerRoleId: string }>;
   saveClaudeAccess(allowed: string[], extraDirs: string[]): Promise<ClaudeAccess>;
   /** Conso Claude Code de tout ce PC depuis le début (lit ~/.claude/projects ; refresh = relever les nouveautés). */
   claudeLogUsage(refresh?: boolean): Promise<ClaudeLogUsage>;
@@ -770,13 +933,31 @@ export interface WebRect {
   height: number;
 }
 
-export type WebAction = 'reload' | 'back' | 'forward' | 'home' | 'external';
+/** 'logout' : efface toute la session du panneau (cookies, stockage du site, cache) puis rouvre la page de connexion. */
+export type WebAction = 'reload' | 'back' | 'forward' | 'home' | 'external' | 'logout';
+
+/** Micro d'un panneau web : demander à la première utilisation, autorisé, refusé. */
+export type WebMicChoice = 'ask' | 'allow' | 'deny';
+
+/** Accès au micro côté système (Windows : Confidentialité › Microphone ; macOS : Confidentialité). */
+export type WebMicSystemStatus = 'granted' | 'denied' | 'restricted' | 'not-determined' | 'unknown';
+
+export interface WebMicInfo {
+  panels: { id: string; name: string; origin: string; choice: WebMicChoice }[];
+  system: WebMicSystemStatus;
+  platform: string;
+}
 
 export interface WebPanelsApi {
   list(): Promise<WebPanelState[]>;
   layout(rects: WebRect[]): void;
   action(id: string, action: WebAction): Promise<void>;
   onState(listener: (state: WebPanelState) => void): () => void;
+  /** Micro des sites (dictée / mode voix) : choix par panneau + état du micro côté système. */
+  micInfo(): Promise<WebMicInfo>;
+  setMic(id: string, choice: WebMicChoice): Promise<WebMicInfo>;
+  /** Ouvre les réglages système du micro (Windows : ms-settings:privacy-microphone). */
+  openMicSystemSettings(): Promise<void>;
 }
 
 /** Méthodes autorisées à traverser l'IPC (liste blanche). */
@@ -788,6 +969,11 @@ export const HUB_METHODS = [
   'updateConversation',
   'deleteConversation',
   'sendMessage',
+  'saveAttachment',
+  'deleteAttachment',
+  'attachmentInfo',
+  'pasteClipboardFiles',
+  'openAttachment',
   'cancelTask',
   'clearFinishedTasks',
   'getSettings',
@@ -813,6 +999,10 @@ export const HUB_METHODS = [
   'writeNote',
   'deleteNote',
   'searchNotes',
+  'semanticStatus',
+  'semanticIndex',
+  'semanticSearch',
+  'setSemanticOptions',
   'openInObsidian',
   'listTemplates',
   'saveTemplate',
@@ -840,6 +1030,14 @@ export const HUB_METHODS = [
   'downloadVoiceModel',
   'cancelVoiceDownload',
   'deleteVoiceModel',
+  'cutoutStatus',
+  'cutoutPlannedBytes',
+  'downloadCutoutModel',
+  'cancelCutoutDownload',
+  'deleteCutoutModel',
+  'cutoutImage',
+  'cutoutDone',
+  'setRoleTransparent',
   'saveClaudeAccess',
   'claudeLogUsage',
   'listClaudeSessions',

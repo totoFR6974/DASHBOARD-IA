@@ -56,6 +56,8 @@ export interface GithubRelease {
   html_url?: string;
   body?: string | null;
   published_at?: string | null;
+  /** Fichiers joints à la release (installateurs Windows, .dmg Mac…). */
+  assets?: { name?: string; browser_download_url?: string; size?: number }[];
 }
 
 export interface PickedRelease {
@@ -64,13 +66,47 @@ export interface PickedRelease {
   url: string;
   notes: string;
   publishedAt?: string;
+  /** Lien direct du fichier à télécharger pour cette plateforme (si demandé et trouvé). */
+  downloadUrl?: string;
+}
+
+/**
+ * Type de fichier attendu pour une plateforme :
+ * - mac-arm64 : .dmg Apple Silicon (ex. Hub-IA-0.2.0-arm64.dmg) — jamais un .exe, ni un .blockmap, ni un dmg x64 ;
+ * - win-portable : Hub-IA-<version>-portable.exe ;
+ * - win-setup : Hub-IA-Setup-<version>.exe.
+ */
+export type DownloadKind = 'mac-arm64' | 'win-portable' | 'win-setup';
+
+/** Le nom de fichier correspond-il au type demandé ? (exporté pour les tests) */
+export function assetMatches(name: string, kind: DownloadKind): boolean {
+  const n = String(name ?? '').toLowerCase();
+  switch (kind) {
+    case 'mac-arm64':
+      // .dmg seulement (pas .dmg.blockmap) ; arm64 ou sans architecture (mais jamais x64 / intel).
+      return n.endsWith('.dmg') && !/(x64|x86_64|intel)/.test(n);
+    case 'win-portable':
+      return n.endsWith('.exe') && /portable/.test(n);
+    case 'win-setup':
+      return n.endsWith('.exe') && /setup/.test(n) && !/portable/.test(n);
+  }
+}
+
+/** Fichier de la release adapté à la plateforme (arm64 explicite préféré), sinon null. */
+export function pickDownloadAsset(assets: GithubRelease['assets'], kind: DownloadKind): { name: string; url: string; size?: number } | null {
+  const ok = (Array.isArray(assets) ? assets : []).filter((a) => a?.name && a.browser_download_url && assetMatches(a.name, kind));
+  if (!ok.length) return null;
+  const best = kind === 'mac-arm64' ? (ok.find((a) => /arm64|aarch64/i.test(a.name!)) ?? ok[0]) : ok[0];
+  return { name: best.name!, url: best.browser_download_url!, size: best.size };
 }
 
 /**
  * Release la plus récente, strictement plus récente que `current`.
  * Brouillons et tags illisibles ignorés ; pré-versions seulement si `includePrerelease`.
+ * `download` (Mac) : ne retient que les releases qui contiennent le fichier de cette plateforme, et renvoie son
+ * lien direct (sinon une release publiée sous Windows, sans .dmg pour l'instant, serait proposée sur Mac).
  */
-export function pickLatestRelease(releases: GithubRelease[], current: string, includePrerelease: boolean): PickedRelease | null {
+export function pickLatestRelease(releases: GithubRelease[], current: string, includePrerelease: boolean, download?: DownloadKind): PickedRelease | null {
   let best: PickedRelease | null = null;
   for (const r of Array.isArray(releases) ? releases : []) {
     if (!r || r.draft || !r.tag_name) continue;
@@ -79,7 +115,16 @@ export function pickLatestRelease(releases: GithubRelease[], current: string, in
     if (!includePrerelease && (r.prerelease || isPrereleaseVersion(version))) continue;
     if (compareSemver(version, current) <= 0) continue;
     if (best && compareSemver(version, best.version) <= 0) continue;
-    best = { version, tag: r.tag_name, url: r.html_url || `${RELEASES_PAGE}/tag/${r.tag_name}`, notes: r.body ?? '', publishedAt: r.published_at ?? undefined };
+    const asset = download ? pickDownloadAsset(r.assets, download) : null;
+    if (download && !asset) continue;
+    best = {
+      version,
+      tag: r.tag_name,
+      url: r.html_url || `${RELEASES_PAGE}/tag/${r.tag_name}`,
+      notes: r.body ?? '',
+      publishedAt: r.published_at ?? undefined,
+      ...(asset ? { downloadUrl: asset.url } : {}),
+    };
   }
   return best;
 }

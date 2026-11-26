@@ -313,7 +313,7 @@ async function testDelegation(HAIKU: { providerId: string; model?: string }): Pr
   check(getRes.status === 405, `GET → 405 (${getRes.status})`);
   const list = await rpc('tools/list', undefined);
   const names = (list.body?.result?.tools ?? []).map((t: any) => t.name).sort();
-  check(JSON.stringify(names) === JSON.stringify(['demander_a', 'lister_agents']), `tools/list : ${names.join(', ')}`);
+  check(JSON.stringify(names) === JSON.stringify(['chercher_notes', 'demander_a', 'lister_agents']), `tools/list : ${names.join(', ')}`);
   const agents = await rpc('tools/call', { name: 'lister_agents', arguments: {} });
   const agentsText: string = agents.body?.result?.content?.[0]?.text ?? '';
   check(/redacteur/.test(agentsText) && !/chatgpt|planificateur/i.test(agentsText), 'lister_agents : sans agents manuels ni planificateur');

@@ -1,6 +1,14 @@
 // Interface du hub : discussions, IA web, liste des tâches, réglages.
 import { initOnboarding, isOnboardingOpen, openOnboarding } from './onboarding';
+import { applyPlatformToDom, IS_MAC, modText } from './platform';
 import { attachMic, initVoice, micButton, onVoiceStatus, renderVoiceSettings } from './voice';
+import { renderWebMicSettings } from './web-mic-settings';
+import { renderWebAccountSettings, webLogout } from './web-account-settings';
+import { cutoutButton, initCutout, isCutout, onCutoutRequest, onCutoutStatus, renderCutoutSettings } from './cutout';
+import { initImageViewer, openImageViewer } from './image-viewer';
+import { clearSemanticQuery, initSemanticSearch, renderSemanticResults } from './semantic-search';
+import { attachBusy, attachmentChips, clearPending, initAttachments, pendingImages, renderAttachStrip, renderVisionSettings, restorePending } from './attachments';
+import { hydrateIcons, icon, iconSelect, iconText } from './icons';
 import type {
   AgentRole,
   ChatMessage,
@@ -304,28 +312,50 @@ function toast(message: string): void {
 
 /** URL d'affichage d'une image locale (protocole hub-file servi par le process principal). */
 function imgUrl(path: string): string {
+  // Chemin POSIX (Mac : /Users/…) : hôte explicite « local », sinon Chromium lirait « Users » comme nom d'hôte
+  // (et le mettrait en minuscules). Windows (C:\…) : format d'origine, inchangé.
+  if (path.startsWith('/')) return `hub-file://local${encodeURI(path).replace(/#/g, '%23').replace(/\?/g, '%3F')}`;
   return `hub-file:///${encodeURI(path.replace(/\\/g, '/').replace(/^\/+/, '')).replace(/#/g, '%23').replace(/\?/g, '%3F')}`;
 }
 
-/** Vignettes cliquables (ouvre l'image avec l'application par défaut). */
-function thumbs(images: string[] | undefined, small = false): HTMLElement | null {
+/**
+ * Vignettes cliquables (ouvrent la visionneuse du hub sur les images du groupe). Images détourées (…-detoure.png)
+ * sur damier ; sous les autres (grandes vignettes), bouton « ✂ Détourer » tant que la version transparente n'existe pas.
+ */
+function thumbs(images: string[] | undefined, small = false, cut = true): HTMLElement | null {
   if (!images?.length) return null;
+  const cutKey = (p: string) => p.replace(/\.(png|jpe?g|webp)$/i, '').toLowerCase();
+  const done = new Set(images.filter(isCutout).map((p) => p.slice(0, -'-detoure.png'.length).toLowerCase()));
   return h(
     'div',
     { class: `thumbs ${small ? 'small' : ''}` },
-    ...images.map((p) =>
-      h('img', {
-        class: 'thumb',
+    ...images.map((p, i) => {
+      const transparent = isCutout(p);
+      const img = h('img', {
+        class: `thumb ${transparent ? 'transparent' : ''}`,
         src: imgUrl(p),
         alt: p.split(/[\\/]/).pop() ?? '',
-        title: `${p}\n(cliquer pour ouvrir)`,
+        title: `${p}\n${transparent ? '(fond transparent — ' : '('}cliquer pour agrandir)`,
         loading: 'lazy',
+        decoding: 'async',
+        tabindex: '0',
+        role: 'button',
         onclick: (e: Event) => {
           e.stopPropagation();
-          void hub.openPath(p);
+          openImageViewer(images, i, e.currentTarget as HTMLElement);
         },
-      }),
-    ),
+        onkeydown: (e: KeyboardEvent) => {
+          if (e.key !== 'Enter' && e.key !== ' ') return;
+          e.preventDefault();
+          e.stopPropagation();
+          openImageViewer(images, i, e.currentTarget as HTMLElement);
+        },
+      });
+      if (small) return img;
+      // cut=false : images jointes par l'utilisateur (bulle orange, bouton peu lisible) → pas de « Détourer ».
+      const canCut = cut && !transparent && /\.(png|jpe?g|webp)$/i.test(p) && !done.has(cutKey(p));
+      return h('span', { class: 'thumb-wrap' }, img, canCut ? cutoutButton(p) : transparent ? h('span', { class: 'thumb-badge', title: 'PNG à fond transparent' }, 'Transparent') : null);
+    }),
   );
 }
 
@@ -413,7 +443,7 @@ function visibleConversations(): Conversation[] {
 function renderFolderButton(): void {
   const f = activeFolder();
   const btn = $('folder-btn');
-  btn.textContent = `📁 ${f ? f.name : 'Tous les dossiers'} ▾`;
+  btn.replaceChildren(iconText('folder', `${f ? f.name : 'Tous les dossiers'} ▾`));
   btn.title = f ? `${f.path}\nLes nouvelles discussions seront créées ici.` : 'Toutes les discussions, quel que soit leur dossier';
 }
 
@@ -508,8 +538,8 @@ function folderSelect(conv: Conversation): HTMLElement {
   const sel = h(
     'select',
     { class: 'folder-select', title: `Dossier de travail : ${conv.cwd}` },
-    ...state.folders.map((f) => h('option', { value: f.path, selected: normPath(f.path) === normPath(conv.cwd) }, `📁 ${f.name}`)),
-    known ? null : h('option', { value: conv.cwd, selected: true }, `📁 ${folderLabel(conv.cwd)}`),
+    ...state.folders.map((f) => h('option', { value: f.path, selected: normPath(f.path) === normPath(conv.cwd) }, f.name)),
+    known ? null : h('option', { value: conv.cwd, selected: true }, folderLabel(conv.cwd)),
     h('option', { value: '__other__' }, 'Autre dossier…'),
   );
   sel.addEventListener('change', async () => {
@@ -525,7 +555,7 @@ function folderSelect(conv: Conversation): HTMLElement {
     }
     void hub.updateConversation(conv.id, { cwd: next });
   });
-  return sel;
+  return iconSelect('folder', sel);
 }
 
 // ---------- IA web ----------
@@ -574,6 +604,15 @@ function webPaneBar(p: WebPanelState): HTMLElement {
     h('button', { class: 'icon-btn', title: 'Accueil', onclick: act('home') }, '⌂'),
     h('span', { class: 'title', title: p.url }, p.loading ? 'Chargement…' : p.title),
     h('button', { class: 'icon-btn', title: 'Ouvrir dans mon navigateur', onclick: act('external') }, '↗'),
+    h(
+      'button',
+      {
+        class: 'icon-btn web-logout-btn',
+        title: `Se déconnecter de ${p.name} / vider la session (pour changer de compte)${p.loggedIn ? '' : ' — non connecté'}`,
+        onclick: () => void webLogout(webPanels, p, toast),
+      },
+      '👤',
+    ),
   );
 }
 
@@ -603,6 +642,7 @@ function onWebState(s: WebPanelState): void {
   const bar = document.getElementById(`web-bar-${s.id}`);
   if (bar) bar.replaceWith(webPaneBar(s));
   renderPills();
+  if (state.view === 'settings') renderWebAccountSettings(webPanels, state.web.panels, toast);
 }
 
 // ---------- Discussions ----------
@@ -630,7 +670,7 @@ function renderConvList(): void {
         'div',
         { class: `conv-item ${c.id === state.activeConvId ? 'active' : ''}`, onclick: () => selectConversation(c.id) },
         h('div', { class: 'conv-title' }, c.title),
-        h('div', { class: 'conv-folder', title: c.cwd }, `📁 ${folderLabel(c.cwd)}`),
+        h('div', { class: 'conv-folder', title: c.cwd }, iconText('folder', folderLabel(c.cwd), 13)),
         h(
           'div',
           { class: 'conv-meta' },
@@ -709,7 +749,7 @@ function renderChatHeader(conv: Conversation | undefined): void {
   // Le dossier est affiché pour toutes les discussions (c'est lui qui les range), modifiable ici.
   extra.push(
     folderSelect(conv),
-    h('button', { class: 'icon-btn', title: `Ouvrir ${conv.cwd} dans l'Explorateur`, onclick: () => void hub.openPath(conv.cwd) }, '📂'),
+    h('button', { class: 'icon-btn', title: `Ouvrir ${conv.cwd} dans l'Explorateur`, onclick: () => void hub.openPath(conv.cwd) }, icon('folder')),
     convBaseSelect(conv),
   );
 
@@ -889,21 +929,47 @@ function blockTitleCopy(title: string, getText: () => string, style?: string): H
 }
 
 /** Bulle utilisateur avec bouton Copier (visible au survol). */
-function userBubble(text: string): HTMLElement {
-  return h('div', { class: 'msg user' }, copyButton(() => text, undefined, 'msg-copy'), text);
+function userBubble(text: string, images?: string[], files?: string[]): HTMLElement {
+  // Pièces jointes de l'utilisateur : miniatures des images (cliquer pour ouvrir, sans « Détourer » dans la bulle
+  // orange) et puces des autres fichiers (ouvrir / afficher dans le dossier).
+  const all = [...(images ?? []), ...(files ?? [])];
+  return h(
+    'div',
+    { class: `msg user ${images?.length ? 'with-images' : ''}` },
+    text || all.length ? copyButton(() => withImages(text, all), undefined, 'msg-copy') : null,
+    text,
+    thumbs(images, false, false),
+    attachmentChips(files),
+  );
+}
+
+/**
+ * Images d'une réponse : les siennes + celles des sous-tâches déléguées (ex. Claude → Illustrateur via demander_a),
+ * dès que chacune est prête. Le hub les recopie aussi dans le message à la fin (anciennes discussions).
+ */
+function replyImages(own: string[] | undefined, t: Task | undefined): string[] {
+  const kids = t ? childTasksOf(t.id).flatMap((k) => k.images ?? []) : [];
+  const seen = new Set<string>();
+  return [...(own ?? []), ...kids].filter((p) => {
+    const k = p.toLowerCase();
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
 }
 
 function replyEl(m: ChatMessage): HTMLElement {
   const t = m.taskId ? state.tasks.get(m.taskId) : undefined;
+  const images = replyImages(m.images ?? t?.images, t);
   return h(
     'div',
     { class: `msg assistant ${t?.status === 'error' ? 'error' : ''}` },
-    copyButton(() => withImages(m.content, m.images ?? t?.images), undefined, 'msg-copy'),
+    copyButton(() => withImages(m.content, images), undefined, 'msg-copy'),
     replyHead(m.providerId ?? t?.providerId, m.model ?? t?.model),
     activityEl(t),
     delegationChips(t),
     h('div', { class: 'msg-body', html: md(m.content) }),
-    thumbs(m.images ?? t?.images),
+    thumbs(images),
     footEl(t),
   );
 }
@@ -916,7 +982,7 @@ function liveEl(t: Task): HTMLElement {
     activityEl(t),
     delegationChips(t),
     h('div', { class: 'msg-body', id: `live-body-${t.id}`, html: md(t.output) }),
-    thumbs(t.images),
+    thumbs(replyImages(t.images, t)),
     h('div', { class: 'typing' }, h('span'), h('span'), h('span')),
   );
 }
@@ -934,7 +1000,7 @@ function turnEl(conv: Conversation, turn: Turn): HTMLElement {
   ].sort((a, b) => a.rank - b.rank || a.at - b.at);
 
   const block = h('div', { class: 'turn' });
-  if (turn.user) block.append(userBubble(turn.user.content));
+  if (turn.user) block.append(userBubble(turn.user.content, turn.user.images, turn.user.files));
   if (items.length) {
     const multi = items.length > 1;
     block.append(h('div', { class: `replies ${multi ? 'multi' : ''}`, style: multi ? `--cols:${Math.min(items.length, 3)}` : undefined }, ...items.map((x) => x.el())));
@@ -951,7 +1017,7 @@ function renderMessages(conv: Conversation | undefined): void {
         'div',
         { class: 'empty' },
         h('h3', {}, 'Bienvenue dans le Hub IA'),
-        h('p', {}, 'Crée une discussion, puis choisis avec le bouton 🤖 (en bas à droite) les IA qui répondent : Claude Code, un modèle local Ollama, ou plusieurs à la fois. Chaque réponse devient une tâche que tu retrouves dans l’onglet Tâches.'),
+        h('p', {}, 'Crée une discussion, puis choisis avec le bouton ', icon('robot'), ' (en bas à droite) les IA qui répondent : Claude Code, un modèle local Ollama, ou plusieurs à la fois. Chaque réponse devient une tâche que tu retrouves dans l’onglet Tâches.'),
       ),
     );
     return;
@@ -964,7 +1030,7 @@ function renderMessages(conv: Conversation | undefined): void {
         'div',
         { class: 'empty' },
         h('p', {}, `IA actives : ${names || 'aucune'}.`),
-        h('p', {}, 'Écris ton premier message ci-dessous. Le bouton 🤖 en bas à droite permet de changer les IA et leurs modèles ; si plusieurs sont cochées, elles répondent côte à côte et voient les réponses des autres.'),
+        h('p', {}, 'Écris ton premier message ci-dessous. Le bouton ', icon('robot'), ' en bas à droite permet de changer les IA et leurs modèles ; si plusieurs sont cochées, elles répondent côte à côte et voient les réponses des autres.'),
       ),
     );
     return;
@@ -975,11 +1041,12 @@ function renderMessages(conv: Conversation | undefined): void {
 
 // ----- Menu de choix des IA -----
 
+/** Libellé du bouton IA (l'icône robot est ajoutée devant par renderComposer). */
 function pickerLabel(conv: Conversation | undefined): string {
-  if (!conv) return '🤖 ▾';
+  if (!conv) return '▾';
   const parts = participantsOf(conv);
   const names = parts.map((p) => shortName(p.providerId)).join(' · ');
-  return `🤖 ${names.length > 22 ? `${parts.length} IA` : names || 'Aucune IA'} ▾`;
+  return `${names.length > 22 ? `${parts.length} IA` : names || 'Aucune IA'} ▾`;
 }
 
 async function setParticipants(conv: Conversation, next: Participant[]): Promise<void> {
@@ -1153,13 +1220,13 @@ function renderUpdateSettings(): void {
   const s = updateUi.state;
   const settings = state.settings;
   $('upd-version').textContent = s?.currentVersion ?? '—';
-  $('upd-mode').textContent = s ? { installed: '(version installée : mise à jour automatique)', portable: '(version portable : notification et lien de téléchargement)', dev: '(version de développement : vérification manuelle)' }[s.mode] : '';
+  $('upd-mode').textContent = s ? { installed: '(version installée : mise à jour automatique)', portable: '(version portable : notification et lien de téléchargement)', mac: '(version Mac : notification et téléchargement du .dmg)', dev: '(version de développement : vérification manuelle)' }[s.mode] : '';
   $<HTMLInputElement>('set-autoupdate').checked = settings?.autoUpdate !== false;
   $<HTMLInputElement>('set-prerelease').checked = typeof settings?.updateIncludePrerelease === 'boolean' ? settings.updateIncludePrerelease : !!s?.includePrerelease;
   renderUpdateResult();
 }
 
-// ---------- Niveau d'effort de Claude (bouton ⚡ du composer) ----------
+// ---------- Niveau d'effort de Claude (bouton éclair du composer) ----------
 
 const EFFORT_INFO: Record<ClaudeEffort, { label: string; short: string; desc: string }> = {
   default: { label: 'Par défaut', short: 'Auto', desc: 'Claude choisit lui-même.' },
@@ -1181,7 +1248,7 @@ function renderEffortPicker(conv: Conversation | undefined): void {
   }
   const current: ClaudeEffort = conv!.effort ?? 'default';
   const btn = $<HTMLButtonElement>('effort-btn');
-  btn.textContent = `⚡ ${EFFORT_INFO[current].short} ▾`;
+  btn.replaceChildren(iconText('bolt', `${EFFORT_INFO[current].short} ▾`));
   btn.classList.toggle('active', current !== 'default');
   btn.title = `Effort de Claude : ${EFFORT_INFO[current].label} — ${EFFORT_INFO[current].desc}`;
   const menu = $('effort-menu');
@@ -1215,7 +1282,7 @@ function renderComposer(conv: Conversation | undefined): void {
   $<HTMLButtonElement>('send-btn').disabled = !conv || running;
   $<HTMLTextAreaElement>('prompt').disabled = !conv;
   const picker = $<HTMLButtonElement>('ai-picker-btn');
-  picker.textContent = pickerLabel(conv);
+  picker.replaceChildren(iconText('robot', pickerLabel(conv)));
   picker.disabled = !conv;
   const kn = $<HTMLButtonElement>('kn-toggle');
   const on = !!conv?.useKnowledge;
@@ -1224,7 +1291,26 @@ function renderComposer(conv: Conversation | undefined): void {
   kn.title = on
     ? 'Base de connaissances ACTIVÉE : les IA de cette discussion consultent tes notes (cliquer pour désactiver)'
     : 'Base de connaissances désactivée : cliquer pour que les IA de cette discussion consultent tes notes';
+  renderBgToggle(conv);
+  renderAttachStrip();
   renderAiMenu();
+}
+
+/** IA qui produisent des images (le bouton ◩ et le détourage automatique les concernent). */
+const IMAGE_PROVIDER_IDS = ['comfyui'];
+
+/** Bouton ◩ du composer : fond transparent pour les images de cette discussion. */
+function renderBgToggle(conv: Conversation | undefined): void {
+  const btn = document.getElementById('bg-toggle') as HTMLButtonElement | null;
+  if (!btn) return;
+  const hasImages = !!conv && participantsOf(conv).some((p) => IMAGE_PROVIDER_IDS.includes(p.providerId));
+  btn.classList.toggle('hidden', !hasImages);
+  const on = !!conv?.transparentBg;
+  btn.classList.toggle('active', on);
+  btn.textContent = on ? '◩ Transparent' : '◩';
+  btn.title = on
+    ? 'Fond transparent ACTIVÉ : chaque image générée est aussi détourée (PNG transparent, original conservé). Cliquer pour désactiver.'
+    : 'Fond transparent : cliquer pour que les images générées soient aussi détourées (sujet isolé, PNG transparent)';
 }
 
 function renderChat(): void {
@@ -1256,12 +1342,16 @@ async function sendPrompt(): Promise<void> {
   const conv = activeConv();
   const input = $<HTMLTextAreaElement>('prompt');
   const text = input.value.trim();
-  if (!conv || !text || runningTasksFor(conv.id).length) return;
+  if (!conv || runningTasksFor(conv.id).length) return;
+  if (attachBusy()) return toast('Pièce jointe en cours de préparation : un instant…');
+  const images = pendingImages(conv.id);
+  if (!text && !images.length) return;
   input.value = '';
   input.style.height = 'auto';
   closeAiMenu();
+  clearPending(conv.id);
   try {
-    const tasks = await hub.sendMessage(conv.id, text);
+    const tasks = await hub.sendMessage(conv.id, text, images);
     let added = false;
     for (const t of tasks) {
       if (!state.tasks.has(t.id)) {
@@ -1276,6 +1366,7 @@ async function sendPrompt(): Promise<void> {
     }
   } catch (err: any) {
     input.value = text;
+    restorePending(conv.id, images);
     toast(err.message ?? String(err));
   }
 }
@@ -1406,7 +1497,7 @@ function renderWorkflowList(): void {
           busy ? h('span', { class: 'spinner', title: 'En cours' }) : null,
           waiting ? h('span', { title: 'Une étape attend ton action' }, '✋') : null,
         ),
-        h('div', { class: 'conv-folder', title: r.cwd }, `📁 ${folderLabel(r.cwd)}`),
+        h('div', { class: 'conv-folder', title: r.cwd }, iconText('folder', folderLabel(r.cwd), 13)),
       );
     }),
   );
@@ -1552,7 +1643,7 @@ function renderNewWorkflow(): void {
       h(
         'div',
         { class: 'wf-new-opts' },
-        h('span', { class: 'tag', title: folderPath }, `📁 ${f ? f.name : 'Espace de travail du hub'}`),
+        h('span', { class: 'tag', title: folderPath }, iconText('folder', f ? f.name : 'Espace de travail du hub', 14)),
         h('label', { class: 'inline' }, 'Agents Claude :', perm),
         h('label', { class: 'check' }, validate, 'Valider le plan avant de lancer'),
         h('span', { class: 'spacer' }),
@@ -1561,7 +1652,7 @@ function renderNewWorkflow(): void {
       h(
         'div',
         { class: 'wf-new-opts' },
-        h('label', { class: 'check', title: 'Les agents peuvent lire tes notes (Claude les consulte lui-même, Ollama reçoit les passages utiles)' }, useKn, '📚 Utiliser la base de connaissances'),
+        h('label', { class: 'check', title: 'Les agents peuvent lire tes notes (Claude les consulte lui-même, Ollama reçoit les passages utiles)' }, useKn, iconText('books', 'Utiliser la base de connaissances')),
         h('label', { class: 'check', title: 'À la fin, un compte rendu du workflow est créé dans la base (dossier « Résultats »)' }, saveKn, '💾 Enregistrer le compte rendu dans la base'),
       ),
       h(
@@ -1571,7 +1662,7 @@ function renderNewWorkflow(): void {
         ...state.roles.map((r) => h('span', { class: `tag ${isManual(r.providerId) ? 'p-manual' : ''}`, title: `${r.description}\n${roleIaLabel(r)}` }, `${r.name}${isManual(r.providerId) ? ' ✋' : ''}`)),
         h('button', { class: 'btn ghost small', onclick: () => setView('settings') }, 'Modifier'),
       ),
-      h('p', { class: 'muted small' }, 'Ctrl+Entrée pour planifier. ✋ = étape manuelle (tu la fais dans l’onglet IA web).'),
+      h('p', { class: 'muted small' }, modText('Ctrl+Entrée pour planifier. ✋ = étape manuelle (tu la fais dans l’onglet IA web).')),
     ),
   );
 }
@@ -1603,7 +1694,7 @@ function runHeader(run: WorkflowRun, goalOpen: boolean): HTMLElement {
             '💾 Enregistrer comme modèle',
           )
         : null,
-      h('button', { class: 'btn small', id: 'wf-open-dir', title: run.runDir, onclick: () => void hub.openPath(run.runDir) }, '📂 Dossier partagé'),
+      h('button', { class: 'btn small', id: 'wf-open-dir', title: run.runDir, onclick: () => void hub.openPath(run.runDir) }, iconText('folder', 'Dossier partagé')),
       isRunActive(run)
         ? h(
             'button',
@@ -1633,7 +1724,7 @@ function runHeader(run: WorkflowRun, goalOpen: boolean): HTMLElement {
     h(
       'div',
       { class: 'wf-meta muted' },
-      h('span', { title: run.cwd }, `📁 ${folderLabel(run.cwd)}`),
+      h('span', { title: run.cwd }, iconText('folder', folderLabel(run.cwd), 14)),
       h('span', {}, `Agents Claude : ${PERMISSION_LABEL[run.permission] ?? run.permission}`),
       h('span', {}, `Créé ${fmtTime(run.createdAt)}`),
     ),
@@ -1982,9 +2073,10 @@ function renderStepDetail(run: WorkflowRun, force: boolean): void {
           '↻ Réessayer cette étape',
         )
       : null,
-    s.status !== 'waiting' ? blockTitleCopy('Résultat', () => withImages(output ?? '', s.images ?? t?.images)) : null,
+    s.status !== 'waiting' ? blockTitleCopy('Résultat', () => withImages(output ?? '', replyImages(s.images ?? t?.images, t))) : null,
     s.status !== 'waiting' ? h('div', { class: 'box msg-body wf-output', id: 'wf-step-out', html: output ? md(output) : `<span class="muted">${emptyText}</span>` }) : null,
-    thumbs(s.images ?? t?.images),
+    // Images de l'étape + celles de ses sous-tâches déléguées (ex. Illustrateur appelé par Claude).
+    thumbs(replyImages(s.images ?? t?.images, t)),
     h(
       'div',
       { class: 'row', style: 'justify-content:flex-start' },
@@ -2051,7 +2143,7 @@ function manualPanel(run: WorkflowRun, s: WorkflowStep): HTMLElement {
       { class: 'row', style: 'justify-content:flex-start' },
       copyBtn,
       h('button', { class: 'btn small', id: 'wf-open-web', onclick: () => openWebPanel(webId) }, `Ouvrir ${name}`),
-      h('button', { class: 'btn small', onclick: () => void hub.openPath(run.runDir) }, '📂 Dossier partagé'),
+      h('button', { class: 'btn small', onclick: () => void hub.openPath(run.runDir) }, iconText('folder', 'Dossier partagé')),
     ),
     answer,
     h('div', { class: 'row' }, submit),
@@ -2107,8 +2199,13 @@ function filteredTasks(): Task[] {
 
 function renderTaskFilters(): void {
   const all = [...state.tasks.values()];
+  // L'onglet est redessiné chaque seconde tant qu'une tâche tourne : on ne reconstruit les listes que si leur contenu
+  // change (sinon une liste ouverte se refermerait toute seule).
   const fill = (id: string, values: string[], label: (v: string) => string, placeholder: string, current: string) => {
     const sel = $<HTMLSelectElement>(id);
+    const sig = JSON.stringify([placeholder, values.map((v) => [v, label(v)]), current]);
+    if (sel.dataset.sig === sig) return;
+    sel.dataset.sig = sig;
     sel.replaceChildren(h('option', { value: '' }, placeholder), ...values.map((v) => h('option', { value: v, selected: v === current }, label(v))));
   };
   const providers = [...new Set([...state.providers.map((p) => p.id), ...all.map((t) => t.providerId)])];
@@ -2130,17 +2227,44 @@ function renderTaskFilters(): void {
       h('b', {}, String(n)),
       h('span', {}, label),
     );
-  $('task-stats').replaceChildren(
-    stat('', all.length, 'Total'),
-    stat('running', count('running'), 'En cours'),
-    stat('waiting', count('waiting'), 'À faire (toi)'),
-    stat('done', count('done'), 'Terminées'),
-    stat('error', count('error'), 'Erreurs'),
-    stat('cancelled', count('cancelled'), 'Annulées'),
-  );
+  const cards: [string, number, string][] = [
+    ['', all.length, 'Total'],
+    ['running', count('running'), 'En cours'],
+    ['waiting', count('waiting'), 'À faire (toi)'],
+    ['done', count('done'), 'Terminées'],
+    ['error', count('error'), 'Erreurs'],
+    ['cancelled', count('cancelled'), 'Annulées'],
+  ];
+  // Cartes déjà présentes : mise à jour sur place (les recréer rejouait leur animation d'entrée chaque seconde → clignotement).
+  const box = $('task-stats');
+  if (box.children.length === cards.length) {
+    cards.forEach(([status, n], i) => {
+      const el = box.children[i] as HTMLElement;
+      el.classList.toggle('active', state.filters.status === status);
+      const b = el.querySelector('b');
+      if (b && b.textContent !== String(n)) b.textContent = String(n);
+    });
+  } else {
+    box.replaceChildren(...cards.map(([status, n, label]) => stat(status, n, label)));
+  }
 }
 
-function renderTasks(): void {
+/** Sous-tâches déjà affichées (dépliées) : renvoie true la première fois seulement. Repliage = oubli (rejoue au dépliage). */
+const shownChildRows = new Set<string>();
+let shownChildRowsNow = new Set<string>();
+function markChildSeen(id: string): boolean {
+  shownChildRowsNow.add(id);
+  if (shownChildRows.has(id)) return false;
+  shownChildRows.add(id);
+  return true;
+}
+
+function renderTasks(opts: { tick?: boolean } = {}): void {
+  shownChildRowsNow = new Set();
+  queueMicrotask(() => {
+    // Sous-tâches plus affichées (parent replié, filtre…) : la prochaine apparition rejouera l'animation.
+    for (const id of [...shownChildRows]) if (!shownChildRowsNow.has(id)) shownChildRows.delete(id);
+  });
   renderTaskFilters();
   const table = $<HTMLTableElement>('tasks-table');
   const cols: [SortKey, string][] = [
@@ -2194,7 +2318,8 @@ function renderTasks(): void {
     return h(
       'tr',
       {
-        class: `task-row ${t.id === state.selectedTaskId ? 'selected' : ''} ${t.parentTaskId ? 'is-child' : ''} ${kids.length ? 'has-kids' : ''}`,
+        // « fresh » : animation d'entrée seulement la 1re fois qu'une sous-tâche apparaît (pas à chaque rafraîchissement).
+        class: `task-row ${t.id === state.selectedTaskId ? 'selected' : ''} ${t.parentTaskId ? 'is-child' : ''} ${t.parentTaskId && markChildSeen(t.id) ? 'fresh' : ''} ${kids.length ? 'has-kids' : ''}`,
         onclick: () => {
           if (kids.length && !t.parentTaskId) {
             if (open) expandedTasks.delete(t.id);
@@ -2277,7 +2402,10 @@ function renderTasks(): void {
     rows.push(h('tr', {}, h('td', { colspan: '8', class: 'no-tasks' }, state.tasks.size ? 'Aucune tâche ne correspond aux filtres.' : 'Aucune tâche pour le moment : envoie un message dans une discussion.')));
   }
   table.replaceChildren(h('thead', {}, head), h('tbody', {}, ...rows));
-  renderTaskDetail();
+  // Rafraîchissement d'horloge : le détail d'une tâche terminée n'est pas reconstruit (sinon le défilement, la sélection
+  // de texte et l'image se réinitialisaient chaque seconde).
+  const sel = state.selectedTaskId ? state.tasks.get(state.selectedTaskId) : undefined;
+  if (!opts.tick || sel?.status === 'running') renderTaskDetail();
 }
 
 /** Tâches principales dont les sous-tâches sont dépliées dans l'onglet Tâches. */
@@ -2450,7 +2578,8 @@ function treeNodes(dir: TreeDir, prefix: string, depth: number): HTMLElement[] {
             renderKnowledgeSide();
           },
         },
-        `${collapsed ? '▸' : '▾'} 📁 ${name}`,
+        `${collapsed ? '▸' : '▾'} `,
+        iconText('folder', name, 14),
       ),
     );
     if (!collapsed) out.push(...treeNodes(sub, full, depth + 1));
@@ -2486,6 +2615,8 @@ function highlight(text: string, q: string): string {
 function renderKnowledgeSide(): void {
   const results = $('kn-results');
   const tree = $('kn-tree');
+  // Recherche par le sens (semantic-search.ts) : ses résultats occupent la liste quand une question est posée.
+  if (renderSemanticResults(results, tree, state.kn.current)) return;
   const q = state.kn.query.trim();
   if (q) {
     tree.classList.add('hidden');
@@ -2554,8 +2685,8 @@ function convBaseSelect(conv: Conversation): HTMLElement {
   const sel = h(
     'select',
     { class: 'conv-base-select', title: 'Base de connaissances liée à cette discussion (sa note y est créée et tenue à jour)' },
-    current ? null : h('option', { value: '', selected: true }, '📚 Base du dossier (auto)'),
-    ...bases.map((b) => h('option', { value: b.id, selected: b.id === current }, `📚 ${b.name}`)),
+    current ? null : h('option', { value: '', selected: true }, 'Base du dossier (auto)'),
+    ...bases.map((b) => h('option', { value: b.id, selected: b.id === current }, b.name)),
   );
   sel.addEventListener('change', async () => {
     if (!sel.value) return;
@@ -2565,7 +2696,7 @@ function convBaseSelect(conv: Conversation): HTMLElement {
       toast(err.message ?? String(err));
     }
   });
-  const wrap = h('span', { class: 'conv-base' }, sel);
+  const wrap = h('span', { class: 'conv-base' }, iconSelect('books', sel));
   if (conv.knowledgeNote) {
     wrap.append(
       h(
@@ -2584,7 +2715,7 @@ function knBaseSelect(): HTMLElement {
     'select',
     { id: 'kn-base', class: 'kn-base-select', title: 'Base de connaissances affichée' },
     ...(state.kn.bases.length ? state.kn.bases : [{ id: 'hub', name: 'Hub', noteCount: 0 } as KnowledgeBaseInfo]).map((b) =>
-      h('option', { value: b.id, selected: b.id === state.kn.base }, `📚 ${b.name}${b.folderPath ? ' · dossier' : ''} (${b.noteCount})`),
+      h('option', { value: b.id, selected: b.id === state.kn.base }, `${b.name}${b.folderPath ? ' · dossier' : ''} (${b.noteCount})`),
     ),
   );
   sel.addEventListener('change', async () => {
@@ -2595,7 +2726,7 @@ function knBaseSelect(): HTMLElement {
     state.kn.hits = [];
     await renderKnowledge(true);
   });
-  return sel;
+  return iconSelect('books', sel);
 }
 
 /** Note de discussion (frontmatter hub_discussion) : lien vers la discussion d'origine. */
@@ -2636,7 +2767,7 @@ function renderKnowledgeMain(): void {
     h('span', { class: 'spacer' }),
     knDiscussionLink(),
     obsidianBtn(state.kn.current ?? undefined),
-    h('button', { type: 'button', class: 'btn small', id: 'kn-open-folder', onclick: () => info && void hub.openPath(info.vaultDir) }, '📂 Dossier'),
+    h('button', { type: 'button', class: 'btn small', id: 'kn-open-folder', onclick: () => info && void hub.openPath(info.vaultDir) }, iconText('folder', 'Dossier')),
   );
   const path = state.kn.current;
   if (!path) {
@@ -2649,7 +2780,9 @@ function renderKnowledgeMain(): void {
         h(
           'p',
           {},
-          'Des notes Markdown propres au hub, séparées de tes autres coffres. Les IA les consultent quand tu actives 📚 dans une discussion ou un workflow, et les comptes rendus de workflows peuvent y être enregistrés. Ce dossier est aussi un coffre Obsidian.',
+          'Des notes Markdown propres au hub, séparées de tes autres coffres. Les IA les consultent quand tu actives ',
+          icon('books'),
+          ' dans une discussion ou un workflow, et les comptes rendus de workflows peuvent y être enregistrés. Ce dossier est aussi un coffre Obsidian.',
         ),
         h('button', { class: 'btn primary', onclick: () => openNewNoteRow() }, '+ Créer une note'),
       ),
@@ -2902,7 +3035,7 @@ async function renderKnowledgeCard(): Promise<void> {
       'div',
       { class: 'row', style: 'justify-content:flex-start' },
       obsidianBtn(),
-      h('button', { type: 'button', class: 'btn small', onclick: () => void hub.openPath(info.vaultDir) }, '📂 Dossier'),
+      h('button', { type: 'button', class: 'btn small', onclick: () => void hub.openPath(info.vaultDir) }, iconText('folder', 'Dossier')),
       h('button', { type: 'button', class: 'btn ghost small', onclick: () => setView('knowledge') }, 'Ouvrir l’onglet Connaissances'),
     ),
     h(
@@ -2936,6 +3069,17 @@ function renderImageCard(): void {
   const parts: (HTMLElement | null)[] = [
     h('div', { class: 'row', style: 'justify-content:flex-start' }, h('span', { class: `status ${cls}`, id: 'img-status' }, label), h('span', { class: 'muted small img-dir', title: s.dir }, s.dir)),
     s.error ? h('div', { class: 'wf-error' }, `⚠️ ${s.error}`) : null,
+    // Mac : pas d'installation intégrée (pas d'archive portable) → ComfyUI Desktop, installé à part.
+    IS_MAC && !s.installed
+      ? h(
+          'div',
+          { class: 'small', id: 'img-mac-hint' },
+          'Sur Mac, le hub utilise ',
+          h('b', {}, 'ComfyUI Desktop'),
+          ' (gratuit, plus lent que sur une carte NVIDIA). Installe-le, ouvre-le une fois pour terminer sa configuration, puis reviens ici : le hub y téléchargera le modèle choisi ci-dessous. ',
+          h('button', { type: 'button', class: 'btn ghost small', onclick: () => void hub.openExternal('https://www.comfy.org/download').catch((e: any) => toast(e.message ?? String(e))) }, 'Télécharger ComfyUI Desktop ↗'),
+        )
+      : null,
     comfyDirBlock(s),
     s.installing && p
       ? h(
@@ -2961,14 +3105,16 @@ function renderImageCard(): void {
       !s.installed && !s.installing && !s.imageModels?.length ? h('button', { type: 'button', class: 'btn primary small', id: 'img-install', onclick: () => installImages() }, 'Installer') : null,
       s.installing ? h('button', { type: 'button', class: 'btn danger small', id: 'img-cancel', onclick: () => void hub.cancelImageInstall() }, 'Annuler') : null,
       s.running ? h('button', { type: 'button', class: 'btn small', id: 'img-stop', onclick: () => void hub.stopImageEngine() }, 'Arrêter ComfyUI') : null,
-      s.installed ? h('button', { type: 'button', class: 'btn ghost small', onclick: () => void hub.openPath(s.dir) }, '📂 Dossier') : null,
+      s.installed ? h('button', { type: 'button', class: 'btn ghost small', onclick: () => void hub.openPath(s.dir) }, iconText('folder', 'Dossier')) : null,
     ),
     h(
       'p',
       { class: 'muted small' },
       s.customDir
         ? 'Utilise le ComfyUI choisi ci-dessus (rien n’est copié). ComfyUI démarre tout seul quand une image est demandée.'
-        : 'Tout est installé dans le dossier de l’appli. ComfyUI démarre tout seul quand une image est demandée.',
+        : IS_MAC
+          ? 'Les modèles vont dans le dossier de ComfyUI Desktop. Le hub ouvre ComfyUI Desktop quand une image est demandée (ou utilise un serveur ComfyUI local déjà lancé).'
+          : 'Tout est installé dans le dossier de l’appli. ComfyUI démarre tout seul quand une image est demandée.',
     ),
   ];
   box.replaceChildren(...compact(parts));
@@ -3129,6 +3275,19 @@ async function renderClaudeAccess(): Promise<void> {
   $('access-add-skills').onclick = () => void save(access.allowed, [...access.extraDirs, '~/.claude']);
 }
 
+/** Section « Détourage » des Réglages, créée juste après « Images locales » (corps : #cutout-settings-body). */
+function cutoutSettingsBox(): HTMLElement {
+  let body = document.getElementById('cutout-settings-body');
+  if (!body) {
+    body = h('div', { id: 'cutout-settings-body' });
+    const set = h('fieldset', { id: 'cutout-settings', class: 'info-card' }, h('legend', {}, '✂ Détourage (fond transparent)'), body);
+    const after = document.getElementById('img-settings');
+    if (after) after.after(set);
+    else $('settings-form').append(set);
+  }
+  return body;
+}
+
 async function renderSettings(): Promise<void> {
   const s = await hub.getSettings();
   state.settings = s;
@@ -3142,6 +3301,9 @@ async function renderSettings(): Promise<void> {
   $<HTMLInputElement>('set-conv-notes').checked = s.conversationNotes !== false;
   void renderClaudeAccess();
   void renderVoiceSettings($('voice-settings-body'));
+  void renderWebMicSettings(webPanels, toast);
+  renderWebAccountSettings(webPanels, state.web.panels, toast);
+  renderVisionSettings($('vision-settings-body'));
   renderUpdateSettings();
   try {
     const { roles, plannerRoleId } = await hub.listRoles();
@@ -3153,6 +3315,7 @@ async function renderSettings(): Promise<void> {
   state.rolesDraft = state.roles.map((r) => ({ ...r }));
   state.plannerDraft = state.plannerRoleId;
   renderRolesEditor();
+  void renderCutoutSettings(cutoutSettingsBox());
   renderProvidersDetail();
   void renderKnowledgeCard();
   renderImageCard();
@@ -3273,12 +3436,14 @@ function onHubEvent(ev: HubEvent): void {
       if (statusChanged && ev.task.conversationId) renderConvList();
       // Sous-tâche déléguée : on met à jour les puces sous la réponse de l'agent qui l'a confiée.
       const parentTask = ev.task.parentTaskId ? state.tasks.get(ev.task.parentTaskId) : undefined;
-      if (parentTask && (statusChanged || !prev) && state.view === 'chat' && parentTask.conversationId && parentTask.conversationId === state.activeConvId) renderChat();
+      // Images de la sous-tâche (prêtes, ou version détourée ajoutée) : affichées tout de suite dans la bulle parente.
+      const imagesChanged = (prev?.images ?? []).join('\n') !== (ev.task.images ?? []).join('\n');
+      if (parentTask && (statusChanged || !prev || imagesChanged) && state.view === 'chat' && parentTask.conversationId && parentTask.conversationId === state.activeConvId) renderChat();
       if (state.view === 'tasks') renderTasks();
       if (state.view === 'workflows' && ev.task.workflowRunId && ev.task.workflowRunId === state.activeRunId) {
         const run = activeRun();
         const stepId = ev.task.stepId ?? parentTask?.stepId;
-        if (run && stepId && stepId === state.selectedStepId && (!parentTask || statusChanged || !prev)) renderStepDetail(run, false); // activité (outils), délégations
+        if (run && stepId && stepId === state.selectedStepId && (!parentTask || statusChanged || !prev || imagesChanged)) renderStepDetail(run, false); // activité (outils), délégations, images
         else scheduleWfLive();
       }
       break;
@@ -3356,6 +3521,14 @@ function onHubEvent(ev: HubEvent): void {
     }
     case 'voice': {
       onVoiceStatus(ev.status);
+      break;
+    }
+    case 'cutout': {
+      onCutoutStatus(ev.status);
+      break;
+    }
+    case 'cutoutRequest': {
+      onCutoutRequest(ev.id, ev.data);
       break;
     }
     case 'limits': {
@@ -3515,7 +3688,7 @@ function fmtAgo(ts: number): string {
 function renderLimitsPill(): void {
   const btn = $('usage-btn');
   const claude = usageUi.limits.providers.claude;
-  const parts: HTMLElement[] = [h('span', { class: 'lim-ico', html: '<svg viewBox="0 0 24 24"><path d="M13 3 5 13.5h6L10 21l8-10.5h-6z"/></svg>' })];
+  const parts: HTMLElement[] = [h('span', { class: 'lim-ico' }, icon('bolt'))];
   if (!claude?.windows.length) {
     parts.push(h('span', { class: 'muted' }, 'Restant : ?'));
   } else {
@@ -4235,7 +4408,7 @@ function renderClaudeList(): void {
         'div',
         { class: `conv-item cc-item ${s.id === cc.selected ? 'active' : ''} ${cc.checked.has(s.id) ? 'checked' : ''}`, onclick: () => void openClaudeSession(s.id) },
         h('div', { class: 'cc-item-top' }, cb, s.active ? h('span', { class: 'cc-live', title: 'Active (modifiée il y a moins de 2 min)' }) : null, h('div', { class: 'conv-title' }, s.title)),
-        h('div', { class: 'conv-folder', title: s.cwd ?? '' }, `📁 ${s.project}`),
+        h('div', { class: 'conv-folder', title: s.cwd ?? '' }, iconText('folder', s.project, 13)),
         s.archived
           ? h(
               'div',
@@ -4338,7 +4511,7 @@ function renderClaudeReader(): void {
         ),
       ];
     })(),
-    s.cwd ? h('button', { type: 'button', class: 'btn ghost small', onclick: () => void hub.openPath(s.cwd!) }, '📂 Ouvrir le dossier') : null,
+    s.cwd ? h('button', { type: 'button', class: 'btn ghost small', onclick: () => void hub.openPath(s.cwd!) }, iconText('folder', 'Ouvrir le dossier')) : null,
   );
   const meta = h(
     'div',
@@ -4592,9 +4765,37 @@ function bindShell(): void {
 }
 
 function bindUi(): void {
+  // Icônes « sticker » du HTML statique (<span data-icon="…">).
+  hydrateIcons();
   bindShell();
-  // Dictée vocale : bouton 🎤 du composer (les champs Workflow / Notes ont le leur, créé au rendu).
+  // Dictée vocale : bouton micro du composer (les champs Workflow / Notes ont le leur, créé au rendu).
   initVoice({ hub, toast, getSettings: () => state.settings });
+  // Images jointes (📎, glisser-déposer, Ctrl+V) et carte Réglages › Modèle vision.
+  initAttachments({
+    hub,
+    h,
+    activeConv,
+    providers: () => state.providers,
+    roles: () => state.roles,
+    toast,
+    imgUrl,
+    setParticipants,
+    openVisionSettings: () => {
+      setView('settings');
+      window.setTimeout(() => document.getElementById('vision-settings')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 150);
+    },
+  });
+  initCutout({ hub, toast, getRoles: () => state.roles, imageProviders: () => IMAGE_PROVIDER_IDS });
+  // Visionneuse d'images (clic sur une vignette) : bouton « Détourer » du module cutout repris dans sa barre.
+  initImageViewer({ imgUrl, isCutout, cutoutButton, onHubEvent: (l) => hub.onEvent(l) });
+  // Bouton ◩ « Fond transparent » du composer (visible quand les images ComfyUI participent à la discussion).
+  const bgBtn = h('button', { type: 'button', id: 'bg-toggle', class: 'btn kn-toggle bg-toggle hidden' }, '◩');
+  $('kn-toggle').after(bgBtn);
+  bgBtn.addEventListener('click', () => {
+    const conv = activeConv();
+    if (!conv) return;
+    hub.updateConversation(conv.id, { transparentBg: !conv.transparentBg }).catch((err: any) => toast(err.message ?? String(err)));
+  });
   attachMic($<HTMLButtonElement>('mic-btn'), () => ($<HTMLTextAreaElement>('prompt').disabled ? null : $<HTMLTextAreaElement>('prompt')));
   document
     .querySelectorAll<HTMLButtonElement>('.tabs button[data-view]')
@@ -4677,6 +4878,7 @@ function bindUi(): void {
   // Connaissances
   $('kn-search').addEventListener('input', (e) => {
     state.kn.query = (e.target as HTMLInputElement).value;
+    if (state.kn.query.trim()) clearSemanticQuery(); // mots-clés et recherche par le sens ne s'affichent pas ensemble
     clearTimeout(knSearchTimer);
     if (!state.kn.query.trim()) {
       state.kn.hits = [];
@@ -4684,6 +4886,13 @@ function bindUi(): void {
       return;
     }
     knSearchTimer = window.setTimeout(() => void runKnowledgeSearch(), 250);
+  });
+  initSemanticSearch({
+    hub,
+    getBase: () => state.kn.base,
+    openNote: (path) => void openNote(path),
+    toast: (msg) => toast(msg),
+    rerenderSide: () => renderKnowledgeSide(),
   });
   $('kn-new-btn').addEventListener('click', () => openNewNoteRow());
   $('kn-new-cancel').addEventListener('click', () => closeNewNoteRow());
@@ -4760,7 +4969,7 @@ function bindUi(): void {
 
   // Durées des tâches en cours rafraîchies chaque seconde dans l'onglet Tâches.
   setInterval(() => {
-    if (state.view === 'tasks' && [...state.tasks.values()].some((t) => t.status === 'running')) renderTasks();
+    if (state.view === 'tasks' && [...state.tasks.values()].some((t) => t.status === 'running')) renderTasks({ tick: true });
     // Durées des étapes en cours (cartes seulement : le détail n'est pas reconstruit).
     const run = activeRun();
     if (state.view === 'workflows' && run && run.steps.some((s) => s.status === 'running')) fillColumns(run);
@@ -4768,6 +4977,7 @@ function bindUi(): void {
 }
 
 async function init(): Promise<void> {
+  applyPlatformToDom(); // Mac : « ⌘ » au lieu de « Ctrl », place des feux tricolores (sans effet sous Windows)
   bindUi();
   hub.onEvent(onHubEvent);
   webPanels.onState(onWebState);

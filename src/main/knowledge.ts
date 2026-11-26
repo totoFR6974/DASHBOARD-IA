@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { AgentRole, KnowledgeInfo, KnowledgeNote, KnowledgeSearchHit, WorkflowRun, WorkflowTemplate } from '../shared/types';
+import { macAppPath } from './platform';
 
 const TRASH = '.corbeille';
 const TEMPLATES_DIR = 'Modèles';
@@ -257,6 +258,9 @@ export class Knowledge {
         const res = spawnSync('reg', ['query', 'HKCU\\Software\\Classes\\obsidian'], { windowsHide: true, timeout: 5000 });
         value = res.status === 0;
       }
+    } else if (process.platform === 'darwin') {
+      // macOS : Obsidian.app dans /Applications ou ~/Applications (le lien obsidian:// marche pareil).
+      value = !!macAppPath('Obsidian');
     }
     this.obsidianCache = { at: Date.now(), value };
     return value;

@@ -1,9 +1,9 @@
 // Cœur du hub : discussions, tâches, exécution sur les connecteurs. Ne dépend pas d'Electron
 // (testable seul avec `npm run selftest`).
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, isAbsolute, join, resolve } from 'node:path';
+import { basename, isAbsolute, join, resolve, sep } from 'node:path';
 import type {
   AgentRole,
   ChatMessage,
@@ -44,8 +44,11 @@ import type {
   SetupStatus,
 } from '../shared/types';
 import { CLAUDE_EFFORTS } from '../shared/types';
-import { detectExistingComfy, findComfyRoot, ImageEngine } from './image-engine';
+import { COMFY_DIR_HINT, detectExistingComfy, findComfyRoot, ImageEngine } from './image-engine';
+import { caseInsensitiveFs } from './platform';
 import { isVoiceModel, isVoiceVariant, VoiceModels } from './voice';
+import { Cutout, isCutoutPath, isCutoutVariant, wantsTransparent } from './cutout';
+import type { CutoutStatus, CutoutVariant } from '../shared/types';
 import { ClaudeLogs } from './claude-logs';
 import { Setup } from './setup';
 import { Knowledge } from './knowledge';
@@ -57,8 +60,12 @@ import { ComfyUIProvider, IMAGE_PROVIDERS } from './providers/comfyui';
 import { OllamaProvider } from './providers/ollama';
 import { CancelledError, type Provider, type RunResult } from './providers/provider';
 import { JsonFile } from './store';
-import { DELEGATION_TOOLS, MCP_SERVER_NAME, McpServer, PARENT_HEADER, type DelegableAgent, type DelegationResult } from './mcp-server';
-import { defaultRoles, illustratorRole, WorkflowEngine, type TaskSpec, type WorkflowHost } from './workflows';
+import { DELEGATION_TOOLS, KNOWLEDGE_TOOLS, MCP_SERVER_NAME, McpServer, PARENT_HEADER, type DelegableAgent, type DelegationResult } from './mcp-server';
+import { defaultEmbedModel, EMBED_MODELS, SemanticIndex } from './semantic';
+import type { SemanticHit, SemanticStatus } from '../shared/types';
+import { defaultRoles, illustratorRole, imagePathsIn, OBSERVER_ID, observerRole, roleModel, WorkflowEngine, type TaskSpec, type WorkflowHost } from './workflows';
+import type { AttachmentInfo } from '../shared/types';
+import { describeAttachment, FILE_MAX_BYTES, filesForModel, FILES_TEXT_BUDGET, IMAGE_FILE_RE, isRiskyFile, MAX_FILES_PER_MESSAGE, MAX_IMAGES_PER_MESSAGE, safeFileName } from './attachment-files';
 
 interface Db {
   conversations: Conversation[];
@@ -113,6 +120,25 @@ interface LaunchOptions {
   effort?: ClaudeEffort;
   /** Claude : reprendre sessionId dans une nouvelle session (--fork-session). */
   forkSession?: boolean;
+  /** Images : chaque image produite est aussi détourée (fond transparent, original conservé). */
+  transparent?: boolean;
+  /** Images jointes au prompt (chemins absolus) : modèle vision Ollama, ou chemins donnés à Claude. */
+  images?: string[];
+  /** Autres fichiers joints (chemins absolus) : Claude les lit lui-même ; pour Ollama, leur texte est déjà dans le prompt. */
+  files?: string[];
+  /** Ollama : taille de contexte demandée (texte des fichiers joints). */
+  numCtx?: number;
+}
+
+/** Pièces jointes : formats acceptés (détectés par leurs premiers octets) et taille maximale. */
+const ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
+const IMAGE_PATH_RE = IMAGE_FILE_RE;
+
+/** Type d'image d'après ses premiers octets (PNG / JPEG), null sinon. */
+function sniffImage(buf: Buffer): 'png' | 'jpg' | null {
+  if (buf.length > 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'png';
+  if (buf.length > 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'jpg';
+  return null;
 }
 
 const MAX_TASKS = 2000;
@@ -139,9 +165,17 @@ const CANCELLED_TEXT = '_(réponse annulée)_';
 export function samePath(a: string, b: string): boolean {
   const norm = (p: string) => {
     const r = resolve(p).replace(/[\\/]+$/, '');
-    return process.platform === 'win32' ? r.toLowerCase() : r;
+    // Windows (NTFS) et macOS (APFS par défaut) ignorent la casse des noms.
+    return caseInsensitiveFs() ? r.toLowerCase() : r;
   };
   return norm(a) === norm(b);
+}
+
+/** Chemins sans doublons (même fichier écrit autrement), ordre conservé. */
+function uniquePaths(paths: string[]): string[] {
+  const out: string[] = [];
+  for (const p of paths) if (p && !out.some((q) => samePath(q, p))) out.push(p);
+  return out;
 }
 
 /** Réponse inutilisable comme contexte pour les autres IA (erreur, annulation). */
@@ -163,10 +197,14 @@ export class Hub {
   private delegation = new Map<string, DelegationContext>();
   readonly knowledge: Knowledge;
   readonly vaults: Vaults;
+  /** Recherche par le sens (embeddings Ollama), index dans <données>/semantic. */
+  readonly semantic: SemanticIndex;
   private obsidianInstall: import('node:child_process').ChildProcess | null = null;
   readonly images: ImageEngine;
   /** Dictée vocale : modèles Whisper locaux (<données>/models/whisper). */
   readonly voice: VoiceModels;
+  /** Détourage d'images : modèle BiRefNet local (<données>/models/cutout), exécuté par l'interface. */
+  readonly cutout: Cutout;
 
   /**
    * @param dataDir  dossier des données (db.json, settings.json)
@@ -209,10 +247,15 @@ export class Hub {
     if (!s.knowledgeBaseMap || typeof s.knowledgeBaseMap !== 'object') s.knowledgeBaseMap = {};
     s.conversationNotes ??= true;
     // Agent Illustrateur (images locales) ajouté une seule fois aux agents existants.
-    const flags = s as HubSettings & { illustratorAdded?: boolean };
+    const flags = s as HubSettings & { illustratorAdded?: boolean; observerAdded?: boolean };
     if (!flags.illustratorAdded) {
       if (!s.roles.some((r) => r.id === 'illustrateur')) s.roles.push(illustratorRole());
       flags.illustratorAdded = true;
+    }
+    // Agent Observateur (modèle vision local) : idem, une seule fois (s'il est supprimé ensuite, il ne revient pas).
+    if (!flags.observerAdded) {
+      if (!s.roles.some((r) => r.id === OBSERVER_ID)) s.roles.push(observerRole());
+      flags.observerAdded = true;
     }
     this.settingsFile.save();
 
@@ -241,6 +284,12 @@ export class Hub {
       },
       this.knowledge,
     );
+    this.semantic = new SemanticIndex({
+      ollamaUrl: () => this.settings.ollamaUrl,
+      indexDir: () => join(this.dataDir, 'semantic'),
+      model: () => this.embedModel,
+      emit: (status) => this.emit({ type: 'semantic', status: { ...status, semanticContext: !!this.settings.semanticContext } }),
+    });
     this.onEvent((ev) => {
       if (ev.type !== 'conversation') return;
       const conv = ev.conversation;
@@ -258,6 +307,11 @@ export class Hub {
       () => detectExistingComfy(this.baseDir) ?? undefined,
     );
     this.voice = new VoiceModels({ modelsDir: join(dataDir, 'models'), emit: (status) => this.emit({ type: 'voice', status }) });
+    this.cutout = new Cutout({
+      modelsDir: join(dataDir, 'models'),
+      emit: (ev) => this.emit(ev),
+      allowedPath: (p) => this.imageRoots().some((root) => p.toLowerCase().startsWith(resolve(root).toLowerCase() + sep)),
+    });
     this.db = new JsonFile<Db>(join(dataDir, 'db.json'), { conversations: [], tasks: [], workflows: [] });
     if (!Array.isArray(this.db.data.workflows)) this.db.data.workflows = [];
     if (!this.db.data.usage) {
@@ -309,6 +363,7 @@ export class Hub {
       listProviders: () => this.listProviders(),
       startTask: (spec) => this.startTask(spec),
       findTask: (id) => this.db.data.tasks.find((t) => t.id === id),
+      delegatedImages: (id) => this.delegatedImages(id),
       addTask: (task) => this.addTask(task),
       updateTask: (task) => {
         this.db.save();
@@ -332,7 +387,9 @@ export class Hub {
 
     this.mcp = new McpServer({
       listAgents: () => this.delegableAgents(),
-      delegate: (parent, agent, demande, contexte) => this.delegate(parent, agent, demande, contexte),
+      delegate: (parent, agent, demande, contexte, options) => this.delegate(parent, agent, demande, contexte, options),
+      searchNotes: (parent, question, base, nombre) => this.searchNotesForAgent(parent, question, base, nombre),
+      delegationEnabled: () => this.settings.delegationEnabled !== false,
     });
 
     this.setup = new Setup({
@@ -418,7 +475,105 @@ export class Hub {
 
   /** Dossiers d'où l'interface peut afficher des images (protocole hub-file). */
   imageRoots(): string[] {
-    return [resolve(this.baseDir), this.workspaceDir, this.vaultDir, ...this.settings.folders.map((f) => resolve(f.path))];
+    return [resolve(this.baseDir), this.workspaceDir, this.vaultDir, this.attachmentsRoot, ...this.settings.folders.map((f) => resolve(f.path))];
+  }
+
+  /** Images produites par les sous-tâches déléguées d'une tâche (outil demander_a), dans l'ordre de création. */
+  delegatedImages(taskId: string): string[] {
+    return this.db.data.tasks
+      .filter((t) => t.parentTaskId === taskId && t.images?.length)
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .flatMap((t) => t.images ?? []);
+  }
+
+  // ---------- Pièces jointes (images des messages) ----------
+
+  /** <données>/attachments : un sous-dossier par discussion. */
+  get attachmentsRoot(): string {
+    return resolve(this.dataDir, 'attachments');
+  }
+
+  private attachmentsDir(conversationId: string): string {
+    if (!/^[A-Za-z0-9-]+$/.test(conversationId)) throw new Error('Discussion invalide');
+    return join(this.attachmentsRoot, conversationId);
+  }
+
+  /**
+   * Chemin d'une pièce jointe existante de ce hub (sinon erreur) : aucun autre fichier ne peut être envoyé ni ouvert.
+   * Fichier régulier directement dans <données>/attachments/<discussion> (pas de traversée de chemin, pas de dossier).
+   */
+  private checkAttachment(path: string): string {
+    const abs = resolve(String(path ?? ''));
+    const root = this.attachmentsRoot;
+    const inside = caseInsensitiveFs() ? abs.toLowerCase().startsWith(`${root.toLowerCase()}${sep}`) : abs.startsWith(`${root}${sep}`);
+    const rel = inside ? abs.slice(root.length + 1).split(/[\\/]/) : [];
+    let isFile = false;
+    try {
+      isFile = rel.length === 2 && /^[A-Za-z0-9-]+$/.test(rel[0]) && statSync(abs).isFile();
+    } catch {
+      /* absent */
+    }
+    if (!isFile) throw new Error(`Pièce jointe introuvable : ${basename(abs)}`);
+    return abs;
+  }
+
+  /**
+   * Enregistre une pièce jointe collée / déposée (copie, jamais un lien vers l'original) : image PNG ou JPEG reconnue
+   * à ses octets (20 Mo max), sinon n'importe quel fichier (50 Mo max) sous un nom assaini, extension conservée.
+   */
+  saveAttachment(conversationId: string, data: Uint8Array | ArrayBuffer | string, name?: string): string {
+    this.conversation(conversationId); // la discussion doit exister
+    const buf = typeof data === 'string' ? Buffer.from(data, 'base64') : Buffer.from(data instanceof ArrayBuffer ? new Uint8Array(data) : data);
+    if (buf.length === 0) throw new Error('Fichier vide');
+    const kind = sniffImage(buf);
+    if (kind && buf.length > ATTACHMENT_MAX_BYTES) throw new Error('Image trop lourde (20 Mo maximum)');
+    if (buf.length > FILE_MAX_BYTES) throw new Error(`Fichier trop lourd (${Math.round(FILE_MAX_BYTES / 1024 / 1024)} Mo maximum)`);
+    const dir = this.attachmentsDir(conversationId);
+    mkdirSync(dir, { recursive: true });
+    const safe = safeFileName(String(name ?? ''), kind ? 'image' : 'fichier');
+    // Une image garde l'extension de son vrai format ; un faux .png / .jpg (autre contenu) ne passe pas pour une image.
+    const ext = kind ?? (safe.ext ? (IMAGE_PATH_RE.test(`.${safe.ext}`) ? `${safe.ext}.bin` : safe.ext) : 'bin');
+    const file = join(dir, `${Date.now()}-${randomUUID().slice(0, 8)}-${safe.stem}.${ext}`);
+    writeFileSync(file, buf);
+    return file;
+  }
+
+  /** Copie un fichier du disque comme pièce jointe (fichiers copiés dans l'Explorateur, lus par le process principal). */
+  importAttachmentFile(conversationId: string, src: string): string {
+    const st = statSync(src);
+    if (!st.isFile()) throw new Error(`${basename(src)} n'est pas un fichier (les dossiers ne peuvent pas être joints)`);
+    if (st.size > FILE_MAX_BYTES) throw new Error(`${basename(src)} : fichier trop lourd (${Math.round(FILE_MAX_BYTES / 1024 / 1024)} Mo maximum)`);
+    return this.saveAttachment(conversationId, readFileSync(src), basename(src));
+  }
+
+  /** Nom, taille et type des pièces jointes (chemins hors du dossier des pièces jointes ignorés). */
+  attachmentInfo(paths: string[]): AttachmentInfo[] {
+    const out: AttachmentInfo[] = [];
+    for (const p of Array.isArray(paths) ? paths.slice(0, 200) : []) {
+      try {
+        out.push(describeAttachment(this.checkAttachment(p)));
+      } catch {
+        /* supprimée ou hors du dossier */
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Pièce jointe à ouvrir (application par défaut) ou à montrer dans son dossier : chemin validé ; un exécutable
+   * (.exe, .bat, .js, .lnk…) n'est jamais ouvert directement, seulement montré dans l'Explorateur.
+   */
+  attachmentToOpen(path: string, reveal = false): string {
+    const abs = this.checkAttachment(path);
+    if (!reveal && isRiskyFile(abs)) throw new Error(`Par sécurité, ${basename(abs)} n'est pas ouvert depuis le hub (fichier exécutable). Utilise « Afficher dans le dossier ».`);
+    return abs;
+  }
+
+  /** Supprime une pièce jointe retirée avant l'envoi (jamais un fichier déjà envoyé dans un message). */
+  deleteAttachment(path: string): void {
+    const abs = this.checkAttachment(path);
+    const used = this.db.data.conversations.some((c) => c.messages.some((m) => m.images?.some((p) => samePath(p, abs)) || m.files?.some((p) => samePath(p, abs))));
+    if (!used) rmSync(abs, { force: true });
   }
 
   onEvent(listener: (ev: HubEvent) => void): () => void {
@@ -511,6 +666,10 @@ export class Hub {
       conv.permission = patch.permission;
     }
     if (typeof patch.useKnowledge === 'boolean') conv.useKnowledge = patch.useKnowledge;
+    if (typeof patch.transparentBg === 'boolean') {
+      if (patch.transparentBg) conv.transparentBg = true;
+      else delete conv.transparentBg;
+    }
     if (patch.effort !== undefined && CLAUDE_EFFORTS.includes(patch.effort)) {
       if (patch.effort === 'default') delete conv.effort;
       else conv.effort = patch.effort;
@@ -589,6 +748,12 @@ export class Hub {
     }
     this.db.data.conversations = this.db.data.conversations.filter((c) => c.id !== id);
     this.db.save();
+    // Images jointes de cette discussion : elles n'appartiennent qu'à elle.
+    try {
+      rmSync(this.attachmentsDir(id), { recursive: true, force: true });
+    } catch {
+      /* identifiant inattendu ou dossier verrouillé : on laisse le dossier */
+    }
     this.emit({ type: 'conversationDeleted', id });
   }
 
@@ -654,6 +819,8 @@ export class Hub {
       cwd: spec.cwd,
       permission: spec.permission,
       addDirs: spec.addDirs,
+      transparent: spec.transparent,
+      images: spec.images,
     });
     return { task, done };
   }
@@ -687,7 +854,9 @@ export class Hub {
         // Claude : accès réglés par l'utilisateur (serveurs MCP + dossiers en lecture) et présentation du hub.
         const isClaude = info.id === 'claude';
         const extraTools = isClaude ? this.settings.claudeAllowedMcp.map(mcpToolPrefix) : [];
-        const allowedTools = [...(mcp ? DELEGATION_TOOLS : []), ...extraTools];
+        // chercher_notes (lecture seule) toujours autorisé ; la délégation seulement si elle est activée dans les réglages.
+        const hubTools = mcp ? [...(this.settings.delegationEnabled !== false ? DELEGATION_TOOLS : []), ...KNOWLEDGE_TOOLS] : [];
+        const allowedTools = [...hubTools, ...extraTools];
         const addDirs = [...(run.addDirs ?? []), ...(isClaude ? this.settings.claudeExtraDirs.filter((d) => existsSync(d)) : [])];
         const systemAppend = isClaude && mcp ? await this.claudeBriefing(run.permission) : undefined;
         return { mcp, allowedTools, addDirs, systemAppend };
@@ -695,6 +864,9 @@ export class Hub {
       .then(({ mcp, allowedTools, addDirs, systemAppend }) =>
         provider.run({
           prompt: run.prompt,
+          ...(run.images?.length ? { images: run.images } : {}),
+          ...(run.files?.length ? { files: run.files } : {}),
+          ...(run.numCtx ? { numCtx: run.numCtx } : {}),
           model: task.model,
           history: run.history,
           sessionId: run.sessionId,
@@ -704,6 +876,7 @@ export class Hub {
           effort: run.effort,
           forkSession: run.forkSession,
           systemAppend,
+          ...(run.transparent ? { transparent: true } : {}),
           ...(allowedTools.length ? { allowedTools } : {}),
           ...(mcp ? { mcpConfigPath: mcp.configPath, extraEnv: { MCP_TOOL_TIMEOUT: String(DELEGATION_TIMEOUT_MS) } } : {}),
           signal: controller.signal,
@@ -720,6 +893,30 @@ export class Hub {
         task.output = r.output || task.output;
         task.usage = r.usage;
         if (r.images?.length) task.images = r.images;
+      })
+      .then(async () => {
+        // Fond transparent demandé : chaque image est détourée (original conservé). Un échec n'annule pas l'image.
+        if (!run.transparent || !task.images?.length) return;
+        const made: string[] = [];
+        task.status = 'running'; // la tâche reste « en cours » pendant le détourage
+        try {
+          for (const img of task.images.filter((p) => !isCutoutPath(p))) {
+            addActivity({ kind: 'info', text: 'Détourage (fond transparent)…' });
+            try {
+              const t0 = Date.now();
+              made.push(await this.cutout.request(img));
+              addActivity({ kind: 'info', text: `Image détourée en ${((Date.now() - t0) / 1000).toFixed(1).replace('.', ',')} s` });
+            } catch (err: any) {
+              addActivity({ kind: 'error', text: `Détourage impossible : ${err?.message ?? err}` });
+            }
+          }
+        } finally {
+          task.status = 'done';
+        }
+        if (!made.length) return;
+        task.images = [...task.images, ...made.filter((p) => !task.images!.includes(p))];
+        task.output = `${task.output.trimEnd()}\n\nVersion détourée (PNG à fond transparent) :\n${made.map((p) => `- ${p}`).join('\n')}`;
+        if (result) result = { ...result, output: task.output, images: task.images };
       })
       .catch((err: Error) => {
         task.status = err instanceof CancelledError ? 'cancelled' : 'error';
@@ -747,7 +944,8 @@ export class Hub {
   /** Ajoute la consommation d'une tâche terminée au cumul du jour de son IA. */
   private countUsage(task: Task, emit: boolean): void {
     const u = task.usage;
-    const images = task.images?.length ?? 0;
+    // Les versions détourées ne sont pas des images générées en plus.
+    const images = task.images?.filter((p) => !isCutoutPath(p)).length ?? 0;
     if (!u && !images) return;
     if (!u?.inputTokens && !u?.outputTokens && !u?.cacheTokens && !images) return;
     const usage = (this.db.data.usage ??= { days: {} });
@@ -832,28 +1030,47 @@ export class Hub {
    * Passée en --append-system-prompt (mise en cache par Claude, ne pollue pas l'historique de la discussion).
    */
   private async claudeBriefing(permission: ClaudePermission): Promise<string> {
-    const agents = await this.delegableAgents();
+    const delegation = this.settings.delegationEnabled !== false;
+    const agents = delegation ? await this.delegableAgents() : [];
     const infos = await this.listProviders();
     const imageAgent = this.settings.roles.find(
       (r) => IMAGE_PROVIDERS.has(r.providerId) && infos.find((i) => i.id === r.providerId)?.available && agents.some((a) => a.id === r.id),
     );
-    const lines = [
-      "Tu travailles dans le « Hub IA » de l'utilisateur : une application qui fait collaborer plusieurs IA sur son PC.",
-      'Tu peux confier une sous-tâche à un autre agent du hub avec l’outil mcp__hub__demander_a (paramètres : agent, demande, contexte facultatif) ; mcp__hub__lister_agents donne la liste à jour. Agents disponibles :',
-      ...agents.map((a) => `- ${a.id} — ${a.name} (${a.ia}) : ${a.description}`),
+    const lines = ["Tu travailles dans le « Hub IA » de l'utilisateur : une application qui fait collaborer plusieurs IA sur son PC."];
+    if (delegation) {
+      lines.push(
+        'Tu peux confier une sous-tâche à un autre agent du hub avec l’outil mcp__hub__demander_a (paramètres : agent, demande, contexte facultatif) ; mcp__hub__lister_agents donne la liste à jour. Agents disponibles :',
+        ...agents.map((a) => `- ${a.id} — ${a.name} (${a.ia}) : ${a.description}`),
+      );
+    }
+    lines.push(
+      "Notes de l'utilisateur : l'outil mcp__hub__chercher_notes (paramètres : question, base facultative, nombre facultatif) retrouve PAR LE SENS les passages de ses bases de connaissances (notes Markdown/Obsidian du hub), même sans les mots exacts. Utilise-le dès que la demande peut s'appuyer sur ce qu'il a déjà noté (projets, décisions, préférences, comptes rendus).",
       '',
       'Règles :',
-    ];
-    if (imageAgent) {
+    );
+    if (!delegation) {
+      // Délégation désactivée dans les réglages : pas d'agent ni d'image.
+    } else if (imageAgent) {
       lines.push(
         `- IMAGES : pour toute demande d'image, de visuel, d'illustration, d'icône, de concept art ou de maquette visuelle d'écran/interface, génère-la avec l'agent « ${imageAgent.id} » via demander_a. Décris l'image EN ANGLAIS, précisément (sujet, style, couleurs, cadrage ; pour une interface : « game UI mockup, … » avec la disposition des éléments ; un texte court à afficher se met entre guillemets). Pour un lot d'icônes ou d'éléments, fais plutôt une demande par élément (plus net). Il renvoie le chemin du fichier : cite-le dans ta réponse (l'utilisateur voit l'image dans le hub).`,
         "- Si l'utilisateur demande de « générer une interface / un écran » sans autre précision, produis d'abord une maquette visuelle avec cet agent, puis explique-la brièvement et propose la suite (l'implémenter, la modifier).",
+        `- FOND TRANSPARENT : pour une icône, un objet, un personnage ou un élément de jeu à intégrer (ex. Roblox : decal, image d'interface), ajoute le paramètre fond_transparent: true à demander_a. Le hub détoure l'image en local et renvoie DEUX chemins : l'original et la version « …-detoure.png » (PNG avec canal alpha) — c'est celle-ci à utiliser. Ne mets PAS « transparent background » dans la description (le modèle dessinerait un damier) : décris juste le sujet, le hub ajoute lui-même un fond uni. Pas de fond transparent pour une scène, un décor ou une maquette d'écran.${imageAgent.transparent ? ` (L'agent « ${imageAgent.id} » est réglé pour toujours détourer ; fond_transparent: false l'en empêche.)` : ''}`,
       );
     } else {
       lines.push('- Aucun agent d’images n’est disponible pour le moment (ComfyUI non installé) : dis-le si on te demande une image.');
     }
+    // Agent Observateur (modèle vision local) : regarder des images sans dépenser le quota de Claude.
+    const observer = agents.find((a) => a.id === OBSERVER_ID);
+    if (observer) {
+      lines.push(
+        `- VOIR DES IMAGES : l'agent « ${observer.id} » (modèle vision local, gratuit) regarde des images à ta place. Appelle demander_a avec agent="${observer.id}", le paramètre images = liste des CHEMINS ABSOLUS des fichiers (PNG/JPEG), et dans demande ce qu'il doit faire : décrire une capture d'écran, lire/recopier le texte d'une image, repérer un détail, ou vérifier qu'une image générée correspond à la demande (redonne-lui la description demandée et la liste des points à contrôler).`,
+        ...(imageAgent
+          ? [`- Après une génération avec « ${imageAgent.id} », tu peux faire contrôler l'image par « ${observer.id} » avant de la présenter ; si elle ne correspond pas, relance la génération avec une description corrigée (2 essais maximum).`]
+          : []),
+      );
+    }
+    if (delegation) lines.push('- Pour rédiger ou relire un texte long, tu peux t’appuyer sur les autres agents ; donne-leur des consignes complètes et autonomes.');
     lines.push(
-      '- Pour rédiger ou relire un texte long, tu peux t’appuyer sur les autres agents ; donne-leur des consignes complètes et autonomes.',
       `- Tes droits dans cette session : ${PERMISSION_TEXT[permission]}.`,
     );
     if (this.settings.claudeAllowedMcp.length) lines.push(`- Serveurs MCP autorisés sans confirmation : ${this.settings.claudeAllowedMcp.join(', ')}.`);
@@ -1058,6 +1275,90 @@ export class Hub {
     return this.voice.remove(model);
   }
 
+  // ---------- Détourage d'images (fond transparent) ----------
+
+  cutoutStatus(): CutoutStatus {
+    return this.cutout.status();
+  }
+
+  cutoutPlannedBytes(variant: CutoutVariant): Promise<number> {
+    if (!isCutoutVariant(variant)) throw new Error('Variante de détourage inconnue');
+    return this.cutout.plannedBytes(variant);
+  }
+
+  downloadCutoutModel(variant: CutoutVariant): Promise<CutoutStatus> {
+    return this.cutout.download(variant);
+  }
+
+  cancelCutoutDownload(): void {
+    this.cutout.cancel();
+  }
+
+  deleteCutoutModel(): CutoutStatus {
+    return this.cutout.remove();
+  }
+
+  cutoutDone(id: string, png: Uint8Array | null, error?: string): void {
+    this.cutout.done(id, png, error);
+  }
+
+  /**
+   * Bouton « Détourer » : PNG transparent enregistré à côté de l'original, puis ajouté juste après lui
+   * dans les tâches, messages et étapes de workflow qui l'affichent (Ouvrir / Copier marchent dessus).
+   */
+  async cutoutImage(path: string): Promise<string> {
+    const src = resolve(String(path ?? ''));
+    const out = await this.cutout.request(src);
+    const same = (a: string) => samePath(a, src);
+    const withCutout = (list: string[]) => {
+      if (list.some((p) => samePath(p, out))) return null;
+      const i = list.findIndex(same);
+      return [...list.slice(0, i + 1), out, ...list.slice(i + 1)];
+    };
+    for (const t of this.db.data.tasks) {
+      const next = t.images?.some(same) ? withCutout(t.images) : null;
+      if (!next) continue;
+      t.images = next;
+      this.emit({ type: 'task', task: t });
+    }
+    for (const c of this.db.data.conversations) {
+      let changed = false;
+      for (const m of c.messages) {
+        const next = m.images?.some(same) ? withCutout(m.images) : null;
+        if (next) {
+          m.images = next;
+          changed = true;
+        }
+      }
+      if (changed) this.emit({ type: 'conversation', conversation: c });
+    }
+    for (const run of this.db.data.workflows) {
+      let changed = false;
+      for (const s of run.steps) {
+        const next = s.images?.some(same) ? withCutout(s.images) : null;
+        if (next) {
+          s.images = next;
+          changed = true;
+        }
+      }
+      if (changed) this.emit({ type: 'workflow', run });
+    }
+    this.db.save();
+    return out;
+  }
+
+  /** Réglage « fond transparent » d'un agent d'images (ex. Illustrateur) : toutes ses images seront détourées. */
+  setRoleTransparent(roleId: string, on: boolean): { roles: AgentRole[]; plannerRoleId: string } {
+    const role = this.settings.roles.find((r) => r.id === roleId);
+    if (!role) throw new Error(`Agent inconnu : ${roleId}`);
+    if (!IMAGE_PROVIDERS.has(role.providerId)) throw new Error('Seuls les agents d’images peuvent détourer leurs images');
+    if (on) role.transparent = true;
+    else delete role.transparent;
+    this.settingsFile.save();
+    this.emit({ type: 'roles', roles: this.settings.roles, plannerRoleId: this.settings.plannerRoleId });
+    return { roles: this.settings.roles, plannerRoleId: this.settings.plannerRoleId };
+  }
+
   claudeLogin(): void {
     const claude = this.providers.get('claude') as ClaudeProvider | undefined;
     claude?.openLogin();
@@ -1075,8 +1376,9 @@ export class Hub {
     return this.getClaudeAccess();
   }
 
+  /** Outils MCP du hub (délégation si activée + chercher_notes) : tâches Claude de 1er niveau, hors planification. */
   private canDelegate(task: Task, info: ProviderInfo): boolean {
-    if (this.settings.delegationEnabled === false || info.id !== 'claude') return false;
+    if (info.id !== 'claude') return false;
     if (task.parentTaskId) return false;
     if (task.workflowRunId && !task.stepId) return false; // tâche de planification
     return true;
@@ -1126,13 +1428,35 @@ export class Hub {
       if (r.providerId.startsWith('web:') || r.id === this.settings.plannerRoleId) continue;
       const info = infos.find((i) => i.id === r.providerId);
       if (!info?.available) continue;
-      out.push({ id: r.id, name: r.name, description: r.description, ia: this.providerLabel(r.providerId, r.model ?? info.defaultModel) });
+      const model = roleModel(r, info);
+      if (r.id === OBSERVER_ID && !model) continue; // aucun modèle vision installé : l'Observateur n'est pas proposé
+      out.push({ id: r.id, name: r.name, description: r.description, ia: this.providerLabel(r.providerId, model) });
+    }
+    return out;
+  }
+
+  /**
+   * Images passées à une délégation : fichiers PNG/JPEG existants (20 Mo max). Pour un agent Claude, seulement des
+   * images des dossiers du hub (la délégation ne doit pas ouvrir à Claude un dossier qu'il ne pouvait pas lire).
+   */
+  private delegationImages(paths: string[], forClaude: boolean): string[] {
+    const out: string[] = [];
+    const roots = this.imageRoots().map((r) => resolve(r).toLowerCase());
+    for (const raw of paths.slice(0, 6)) {
+      const abs = resolve(String(raw).trim().replace(/^["']|["']$/g, ''));
+      if (!IMAGE_PATH_RE.test(abs)) throw new Error(`Format non pris en charge (PNG ou JPEG uniquement) : ${abs}`);
+      if (!existsSync(abs) || !statSync(abs).isFile()) throw new Error(`Image introuvable : ${abs} (donne un chemin ABSOLU vers le fichier)`);
+      if (statSync(abs).size > ATTACHMENT_MAX_BYTES) throw new Error(`Image trop lourde (20 Mo maximum) : ${abs}`);
+      if (forClaude && !roots.some((r) => abs.toLowerCase().startsWith(`${r}${process.platform === 'win32' ? '\\' : '/'}`))) {
+        throw new Error(`Image hors des dossiers du hub : ${abs}. Confie plutôt l'image à l'agent « ${OBSERVER_ID} ».`);
+      }
+      if (!out.some((p) => samePath(p, abs))) out.push(abs);
     }
     return out;
   }
 
   /** Exécute une sous-tâche confiée par une tâche en cours et renvoie son résultat. */
-  async delegate(parentTaskId: string, agentRef: string, demande: string, contexte?: string): Promise<DelegationResult> {
+  async delegate(parentTaskId: string, agentRef: string, demande: string, contexte?: string, options: { transparent?: boolean; images?: string[] } = {}): Promise<DelegationResult> {
     const parent = this.db.data.tasks.find((t) => t.id === parentTaskId);
     if (!parent) throw new Error('Délégation impossible : tâche appelante introuvable.');
     if (parent.parentTaskId) throw new Error('Délégation en cascade refusée : une tâche déléguée ne peut pas déléguer à son tour.');
@@ -1155,11 +1479,31 @@ export class Hub {
     if (active >= MAX_PARALLEL_DELEGATIONS) throw new Error(`Trop de délégations simultanées (${MAX_PARALLEL_DELEGATIONS} maximum) : attends la fin des précédentes.`);
 
     const isImage = IMAGE_PROVIDERS.has(info.id);
+    // Modèle et images : l'Observateur prend un modèle vision installé ; sans images explicites, il regarde
+    // les chemins d'images cités dans la demande.
+    const model = roleModel(role, info);
+    const vision = !!model && !!info.visionModels?.includes(model);
+    if (role.id === OBSERVER_ID && !vision) {
+      throw new Error("Aucun modèle vision installé dans Ollama : l'Observateur ne peut pas regarder d'image (Réglages › Modèle vision pour le télécharger).");
+    }
+    let imagePaths = (options.images ?? []).filter((p) => typeof p === 'string' && p.trim());
+    if (!imagePaths.length && vision) imagePaths = imagePathsIn(`${demande}\n${contexte ?? ''}`);
+    let images: string[] = [];
+    if (imagePaths.length) {
+      if (isImage) throw new Error(`« ${role.name} » génère des images mais ne sait pas en lire : confie l'image à l'agent « ${OBSERVER_ID} ».`);
+      if (info.id === 'ollama' && !vision) throw new Error(`« ${role.name} » (${model ?? 'modèle inconnu'}) ne voit pas les images : confie-les à l'agent « ${OBSERVER_ID} ».`);
+      images = this.delegationImages(imagePaths, info.id === 'claude');
+    }
+    if (role.id === OBSERVER_ID && !images.length) {
+      throw new Error("Aucune image à regarder : passe le CHEMIN ABSOLU de chaque image dans le paramètre « images » de demander_a.");
+    }
     let runPrompt = isImage
       ? demande
       : `Tu es l'agent « ${role.name} » (${role.description}) du Hub IA. Un autre agent te confie une sous-tâche : tu ne vois pas sa conversation, tout ce qu'il faut est ci-dessous.\n\n${
           contexte ? `Contexte :\n${contexte}\n\n` : ''
-        }Demande :\n${demande}\n\nRéponds directement avec ton résultat complet, sans préambule.`;
+        }Demande :\n${demande}\n\n${
+          images.length && vision ? `${images.length} image(s) jointe(s), dans l'ordre : ${images.map((p) => basename(p)).join(', ')}. Regarde-les attentivement ; si un détail est illisible ou absent, dis-le plutôt que de l'inventer.\n\n` : ''
+        }Réponds directement avec ton résultat complet, sans préambule.`;
     let addDirs: string[] | undefined;
     if (ctx.useKnowledge && !isImage) {
       if (info.usesWorkspace) {
@@ -1176,16 +1520,19 @@ export class Hub {
       ...(parent.workflowRunId ? { workflowRunId: parent.workflowRunId } : {}),
       parentTaskId,
       providerId: role.providerId,
-      model: role.model ?? info.defaultModel,
+      model,
       agent: role.name,
       title: `↪ ${demande}`,
-      prompt: contexte ? `${demande}\n\nContexte : ${contexte}` : demande,
+      ...(images.length ? { images } : {}),
+      prompt: `${contexte ? `${demande}\n\nContexte : ${contexte}` : demande}${images.length ? `\n\nImages :\n${images.map((p) => `- ${p}`).join('\n')}` : ''}`,
       runPrompt,
       history: [],
       // Mêmes droits que l'agent appelant, jamais plus.
       cwd: ctx.cwd,
       permission: ctx.permission,
       addDirs,
+      // Fond transparent : paramètre fond_transparent de demander_a ; sinon réglage de l'agent ou mots de la demande.
+      transparent: isImage && (options.transparent ?? (!!role.transparent || wantsTransparent(demande))),
     });
     let timedOut = false;
     const timer = setTimeout(() => {
@@ -1203,11 +1550,15 @@ export class Hub {
   /** Historique pour une IA sans mémoire propre : les réponses des autres IA lui sont montrées comme du contexte. */
   private historyFor(providerId: string, previous: ChatMessage[]): ChatMessage[] {
     const out: ChatMessage[] = [];
+    // Images (jointes par l'utilisateur ou produites par une autre IA) : gardées, le connecteur ne les envoie qu'à un modèle vision.
+    const imgs = (m: ChatMessage) => (m.images?.length ? { images: [...m.images] } : {});
+    // Fichiers joints : gardés aussi (leur texte est réinjecté par runTask pour les IA sans outils).
+    const files = (m: ChatMessage) => (m.files?.length ? { files: [...m.files] } : {});
     for (const m of previous) {
-      if (m.role === 'user') out.push({ role: 'user', content: m.content, at: m.at });
+      if (m.role === 'user') out.push({ role: 'user', content: m.content || (m.images?.length ? '(image jointe)' : '(fichier joint)'), at: m.at, ...imgs(m), ...files(m) });
       else if (isFailedReply(m.content)) continue;
       else if (m.providerId === providerId) out.push({ role: 'assistant', content: m.content, at: m.at });
-      else out.push({ role: 'user', content: `[Réponse de ${this.providerLabel(m.providerId ?? '?', m.model)}]\n${m.content}`, at: m.at });
+      else out.push({ role: 'user', content: `[Réponse de ${this.providerLabel(m.providerId ?? '?', m.model)}]\n${m.content}`, at: m.at, ...imgs(m) });
     }
     return out;
   }
@@ -1231,17 +1582,27 @@ export class Hub {
     const unseen = previous.slice(start).filter((m) => m.providerId !== providerId && !(m.role === 'assistant' && isFailedReply(m.content)));
     // Messages utilisateur seuls déjà vus (même session) : inutile de les répéter s'il n'y a aucune réponse d'une autre IA.
     if (unseen.length === 0 || (hasSession && !unseen.some((m) => m.role === 'assistant'))) return text;
+    // Images citées par leur chemin (Claude peut les ouvrir avec Read : le dossier des pièces jointes lui est ouvert).
+    const imgs = (m: ChatMessage) => `${m.images?.length ? `\n(images : ${m.images.join(' ; ')})` : ''}${m.files?.length ? `\n(fichiers joints : ${m.files.join(' ; ')})` : ''}`;
     let transcript = unseen
-      .map((m) => (m.role === 'user' ? `### Utilisateur\n${m.content}` : `### ${this.providerLabel(m.providerId ?? '?', m.model)}\n${m.content}`))
+      .map((m) => (m.role === 'user' ? `### Utilisateur\n${m.content}${imgs(m)}` : `### ${this.providerLabel(m.providerId ?? '?', m.model)}\n${m.content}${imgs(m)}`))
       .join('\n\n');
     if (transcript.length > MAX_CONTEXT_CHARS) transcript = `…\n${transcript.slice(-MAX_CONTEXT_CHARS)}`;
     return `Contexte — échanges de la discussion que tu n'as pas vus (autres IA du hub) :\n\n${transcript}\n\n---\nNouveau message de l'utilisateur :\n${text}`;
   }
 
   /** Envoie un message dans une discussion : une tâche par IA cochée, exécutées en parallèle. */
-  async sendMessage(conversationId: string, text: string): Promise<Task[]> {
-    const prompt = text.trim();
-    if (!prompt) throw new Error('Message vide');
+  async sendMessage(conversationId: string, text: string, images: string[] = []): Promise<Task[]> {
+    // Pièces jointes : uniquement des fichiers enregistrés par saveAttachment (10 au plus, dont 6 images au plus).
+    const all = [...new Set((Array.isArray(images) ? images : []).map((p) => this.checkAttachment(p)))];
+    if (all.length > MAX_FILES_PER_MESSAGE) throw new Error(`${MAX_FILES_PER_MESSAGE} fichiers joints maximum par message`);
+    const attached = all.filter((p) => IMAGE_PATH_RE.test(p));
+    const files = all.filter((p) => !IMAGE_PATH_RE.test(p));
+    if (attached.length > MAX_IMAGES_PER_MESSAGE) throw new Error(`${MAX_IMAGES_PER_MESSAGE} images maximum par message`);
+    const typed = String(text ?? '').trim();
+    if (!typed && !all.length) throw new Error('Message vide');
+    // Pièce jointe seule : on demande une description / un résumé (le message affiché reste vide, seules les pièces jointes apparaissent).
+    const prompt = typed || (attached.length && !files.length ? 'Décris cette image.' : all.length > 1 ? 'Résume ces fichiers joints.' : 'Résume ce fichier joint.');
     const conv = this.conversation(conversationId);
     if (this.db.data.tasks.some((t) => t.conversationId === conv.id && this.running.has(t.id))) {
       throw new Error('Une réponse est déjà en cours dans cette discussion');
@@ -1255,10 +1616,17 @@ export class Hub {
     const previous = [...conv.messages];
     const now = Date.now();
     const turnId = randomUUID();
-    const title = prompt.replace(/\s+/g, ' ').slice(0, 80);
+    const title = (
+      typed ||
+      (files.length
+        ? `📎 ${all.length > 1 ? `${all.length} fichiers joints` : basename(files[0]).replace(/^\d{10,}-[0-9a-f]{8}-/, '')}`
+        : `🖼 ${attached.length > 1 ? `${attached.length} images jointes` : 'Image jointe'}`)
+    )
+      .replace(/\s+/g, ' ')
+      .slice(0, 80);
 
-    conv.messages.push({ role: 'user', content: prompt, at: now, turnId });
-    if (conv.title === 'Nouvelle discussion') conv.title = prompt.replace(/\s+/g, ' ').slice(0, 60);
+    conv.messages.push({ role: 'user', content: typed, at: now, turnId, ...(attached.length ? { images: attached } : {}), ...(files.length ? { files } : {}) });
+    if (conv.title === 'Nouvelle discussion') conv.title = title.slice(0, 60);
     conv.updatedAt = now;
 
     const tasks: Task[] = [];
@@ -1291,7 +1659,23 @@ export class Hub {
         conv.messages.push({ role: 'assistant', content: `⚠️ ${task.error}`, at: now, taskId: task.id, providerId: p.providerId, model: p.model, turnId });
         continue;
       }
-      starts.push(() => this.runTask(conv, task, info, previous, turnId));
+      if (attached.length) {
+        const visionError = this.applyVision(task, info, attached.length);
+        if (visionError) {
+          task.status = 'error';
+          task.error = visionError;
+          task.finishedAt = now;
+          task.usage = { durationMs: 0 };
+          conv.messages.push({ role: 'assistant', content: `⚠️ ${visionError}`, at: now, taskId: task.id, providerId: p.providerId, model: p.model, turnId });
+          continue;
+        }
+      }
+      if (files.length) {
+        const n = files.length > 1 ? `${files.length} fichiers joints` : '1 fichier joint';
+        if (IMAGE_PROVIDERS.has(info.id)) task.activity.push({ at: now, kind: 'info', text: `📎 ${n} ignoré(s) : ${info.name} génère une image à partir du texte seulement.` });
+        else if (info.usesWorkspace) task.activity.push({ at: now, kind: 'info', text: `📎 ${n} : ${info.name} les ouvre lui-même (outil Read).` });
+      }
+      starts.push(() => this.runTask(conv, task, info, previous, turnId, attached, files));
     }
     if (this.db.data.tasks.length > MAX_TASKS) this.db.data.tasks.splice(0, this.db.data.tasks.length - MAX_TASKS);
 
@@ -1302,29 +1686,110 @@ export class Hub {
     return tasks;
   }
 
-  private runTask(conv: Conversation, task: Task, info: ProviderInfo, previous: ChatMessage[], turnId: string): void {
+  /**
+   * Message avec image(s) : choisit qui peut les voir. Ollama sans modèle vision choisi → on bascule CE message sur
+   * un modèle vision installé (signalé dans la réponse) ; s'il n'y en a aucun → erreur claire (renvoyée), plutôt
+   * qu'une réponse inventée sur une image que le modèle n'a pas vue. Claude lit les fichiers lui-même.
+   */
+  private applyVision(task: Task, info: ProviderInfo, count: number): string | null {
+    const what = count > 1 ? 'les images' : "l'image";
+    if (IMAGE_PROVIDERS.has(info.id)) {
+      task.activity.push({ at: Date.now(), kind: 'info', text: `🖼 ${count > 1 ? 'Images jointes ignorées' : 'Image jointe ignorée'} : ${info.name} génère une image à partir du texte seulement.` });
+      return null;
+    }
+    if (info.id !== 'ollama') {
+      if (info.id === 'claude') task.activity.push({ at: Date.now(), kind: 'info', text: `🖼 ${count} image(s) jointe(s) : Claude les ouvre avec son outil Read.` });
+      return null;
+    }
+    const vision = info.visionModels ?? [];
+    if (task.model && vision.includes(task.model)) return null;
+    if (!vision.length) {
+      return `${task.model ?? 'Ce modèle'} ne voit pas les images et aucun modèle vision n'est installé dans Ollama : ${what} n'a pas été ${count > 1 ? 'transmises' : 'transmise'}. Télécharge un modèle vision dans Réglages › Modèle vision (ou dans l'assistant d'installation), puis renvoie le message.`;
+    }
+    // Même modèle vision que l'agent Observateur (réglable dans Réglages › Agents), sinon le premier installé.
+    const observer = this.settings.roles.find((r) => r.id === OBSERVER_ID && r.providerId === 'ollama');
+    const chosen = (observer && roleModel(observer, info)) || vision[0];
+    task.activity.push({
+      at: Date.now(),
+      kind: 'info',
+      text: `🖼 ${task.model ?? 'Le modèle choisi'} ne voit pas les images : ce message est envoyé au modèle vision ${chosen}. Les messages suivants sans image reviennent à ${task.model ?? 'ton modèle'}.`,
+    });
+    task.model = chosen;
+    return null;
+  }
+
+  private runTask(conv: Conversation, task: Task, info: ProviderInfo, previous: ChatMessage[], turnId: string, images: string[] = [], files: string[] = []): void {
     const sessionId = info.keepsOwnHistory ? conv.providerSessions[info.id] : undefined;
     const isImage = IMAGE_PROVIDERS.has(info.id);
     let runPrompt = info.keepsOwnHistory ? this.promptFor(info.id, previous, task.prompt, !!sessionId) : task.prompt;
+    const history = info.keepsOwnHistory || isImage ? [] : this.historyFor(info.id, previous);
     let addDirs: string[] | undefined;
+    let numCtx: number | undefined;
+    // Claude : pièces jointes des messages précédents citées par leur chemin → dossier des pièces jointes lisible.
+    if (info.id === 'claude' && previous.some((m) => m.role === 'user' && (m.images?.length || m.files?.length))) {
+      const dir = this.attachmentsDir(conv.id);
+      if (existsSync(dir)) addDirs = [dir];
+    }
+    let contextReady: Promise<void> = Promise.resolve();
     // Base de connaissances liée à la discussion : Claude la lit lui-même ; les IA sans fichiers reçoivent les passages utiles.
     if (conv.useKnowledge && !isImage) {
-      const { kb } = this.vaults.forConversation(conv);
+      const { id: baseId, kb } = this.vaults.forConversation(conv);
       if (info.usesWorkspace) {
-        addDirs = [kb.dir];
+        addDirs = [...(addDirs ?? []), kb.dir];
         runPrompt = `${kb.promptHint()}\n\n${runPrompt}`;
+      } else if (this.settings.semanticContext) {
+        // Option « par le sens » : passages trouvés par embeddings (repli sur les mots-clés si l'index n'est pas prêt).
+        const exclude = conv.knowledgeNoteBase === baseId ? conv.knowledgeNote : undefined;
+        contextReady = this.semantic
+          .contextFor(baseId, kb, task.prompt, { exclude })
+          .catch(() => '')
+          .then((semantic) => {
+            const context = semantic || kb.contextFor(task.prompt);
+            if (context) runPrompt = `${context}\n\n---\n${runPrompt}`;
+          });
       } else {
         const context = kb.contextFor(task.prompt);
         if (context) runPrompt = `${context}\n\n---\n${runPrompt}`;
       }
     }
 
-    void this.launch(
+    // Fichiers joints pour une IA sans outils (Ollama) : leur texte va dans le message (texte, code, PDF, DOCX),
+    // un binaire est seulement mentionné. Ceux des messages précédents sont réinjectés dans l'historique tant que le
+    // budget le permet (questions de suivi sur le même fichier). Claude, lui, reçoit les chemins (connecteur).
+    if (!isImage && !info.usesWorkspace && (files.length || history.some((m) => m.files?.length))) {
+      contextReady = contextReady
+        .then(async () => {
+          let budget = FILES_TEXT_BUDGET;
+          if (files.length) {
+            const res = await filesForModel(files, budget);
+            budget -= res.used;
+            if (res.text) runPrompt = `${res.text}\n\n---\nMessage de l'utilisateur :\n${runPrompt}`;
+            task.activity.push({ at: Date.now(), kind: 'info', text: `📎 Fichiers joints transmis à ${info.name} : ${res.notes.join(' · ')}` });
+          }
+          for (let i = history.length - 1; i >= 0 && budget > 1000; i--) {
+            const m = history[i];
+            if (!m.files?.length) continue;
+            const res = await filesForModel(m.files, budget);
+            budget -= res.used;
+            if (res.text) m.content = `${res.text}\n\n---\n${m.content}`;
+          }
+          // Contexte assez grand pour tout le texte (≈ 3 caractères par token, + images + place pour la réponse) :
+          // au-delà des 4096 tokens par défaut, Ollama couperait le début du message sans prévenir.
+          const chars = runPrompt.length + history.reduce((n, m) => n + m.content.length, 0);
+          const tokens = Math.ceil(chars / 3) + images.length * 1500 + 2048;
+          numCtx = Math.min(32768, Math.max(8192, Math.ceil(tokens / 4096) * 4096));
+        })
+        .catch(() => undefined);
+    }
+
+    void contextReady.then(() => this.launch(
       task,
       info,
       {
         prompt: runPrompt,
-        history: info.keepsOwnHistory || isImage ? [] : this.historyFor(info.id, previous),
+        history,
+        ...(numCtx ? { numCtx } : {}),
+        ...(files.length && !isImage ? { files } : {}),
         sessionId,
         cwd: conv.cwd || this.workspaceDir,
         permission: conv.permission ?? this.settings.claudePermission,
@@ -1333,6 +1798,10 @@ export class Hub {
         // Copie indépendante d'une session Claude Code : le 1er envoi crée une NOUVELLE session (--fork-session)
         // avec tout l'historique ; l'originale n'est jamais modifiée. Les envois suivants reprennent la copie.
         forkSession: info.id === 'claude' && !!sessionId && !!conv.claudeForkPending,
+        // Images : option « Fond transparent » de la discussion, ou demande explicite dans le message.
+        transparent: isImage && (!!conv.transparentBg || wantsTransparent(task.prompt)),
+        // Pièces jointes du message : Ollama (modèle vision) les reçoit en base64, Claude leurs chemins.
+        ...(images.length && !isImage ? { images } : {}),
       },
       (result) => {
         if (result?.sessionId) conv.providerSessions[info.id] = result.sessionId;
@@ -1348,6 +1817,9 @@ export class Hub {
                 : CANCELLED_TEXT
               : `⚠️ ${task.error ?? 'Erreur inconnue'}`;
         if (this.db.data.conversations.includes(conv)) {
+          // Images de la réponse + celles de ses sous-tâches déléguées (ex. Illustrateur appelé par Claude) : gardées
+          // dans le message pour les retrouver en rouvrant la discussion, même après « Vider l'historique » des tâches.
+          const replyImages = uniquePaths([...(task.images ?? []), ...this.delegatedImages(task.id)]);
           conv.messages.push({
             role: 'assistant',
             content,
@@ -1356,13 +1828,13 @@ export class Hub {
             providerId: task.providerId,
             model: task.model,
             turnId,
-            ...(task.images?.length ? { images: task.images } : {}),
+            ...(replyImages.length ? { images: replyImages } : {}),
           });
           conv.updatedAt = task.finishedAt!;
           this.emit({ type: 'conversation', conversation: conv });
         }
       },
-    );
+    ));
   }
 
   // ---------- Workflows (délégués au moteur) ----------
@@ -1429,6 +1901,79 @@ export class Hub {
     return this.vaults.get(baseId).searchNotes(query);
   }
 
+  // ---------- Recherche par le sens (embeddings Ollama) ----------
+
+  /** Modèle d'embeddings réglé (défaut selon la RAM : bge-m3, ou nomic-embed-text sur un petit PC). */
+  get embedModel(): string {
+    const m = this.settings.embedModel;
+    return m && EMBED_MODELS.some((x) => x.name === m) ? m : defaultEmbedModel();
+  }
+
+  /** Id de base valide (repli sur la base Hub). */
+  private baseIdOf(baseId?: string): string {
+    return baseId && this.vaults.exists(baseId) ? baseId : HUB_BASE_ID;
+  }
+
+  async semanticStatus(baseId?: string): Promise<SemanticStatus> {
+    const id = this.baseIdOf(baseId);
+    return { ...(await this.semantic.status(id, this.vaults.get(id))), semanticContext: !!this.settings.semanticContext };
+  }
+
+  async semanticIndex(baseId?: string, full = false): Promise<SemanticStatus> {
+    const id = this.baseIdOf(baseId);
+    const st = await this.semantic.index(id, this.vaults.get(id), { full: !!full });
+    return { ...st, semanticContext: !!this.settings.semanticContext };
+  }
+
+  semanticSearch(query: string, baseId?: string, limit = 10): Promise<SemanticHit[]> {
+    const id = this.baseIdOf(baseId);
+    return this.semantic.search(id, this.vaults.get(id), query, { limit, refresh: true });
+  }
+
+  async setSemanticOptions(opts: { model?: string; semanticContext?: boolean }): Promise<SemanticStatus> {
+    if (typeof opts?.model === 'string') {
+      if (!EMBED_MODELS.some((m) => m.name === opts.model)) throw new Error(`Modèle d'embeddings inconnu : ${opts.model}`);
+      this.settings.embedModel = opts.model;
+    }
+    if (typeof opts?.semanticContext === 'boolean') this.settings.semanticContext = opts.semanticContext;
+    this.settingsFile.save();
+    return this.semanticStatus();
+  }
+
+  /** Outil MCP chercher_notes : base demandée, sinon celle de la discussion / du dossier de la tâche appelante. */
+  async searchNotesForAgent(parentTaskId: string, question: string, base?: string, nombre = 6): Promise<string> {
+    const bases = this.vaults.list();
+    let baseId: string = HUB_BASE_ID;
+    if (base) {
+      const ref = base.trim().toLowerCase();
+      const found = bases.find((b) => b.id.toLowerCase() === ref || b.name.toLowerCase() === ref);
+      if (!found) return `Base inconnue : « ${base} ». Bases disponibles : ${bases.map((b) => b.id).join(', ')}.`;
+      baseId = found.id;
+    } else {
+      const parent = parentTaskId ? this.db.data.tasks.find((t) => t.id === parentTaskId) : undefined;
+      const conv = parent?.conversationId ? this.db.data.conversations.find((c) => c.id === parent.conversationId) : undefined;
+      if (conv) baseId = this.vaults.forConversation(conv).id;
+      else if (parentTaskId && this.delegation.get(parentTaskId)) baseId = this.vaults.forFolder(this.delegation.get(parentTaskId)!.cwd).id;
+    }
+    const kb = this.vaults.get(baseId);
+    const head = `Base « ${baseId} » (${kb.dir}) — autres bases : ${bases.filter((b) => b.id !== baseId).map((b) => b.id).join(', ') || 'aucune'}.`;
+    try {
+      // Index mis à jour au passage (construit s'il n'existe pas encore).
+      const hits = await this.semantic.search(baseId, kb, question, { limit: nombre, refresh: true, build: true });
+      if (!hits.length) return `${head}\nAucun passage trouvé.`;
+      const blocks = hits.map(
+        (h, i) => `${i + 1}. ${h.title}${h.heading && h.heading !== h.title ? ` › ${h.heading}` : ''} — ${h.path} (score ${h.score.toFixed(2)})\n${h.excerpt.replace(/^/gm, '   ')}`,
+      );
+      return `${head}\nPassages les plus proches (recherche par le sens) :\n\n${blocks.join('\n\n')}`;
+    } catch (err: any) {
+      // Embeddings indisponibles (Ollama arrêté, modèle absent) : repli sur la recherche par mots-clés.
+      const hits = kb.searchNotes(question, nombre, 800);
+      const why = `Recherche par le sens indisponible (${err?.message ?? err}) : résultats par mots-clés.`;
+      if (!hits.length) return `${head}\n${why}\nAucun passage trouvé.`;
+      return `${head}\n${why}\n\n${hits.map((h, i) => `${i + 1}. ${h.title} — ${h.path}\n   ${h.excerpt}`).join('\n\n')}`;
+    }
+  }
+
   /** Chemin absolu d'une note (validé) — utilisé par « Ouvrir dans Obsidian ». */
   noteAbsPath(path: string, baseId?: string): string {
     return this.vaults.get(baseId).resolveNote(path).abs;
@@ -1468,7 +2013,7 @@ export class Hub {
   async installObsidian(): Promise<void> {
     if (this.obsidianInstall) throw new Error('Installation déjà en cours');
     const emit = (state: 'running' | 'done' | 'error', message: string) => this.emit({ type: 'setup', progress: { task: 'obsidian', state, message } });
-    emit('running', 'Installation d’Obsidian avec winget…');
+    emit('running', process.platform === 'darwin' ? 'Installation d’Obsidian avec Homebrew…' : 'Installation d’Obsidian avec winget…');
     const { child, done } = runObsidianInstall((line) => emit('running', line));
     this.obsidianInstall = child;
     try {
@@ -1573,7 +2118,7 @@ export class Hub {
     const d = dir?.trim();
     if (d) {
       if (!findComfyRoot(d)) {
-        throw new Error(`Ce dossier ne contient pas ComfyUI portable (il faut python_embeded\\python.exe et ComfyUI\\main.py) : ${d}`);
+        throw new Error(`${COMFY_DIR_HINT} : ${d}`);
       }
       if (this.images.running) this.images.stop();
       this.settings.comfyuiDir = resolve(d);
@@ -1596,6 +2141,16 @@ export class Hub {
   }
 
   // ---------- Réglages ----------
+
+  /**
+   * Micro d'un panneau web (ChatGPT, Gemini…) : écrit par web-panels.ts (boîte de dialogue, Réglages), jamais par
+   * saveSettings (le formulaire des réglages ne l'écrase donc pas).
+   */
+  setWebMicChoice(panelId: string, choice: NonNullable<HubSettings['webMic']>[string]): void {
+    const s = this.settingsFile.data;
+    s.webMic = { ...(s.webMic && typeof s.webMic === 'object' ? s.webMic : {}), [panelId]: choice };
+    this.settingsFile.flush();
+  }
 
   saveSettings(next: HubSettings): HubSettings {
     const s = this.settingsFile.data;
@@ -1632,6 +2187,7 @@ export class Hub {
   shutdown(): void {
     for (const c of this.running.values()) c.abort();
     for (const id of [...this.delegation.keys()]) this.endDelegation(id);
+    this.cutout.shutdown();
     this.mcp.close();
     this.claudeLogsReader?.stopWatching();
     this.images.stop();

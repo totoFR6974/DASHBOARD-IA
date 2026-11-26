@@ -1,10 +1,9 @@
 // Connecteur Claude Code : lance `claude -p` (mode sans interface) avec ton abonnement.
 // Claude garde ses outils et ses serveurs MCP (ex. Roblox Studio) selon le niveau de permission choisi.
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import type { ProviderInfo } from '../../shared/types';
+import { caseInsensitiveFs, claudeCandidates, findInPath, firstExisting, killProcessTree, openInMacTerminal, treeSpawnOptions } from '../platform';
 import { CancelledError, type Provider, type RunContext, type RunResult } from './provider';
 
 /** Modèles proposés ; "default" = ne pas passer --model (Claude choisit). */
@@ -21,12 +20,14 @@ export class ClaudeProvider implements Provider {
 
   constructor(private getPath: () => string) {}
 
-  /** Trouve claude.exe : réglage explicite, sinon ~/.local/bin, sinon le PATH. */
+  /**
+   * Trouve claude.exe : réglage explicite, sinon les emplacements connus (Windows : ~/.local/bin ; macOS : aussi
+   * Homebrew, ~/.claude/local…), sinon le PATH (complété au démarrage sur macOS, voir platform.fixFinderPath).
+   */
   resolvePath(): string {
     const configured = this.getPath().trim();
     if (configured) return configured;
-    const local = join(homedir(), '.local', 'bin', process.platform === 'win32' ? 'claude.exe' : 'claude');
-    return existsSync(local) ? local : 'claude';
+    return firstExisting(claudeCandidates()) ?? 'claude';
   }
 
   async describe(): Promise<ProviderInfo> {
@@ -65,6 +66,10 @@ export class ClaudeProvider implements Provider {
     const exe = this.resolvePath();
     if (process.platform === 'win32') {
       spawn('cmd.exe', ['/c', 'start', 'Connexion a Claude Code', 'cmd.exe', '/k', exe, 'auth', 'login'], { detached: true, stdio: 'ignore', windowsHide: false, env: childEnv() }).unref();
+    } else if (process.platform === 'darwin') {
+      // Fenêtre du Terminal (chemin absolu : le Terminal n'a pas forcément le même PATH que le hub).
+      const abs = exe.includes('/') ? exe : (findInPath(exe) ?? exe);
+      openInMacTerminal([abs, 'auth', 'login'], 'Connexion à Claude Code');
     } else {
       spawn(exe, ['auth', 'login'], { detached: true, stdio: 'ignore', env: childEnv() }).unref();
     }
@@ -72,20 +77,10 @@ export class ClaudeProvider implements Provider {
 
   run(ctx: RunContext): Promise<RunResult> {
     return new Promise((resolve, reject) => {
-      const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--permission-mode', ctx.permission];
-      if (ctx.model && ctx.model !== 'default') args.push('--model', ctx.model);
-      if (ctx.sessionId) args.push('--resume', ctx.sessionId);
-      if (ctx.sessionId && ctx.forkSession) args.push('--fork-session');
-      if (ctx.systemAppend) args.push('--append-system-prompt', ctx.systemAppend);
-      if (ctx.effort && ctx.effort !== 'default') args.push('--effort', ctx.effort);
-      // Options à valeurs multiples (--mcp-config, --allowedTools, --add-dir) : chacune s'arrête à l'option suivante,
-      // et le prompt passe par l'entrée standard, donc aucune ambiguïté.
-      // Pas de --strict-mcp-config : les serveurs MCP de l'utilisateur (Roblox Studio…) restent disponibles.
-      if (ctx.mcpConfigPath) args.push('--mcp-config', ctx.mcpConfigPath);
-      if (ctx.allowedTools?.length) args.push('--allowedTools', ...ctx.allowedTools);
-      if (ctx.addDirs?.length) args.push('--add-dir', ...ctx.addDirs);
+      const { args, prompt } = buildClaudeInvocation(ctx);
 
-      const child = spawn(this.resolvePath(), args, { cwd: ctx.cwd, env: { ...childEnv(), ...(ctx.extraEnv ?? {}) }, windowsHide: true });
+      // macOS / Linux : Claude devient chef d'un groupe de process → l'annulation arrête aussi ses serveurs MCP.
+      const child = spawn(this.resolvePath(), args, { cwd: ctx.cwd, env: { ...childEnv(), ...(ctx.extraEnv ?? {}) }, windowsHide: true, ...treeSpawnOptions() });
       let buffer = '';
       let stderr = '';
       let output = '';
@@ -197,9 +192,51 @@ export class ClaudeProvider implements Provider {
         reject(new Error(`Claude s'est arrêté (code ${code}). ${stderr.trim()}`.trim()));
       });
 
-      child.stdin.end(ctx.prompt, 'utf8');
+      child.stdin.end(prompt, 'utf8');
     });
   }
+}
+
+/**
+ * Arguments de `claude -p` et texte envoyé sur l'entrée standard (exporté pour les tests, sans lancer Claude).
+ * Pièces jointes (images et autres fichiers : texte, code, PDF…) : Claude les lit lui-même avec son outil Read →
+ * leurs chemins sont ajoutés à la fin du prompt et leurs dossiers passés en --add-dir (lecture autorisée même en
+ * mode « Prudent »).
+ */
+export function buildClaudeInvocation(ctx: Pick<RunContext, 'prompt' | 'images' | 'files' | 'model' | 'sessionId' | 'forkSession' | 'systemAppend' | 'effort' | 'mcpConfigPath' | 'allowedTools' | 'addDirs' | 'permission'>): {
+  args: string[];
+  prompt: string;
+} {
+  const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--permission-mode', ctx.permission];
+  if (ctx.model && ctx.model !== 'default') args.push('--model', ctx.model);
+  if (ctx.sessionId) args.push('--resume', ctx.sessionId);
+  if (ctx.sessionId && ctx.forkSession) args.push('--fork-session');
+  if (ctx.systemAppend) args.push('--append-system-prompt', ctx.systemAppend);
+  if (ctx.effort && ctx.effort !== 'default') args.push('--effort', ctx.effort);
+  // Options à valeurs multiples (--mcp-config, --allowedTools, --add-dir) : chacune s'arrête à l'option suivante,
+  // et le prompt passe par l'entrée standard, donc aucune ambiguïté.
+  // Pas de --strict-mcp-config : les serveurs MCP de l'utilisateur (Roblox Studio…) restent disponibles.
+  if (ctx.mcpConfigPath) args.push('--mcp-config', ctx.mcpConfigPath);
+  if (ctx.allowedTools?.length) args.push('--allowedTools', ...ctx.allowedTools);
+  const images = (ctx.images ?? []).map((p) => resolve(p));
+  const files = (ctx.files ?? []).map((p) => resolve(p));
+  const dirs: string[] = [];
+  for (const d of [...(ctx.addDirs ?? []), ...[...images, ...files].map((p) => dirname(p))]) {
+    if (!dirs.some((x) => sameDir(x, d))) dirs.push(d);
+  }
+  if (dirs.length) args.push('--add-dir', ...dirs);
+  let prompt = images.length
+    ? `${ctx.prompt}\n\n---\nImage(s) jointe(s) par l'utilisateur — ouvre-les avec ton outil Read pour les voir :\n${images.map((p) => `- ${p}`).join('\n')}`
+    : ctx.prompt;
+  if (files.length) {
+    prompt += `\n\n---\nFichier(s) joint(s) par l'utilisateur (copies dans le dossier des pièces jointes du hub) — lis-les avec ton outil Read (texte, code, PDF, images) ; un fichier binaire que tu ne sais pas lire peut juste être mentionné :\n${files.map((p) => `- ${p}`).join('\n')}`;
+  }
+  return { args, prompt };
+}
+
+function sameDir(a: string, b: string): boolean {
+  const n = (p: string) => (caseInsensitiveFs() ? resolve(p).toLowerCase() : resolve(p)).replace(/[\\/]+$/, '');
+  return n(a) === n(b);
 }
 
 /** Environnement du process enfant : on retire les variables d'une éventuelle session Claude parente. */
@@ -211,18 +248,9 @@ function childEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-/** Arrête Claude et tous ses sous-process (serveurs MCP, commandes lancées...). */
+/** Arrête Claude et tous ses sous-process (serveurs MCP, commandes lancées...) : taskkill /T, ou le groupe POSIX. */
 function killTree(pid: number | undefined): void {
-  if (!pid) return;
-  if (process.platform === 'win32') {
-    spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true });
-  } else {
-    try {
-      process.kill(pid, 'SIGTERM');
-    } catch {
-      /* déjà arrêté */
-    }
-  }
+  killProcessTree(pid);
 }
 
 function describeTool(name: string, input: any): string {

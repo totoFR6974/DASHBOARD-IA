@@ -1,0 +1,135 @@
+# Construit Hub IA pour Mac Apple Silicon (arm64) et joint le .dmg (+ .zip) à la release GitHub du tag.
+#
+# - Déclenchement : à la main (onglet Actions › « Build Mac (Apple Silicon) » › Run workflow, avec ou sans tag)
+#   ou automatiquement quand un tag v* est poussé.
+# - La release du tag est créée par la publication Windows (prerelease) : ce workflow ne crée, ne remplace ni ne
+#   supprime AUCUN fichier Windows ; il ajoute seulement Hub-IA-Mac-AppleSilicon-<version>.dmg et .zip.
+#   Pas de latest-mac.yml ni de .blockmap : sur Mac la mise à jour se limite à une notification (API GitHub).
+# - Zéro coût : runner macos-14 (Apple Silicon) gratuit pour un dépôt public ; signature « ad hoc » (pas de compte
+#   Apple Developer, pas de notarisation) ; aucun secret autre que le GITHUB_TOKEN fourni par GitHub.
+# - Ordre garanti par electron-builder : fuses Electron (package.json › build.electronFuses, dont
+#   EnableCookieEncryption) appliqués AVANT la signature ad hoc ; le workflow vérifie les deux après coup.
+name: Build Mac (Apple Silicon)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag de la release à compléter (ex. v0.1.0-alpha.9). Vide : construire seulement (fichiers dans les artefacts du run)."
+        required: false
+        default: ""
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-mac-${{ github.event_name == 'push' && github.ref_name || inputs.tag || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  mac-arm64:
+    name: Mac arm64 (.dmg)
+    runs-on: macos-14
+    timeout-minutes: 60
+    env:
+      TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+    steps:
+      - name: Récupérer le code (le tag s'il est donné)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG != '' && env.TAG || github.ref }}
+
+      - name: Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Version de package.json = tag
+        id: version
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [ -n "$TAG" ] && [ "v$VERSION" != "$TAG" ]; then
+            echo "::error::package.json est en version $VERSION mais le tag est $TAG : rien n'est joint à la release."
+            exit 1
+          fi
+          echo "Version $VERSION (tag : ${TAG:-aucun})"
+
+      - name: Dépendances
+        run: npm ci
+
+      - name: Build de l'appli (dist/)
+        run: node build.mjs
+
+      - name: Paquet Mac (.dmg + .zip arm64, signature ad hoc)
+        run: npx electron-builder --mac dmg zip --arm64 --publish never
+
+      - name: Vérifier signature ad hoc et fuses
+        run: |
+          APP="release/mac-arm64/Hub IA.app"
+          test -d "$APP" || { echo "::error::$APP introuvable"; ls -la release; exit 1; }
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          codesign -dv "$APP" 2>&1 | tee /tmp/codesign.txt
+          grep -q "Signature=adhoc" /tmp/codesign.txt || { echo "::error::l'appli n'est pas signée ad hoc"; exit 1; }
+          node --input-type=module -e "
+            import { getCurrentFuseWire, FuseV1Options } from '@electron/fuses';
+            const w = await getCurrentFuseWire(process.argv[1]);
+            const on = (k) => String.fromCharCode(w[FuseV1Options[k]]) === '1';
+            const res = { EnableCookieEncryption: on('EnableCookieEncryption'), OnlyLoadAppFromAsar: on('OnlyLoadAppFromAsar'), EnableEmbeddedAsarIntegrityValidation: on('EnableEmbeddedAsarIntegrityValidation'), RunAsNodeDisabled: !on('RunAsNode') };
+            console.log(res);
+            if (Object.values(res).some((v) => !v)) { console.error('Fuses inattendus'); process.exit(1); }
+          " "$APP"
+          plutil -extract NSMicrophoneUsageDescription raw "$APP/Contents/Info.plist"
+
+      - name: Fichiers à publier
+        id: files
+        run: |
+          V="${{ steps.version.outputs.version }}"
+          DMG="release/Hub-IA-Mac-AppleSilicon-$V.dmg"
+          ZIP="release/Hub-IA-Mac-AppleSilicon-$V.zip"
+          for f in "$DMG" "$ZIP"; do test -f "$f" || { echo "::error::$f manquant"; ls -la release; exit 1; }; done
+          ls -lh "$DMG" "$ZIP"
+          shasum -a 256 "$DMG" "$ZIP" | tee release/SHA256-Mac.txt
+          echo "dmg=$DMG" >> "$GITHUB_OUTPUT"
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+
+      - name: Artefacts du run (téléchargeables depuis l'onglet Actions)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hub-IA-Mac-AppleSilicon-${{ steps.version.outputs.version }}
+          path: |
+            ${{ steps.files.outputs.dmg }}
+            ${{ steps.files.outputs.zip }}
+            release/SHA256-Mac.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Joindre à la release du tag (fichiers Mac seulement)
+        if: env.TAG != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          DMG="${{ steps.files.outputs.dmg }}"
+          ZIP="${{ steps.files.outputs.zip }}"
+          # Garde-fou : on n'envoie que des fichiers Mac (jamais un nom qui pourrait écraser un fichier Windows).
+          for f in "$DMG" "$ZIP"; do
+            case "$(basename "$f")" in Hub-IA-Mac-AppleSilicon-*.dmg|Hub-IA-Mac-AppleSilicon-*.zip) ;; *) echo "::error::nom inattendu : $f"; exit 1;; esac
+          done
+          # La release est créée par la publication Windows : on l'attend (20 min au plus) sans jamais la créer.
+          for i in $(seq 1 40); do
+            if gh release view "$TAG" >/dev/null 2>&1; then break; fi
+            echo "Release $TAG pas encore créée ($i/40), nouvel essai dans 30 s…"
+            sleep 30
+          done
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::La release $TAG n'existe pas : publie d'abord la version Windows, puis relance ce workflow (Run workflow, tag $TAG). Le .dmg est dans les artefacts du run."
+            exit 1
+          fi
+          # --clobber ne remplace que les fichiers du MÊME nom (donc uniquement les fichiers Mac d'un essai précédent).
+          gh release upload "$TAG" "$DMG" "$ZIP" --clobber
+          gh release view "$TAG" --json assets --jq '.assets[].name'

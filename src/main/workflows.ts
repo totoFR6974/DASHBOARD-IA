@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { IMAGE_PROVIDERS } from './providers/comfyui';
+import { wantsTransparent } from './cutout';
 import type {
   AgentRole,
   ChatMessage,
@@ -46,6 +47,10 @@ export interface TaskSpec {
   cwd: string;
   permission: ClaudePermission;
   addDirs?: string[];
+  /** Images à montrer à l'IA (chemins absolus) : modèle vision Ollama, ou chemins ajoutés au prompt de Claude. */
+  images?: string[];
+  /** Images : détourer le résultat (fond transparent, original conservé). */
+  transparent?: boolean;
 }
 
 /** Ce que le moteur demande au Hub. */
@@ -59,6 +64,8 @@ export interface WorkflowHost {
   listProviders(): Promise<ProviderInfo[]>;
   startTask(spec: TaskSpec): { task: Task; done: Promise<Task> };
   findTask(id: string): Task | undefined;
+  /** Images produites par les sous-tâches déléguées d'une tâche (facultatif). */
+  delegatedImages?(taskId: string): string[];
   addTask(task: Task): void;
   updateTask(task: Task): void;
   cancelTask(id: string): void;
@@ -85,6 +92,38 @@ export function illustratorRole(): AgentRole {
   };
 }
 
+/** Agent « Observateur » : modèle vision local (Ollama) qui regarde les images. */
+export const OBSERVER_ID = 'observateur';
+
+export function observerRole(): AgentRole {
+  return {
+    id: OBSERVER_ID,
+    name: 'Observateur',
+    description:
+      "Regarde des images avec un modèle vision local : décrit une capture d'écran, lit le texte d'une image, vérifie qu'une image générée (ex. par l'Illustrateur) correspond à la demande. Donne-lui le CHEMIN ABSOLU de chaque image (paramètre « images » de demander_a) et ce qu'il doit chercher.",
+    providerId: 'ollama',
+  };
+}
+
+/** Chemins d'images absolus (PNG/JPEG) cités dans un texte, ex. « vérifie C:\…\image.png ». */
+export function imagePathsIn(text: string): string[] {
+  const out = new Set<string>();
+  for (const m of text.matchAll(/(?:[A-Za-z]:[\\/]|\/)[^\n"'<>|*?`]*?\.(?:png|jpe?g)\b/gi)) out.add(m[0].trim());
+  return [...out];
+}
+
+/**
+ * Modèle réellement utilisé par un agent. L'Observateur prend un modèle vision installé (celui choisi dans
+ * Réglages s'il voit les images, sinon le premier trouvé) ; undefined s'il n'y en a aucun.
+ */
+export function roleModel(role: AgentRole, info: ProviderInfo): string | undefined {
+  if (role.id === OBSERVER_ID && info.id === 'ollama') {
+    const vision = info.visionModels ?? [];
+    return role.model && vision.includes(role.model) ? role.model : vision[0];
+  }
+  return role.model ?? info.defaultModel;
+}
+
 export function defaultRoles(): AgentRole[] {
   return [
     { id: 'planificateur', name: 'Planificateur', description: "Découpe l'objectif en étapes et choisit les agents", providerId: 'claude', model: 'sonnet' },
@@ -105,6 +144,7 @@ export function defaultRoles(): AgentRole[] {
       providerId: 'web:gemini',
     },
     illustratorRole(),
+    observerRole(),
   ];
 }
 
@@ -195,7 +235,14 @@ export class WorkflowEngine {
       }
       ids.add(id);
       const model = r?.model ? String(r.model) : undefined;
-      roles.push({ id, name, description: String(r?.description ?? '').trim(), providerId, ...(model && !isManual(providerId) ? { model } : {}) });
+      roles.push({
+        id,
+        name,
+        description: String(r?.description ?? '').trim(),
+        providerId,
+        ...(model && !isManual(providerId) ? { model } : {}),
+        ...(r?.transparent === true && IMAGE_PROVIDERS.has(providerId) ? { transparent: true } : {}),
+      });
     }
     if (roles.length === 0) throw new Error('Il faut au moins un agent');
     const planner = roles.find((r) => r.id === plannerRoleId);
@@ -584,6 +631,9 @@ export class WorkflowEngine {
     if (!info) return this.failStep(run, step, `IA inconnue : ${role.providerId}`);
     if (!info.available) return this.failStep(run, step, `${info.name} indisponible : ${info.detail}`);
     if (!this.alive(run) || step.status !== 'running') return;
+    if (role.id === OBSERVER_ID && !roleModel(role, info)) {
+      return this.failStep(run, step, "Aucun modèle vision installé dans Ollama : l'Observateur ne peut pas regarder d'image (Réglages › Modèle vision).");
+    }
 
     // Étape d'images : le prompt est la description de l'image elle-même, pas le gabarit d'agent.
     step.prompt = IMAGE_PROVIDERS.has(info.id)
@@ -594,7 +644,7 @@ export class WorkflowEngine {
       workflowRunId: run.id,
       stepId: step.id,
       providerId: role.providerId,
-      model: role.model ?? info.defaultModel,
+      model: roleModel(role, info),
       agent: role.name,
       title: step.title,
       prompt: `${step.title}\n\n${step.instructions}`,
@@ -603,6 +653,13 @@ export class WorkflowEngine {
       cwd: run.cwd,
       permission: run.permission,
       addDirs: this.addDirsFor(run, info),
+      // Agent vision (Observateur) : il reçoit les images produites par les étapes dont il dépend, et celles dont
+      // les consignes citent le chemin.
+      ...(role.id === OBSERVER_ID
+        ? { images: [...new Set([...step.dependsOn.flatMap((d) => run.steps.find((s) => s.id === d)?.images ?? []), ...imagePathsIn(step.instructions)])].slice(0, 6) }
+        : {}),
+      // Agent d'images réglé sur « fond transparent », ou consigne qui le demande.
+      ...(IMAGE_PROVIDERS.has(info.id) && (role.transparent || wantsTransparent(step.instructions)) ? { transparent: true } : {}),
     });
     step.taskId = task.id;
     this.touch(run);
@@ -611,7 +668,10 @@ export class WorkflowEngine {
     if (!this.alive(run) || step.status !== 'running') return; // annulé entre-temps
     step.output = t.output;
     step.finishedAt = Date.now();
-    if (t.images?.length) step.images = t.images;
+    // Images de l'étape + celles de ses sous-tâches déléguées (ex. Claude → Illustrateur) : affichées dans l'étape et
+    // transmises aux étapes suivantes (ex. Observateur).
+    const images = [...new Set([...(t.images ?? []), ...(this.host.delegatedImages?.(t.id) ?? [])])];
+    if (images.length) step.images = images;
     if (t.status === 'done') {
       step.status = 'done';
       step.error = undefined;

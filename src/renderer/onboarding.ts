@@ -1,6 +1,8 @@
 // Assistant de premier démarrage : guide pas à pas (Ollama, modèle local, Claude Code, extras).
 // Ouvert automatiquement tant que settings.onboardingDone est faux, et depuis Réglages / Ctrl+K.
 import type { HubApi, HubEvent, SetupProgress, SetupStatus } from '../shared/types';
+import { IS_MAC, MOD } from './platform';
+import { icon } from './icons';
 
 type H = <K extends keyof HTMLElementTagNameMap>(tag: K, attrs?: Record<string, any>, ...children: (Node | string | null | undefined | false)[]) => HTMLElementTagNameMap[K];
 
@@ -14,7 +16,8 @@ export interface OnboardingDeps {
   goTo(view: 'web' | 'settings' | 'knowledge' | 'chat'): void;
 }
 
-const CLAUDE_INSTALL_CMD = 'irm https://claude.ai/install.ps1 | iex';
+// Commande officielle d'installation de Claude Code : PowerShell sous Windows, Terminal (bash) sur Mac.
+const CLAUDE_INSTALL_CMD = IS_MAC ? 'curl -fsSL https://claude.ai/install.sh | bash' : 'irm https://claude.ai/install.ps1 | iex';
 const CLAUDE_DOC_URL = 'https://code.claude.com/docs/en/setup';
 const OLLAMA_DOWNLOAD_URL = 'https://ollama.com/download';
 
@@ -169,20 +172,36 @@ function stepOllama(): HTMLElement[] {
   } else if (o?.installed) {
     body.push(
       badge(false, 'Ollama est installé mais ne tourne pas.'),
-      h('p', { class: 'muted' }, 'Lance « Ollama » depuis le menu Démarrer (il se met dans la barre des tâches), puis clique sur Revérifier.'),
+      h(
+        'p',
+        { class: 'muted' },
+        IS_MAC
+          ? 'Ouvre « Ollama » depuis le dossier Applications (son icône apparaît dans la barre des menus, en haut à droite), puis clique sur Revérifier.'
+          : 'Lance « Ollama » depuis le menu Démarrer (il se met dans la barre des tâches), puis clique sur Revérifier.',
+      ),
     );
   } else {
+    // Mac : installation automatique toujours possible (appli officielle téléchargée sur ollama.com, ou Homebrew).
+    const auto = s.winget || IS_MAC;
     body.push(
       badge(false, 'Ollama n’est pas installé.'),
       h(
         'div',
         { class: 'ob-actions' },
-        s.winget
+        auto
           ? h('button', { type: 'button', class: 'btn primary', disabled: !!ob.busy, onclick: () => void runTask('ollama', () => hub.installOllama()) }, ob.busy === 'ollama' ? 'Installation…' : 'Installer Ollama automatiquement')
           : null,
         linkBtn('Télécharger manuellement', OLLAMA_DOWNLOAD_URL),
       ),
-      h('p', { class: 'muted small' }, s.winget ? 'L’installation automatique utilise winget, l’outil d’installation de Windows. Windows peut te demander une confirmation.' : 'winget n’est pas disponible sur ce PC : télécharge l’installateur sur le site d’Ollama, lance-le, puis reviens ici.'),
+      h(
+        'p',
+        { class: 'muted small' },
+        IS_MAC
+          ? 'L’installation automatique télécharge l’appli officielle Ollama (ollama.com, environ 200 Mo), vérifie sa signature et la place dans Applications. Au premier lancement, Ollama peut te proposer d’installer sa commande « ollama » (mot de passe du Mac) : c’est facultatif.'
+          : s.winget
+            ? 'L’installation automatique utilise winget, l’outil d’installation de Windows. Windows peut te demander une confirmation.'
+            : 'winget n’est pas disponible sur ce PC : télécharge l’installateur sur le site d’Ollama, lance-le, puis reviens ici.',
+      ),
     );
   }
   body.push(progressBlock('ollama'), h('div', { class: 'ob-actions' }, recheckBtn()));
@@ -194,7 +213,17 @@ function stepModel(): HTMLElement[] {
   const s = ob.status;
   const body: (HTMLElement | null)[] = [h('h2', {}, 'Modèle local'), h('p', { class: 'ob-lead' }, 'Ollama a besoin d’au moins un modèle (un « cerveau » à télécharger une fois).')];
   if (!s) return [...(body as HTMLElement[]), badge(null, 'Vérification…')];
-  body.push(h('p', { class: 'muted' }, s.gpu ? `Carte graphique détectée : ${s.gpu.name} (${s.gpu.vramGb} Go).` : 'Aucune carte graphique NVIDIA détectée.'));
+  body.push(
+    h(
+      'p',
+      { class: 'muted' },
+      s.platform === 'darwin' && s.gpu
+        ? `Puce détectée : ${s.gpu.name.replace(/\s*\(mémoire unifiée\)$/, '')} (${s.gpu.vramGb} Go de mémoire unifiée, accélération Metal).`
+        : s.gpu
+          ? `Carte graphique détectée : ${s.gpu.name} (${s.gpu.vramGb} Go).`
+          : 'Aucune carte graphique NVIDIA détectée.',
+    ),
+  );
   const rec = s.recommendedModel;
   if (!s.ollama.running) {
     body.push(badge(false, 'Installe et démarre d’abord Ollama (étape précédente).'));
@@ -217,9 +246,46 @@ function stepModel(): HTMLElement[] {
         ),
       );
     }
+    body.push(visionCard(s));
   }
   body.push(progressBlock('model'), h('div', { class: 'ob-actions' }, recheckBtn()));
   return body.filter(Boolean) as HTMLElement[];
+}
+
+/** Carte facultative : modèle vision (lire les images), avec taille et licence, téléchargé après confirmation. */
+function visionCard(s: SetupStatus): HTMLElement {
+  const { h, hub } = d();
+  const rec = s.recommendedVisionModel;
+  const family = (m: string) => m.split(':')[0];
+  const has = s.ollama.models.some((m) => /(-vl|vision|llava)/i.test(family(m)));
+  if (has) return badge(true, `Modèle vision prêt : ${s.ollama.models.filter((m) => /(-vl|vision|llava)/i.test(family(m))).join(', ')} (les IA peuvent lire tes images).`);
+  if (!rec) {
+    return h('div', { class: 'ob-card' }, h('div', {}, h('b', {}, 'Facultatif : modèle vision')), h('div', { class: 'muted small' }, 'La vision (lire des images, des captures d’écran) demande une carte graphique ou au moins 8 Go de mémoire : ce PC est trop juste.'));
+  }
+  const size = String(rec.approxGb).replace('.', ',');
+  return h(
+    'div',
+    { class: 'ob-card' },
+    h('div', {}, h('b', {}, `Facultatif : modèle vision ${rec.name}`), h('span', { class: 'muted' }, ` · environ ${size} Go · licence Apache 2.0`)),
+    h('div', { class: 'muted small' }, `Pour joindre des images aux discussions (captures d’écran, texte à lire) et vérifier les images générées. Pourquoi celui-ci : ${rec.reason}.`),
+    h(
+      'div',
+      { class: 'ob-actions' },
+      h(
+        'button',
+        {
+          type: 'button',
+          class: 'btn',
+          disabled: !!ob.busy,
+          onclick: () => {
+            if (!confirm(`Télécharger le modèle vision ${rec.name} (environ ${size} Go) ?\nLicence Apache 2.0 : usage commercial autorisé.`)) return;
+            void runTask('model', () => hub.pullModel(rec.name));
+          },
+        },
+        `Télécharger ${rec.name}`,
+      ),
+    ),
+  );
 }
 
 let obsidianMsg = '';
@@ -275,7 +341,8 @@ function stepObsidian(): HTMLElement[] {
       h(
         'div',
         { class: 'ob-actions' },
-        s.winget
+        // Windows : winget ; Mac : Homebrew (brew install --cask obsidian) s'il est présent.
+        s.winget || (IS_MAC && s.brew)
           ? h(
               'button',
               { type: 'button', id: 'ob-obsidian-install', class: 'btn primary', disabled: !!ob.busy, onclick: () => void runTask('obsidian', () => hub.installObsidian()) },
@@ -307,7 +374,7 @@ function stepClaude(): HTMLElement[] {
       h(
         'ol',
         { class: 'ob-list' },
-        h('li', {}, 'Clique sur « Se connecter à Claude » : une fenêtre de terminal s’ouvre et lance la connexion.'),
+        h('li', {}, IS_MAC ? 'Clique sur « Se connecter à Claude » : une fenêtre du Terminal s’ouvre et lance la connexion.' : 'Clique sur « Se connecter à Claude » : une fenêtre de terminal s’ouvre et lance la connexion.'),
         h('li', {}, 'Ton navigateur s’ouvre : connecte-toi à ton compte Claude (abonnement Pro ou Max) et autorise Claude Code.'),
         h('li', {}, 'Ferme la fenêtre du terminal une fois « Login successful » affiché, puis clique sur Revérifier.'),
       ),
@@ -330,7 +397,12 @@ function stepClaude(): HTMLElement[] {
     const cmd = h('code', {}, CLAUDE_INSTALL_CMD);
     body.push(
       badge(false, 'Claude Code n’est pas installé.'),
-      h('ol', { class: 'ob-list' }, h('li', {}, 'Ouvre PowerShell (touche Windows, tape « PowerShell »).'), h('li', {}, 'Colle et lance cette commande officielle :'), ),
+      h(
+        'ol',
+        { class: 'ob-list' },
+        h('li', {}, IS_MAC ? 'Ouvre le Terminal (⌘ Espace, tape « Terminal », Entrée).' : 'Ouvre PowerShell (touche Windows, tape « PowerShell »).'),
+        h('li', {}, 'Colle et lance cette commande officielle :'),
+      ),
       h(
         'div',
         { class: 'ob-code' },
@@ -348,7 +420,12 @@ function stepClaude(): HTMLElement[] {
           'Copier',
         ),
       ),
-      h('ol', { class: 'ob-list', start: '3' }, h('li', {}, 'Une fois installé, lance ', h('code', {}, 'claude'), ' une fois dans un terminal pour te connecter à ton compte.'), h('li', {}, 'Reviens ici et clique sur Revérifier.')),
+      h(
+        'ol',
+        { class: 'ob-list', start: '3' },
+        h('li', {}, 'Une fois installé, lance ', h('code', {}, 'claude'), IS_MAC ? ' une fois dans le Terminal (ouvre une nouvelle fenêtre si la commande est introuvable) pour te connecter à ton compte.' : ' une fois dans un terminal pour te connecter à ton compte.'),
+        h('li', {}, 'Reviens ici et clique sur Revérifier.'),
+      ),
       h('div', { class: 'ob-actions' }, linkBtn('Guide officiel d’installation', CLAUDE_DOC_URL)),
       h('p', { class: 'muted small' }, 'Pas d’abonnement Claude ? Passe cette étape : le hub fonctionne aussi avec Ollama seul.'),
     );
@@ -360,7 +437,7 @@ function stepClaude(): HTMLElement[] {
 function stepExtras(): HTMLElement[] {
   const { h, goTo } = d();
   const s = ob.status;
-  const card = (title: string, text: string, btn: string, action: () => void, ok?: boolean) =>
+  const card = (title: string, text: string | Node, btn: string, action: () => void, ok?: boolean) =>
     h(
       'div',
       { class: 'ob-card ob-extra' },
@@ -377,12 +454,21 @@ function stepExtras(): HTMLElement[] {
     card('ChatGPT et Gemini', 'Connecte-toi à tes comptes dans l’onglet IA web : les sites s’affichent dans l’appli et ta connexion est mémorisée.', 'Ouvrir IA web', leave('web')),
     card(
       'Images locales (ComfyUI)',
-      s?.comfyInstalled ? 'Installé : l’agent Illustrateur peut générer des images.' : 'Génère des images sur ton PC (carte NVIDIA conseillée). Environ 9 Go à télécharger, depuis Réglages.',
+      s?.comfyInstalled
+        ? 'Installé : l’agent Illustrateur peut générer des images.'
+        : IS_MAC
+          ? 'Génère des images sur ton Mac avec ComfyUI Desktop (à installer à part, plus lent que sur PC). Réglages › Images locales.'
+          : 'Génère des images sur ton PC (carte NVIDIA conseillée). Environ 9 Go à télécharger, depuis Réglages.',
       s?.comfyInstalled ? 'Voir' : 'Réglages',
       leave('settings'),
       s?.comfyInstalled,
     ),
-    card('Base de connaissances', 'Tes notes Markdown (compatibles Obsidian) que les IA peuvent consulter quand tu actives 📚.', 'Ouvrir', leave('knowledge')),
+    card(
+      'Base de connaissances',
+      h('span', {}, 'Tes notes Markdown (compatibles Obsidian) que les IA peuvent consulter quand tu actives ', icon('books'), ' dans une discussion.'),
+      'Ouvrir',
+      leave('knowledge'),
+    ),
   ];
 }
 
@@ -408,7 +494,7 @@ function stepDone(): HTMLElement[] {
           row(s.comfyInstalled, s.comfyInstalled ? 'Images locales prêtes' : 'Images locales non installées (facultatif)'),
         )
       : badge(null, 'Vérification…'),
-    h('p', { class: 'muted small' }, 'Tu peux relancer cet assistant à tout moment : Réglages › Assistant d’installation, ou Ctrl+K.'),
+    h('p', { class: 'muted small' }, `Tu peux relancer cet assistant à tout moment : Réglages › Assistant d’installation, ou ${MOD}${IS_MAC ? '' : '+'}K.`),
   ];
 }
 

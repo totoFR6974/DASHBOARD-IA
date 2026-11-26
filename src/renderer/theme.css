@@ -154,6 +154,13 @@ body.nav-collapsed .nav-brand { padding: 2px 4px 18px; justify-content: center; 
 .topbar * { -webkit-app-region: no-drag; }
 .topbar .top-spacer { -webkit-app-region: drag; }
 .nav-brand { -webkit-app-region: drag; }
+/* macOS (body.platform-mac, posé par renderer/platform.ts) : pas de boutons à droite, mais les « feux tricolores »
+   en haut à GAUCHE (position fixée dans main/window-chrome.ts : x 18, y 20) → la barre du haut reprend sa marge
+   normale et la barre latérale descend son contenu sous les feux ; cette bande reste une zone de déplacement. */
+body.platform-mac .topbar { padding-right: 20px; }
+body.platform-mac .nav { position: relative; padding-top: 50px; }
+body.platform-mac.nav-collapsed .nav { padding-top: 50px; }
+body.platform-mac .nav::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 44px; -webkit-app-region: drag; }
 .pills { gap: 6px; }
 .pill { padding: 0 9px; }
 @media (max-width: 1560px) {
@@ -497,7 +504,8 @@ tr.group td { background: transparent; color: var(--accent); }
 .kids-toggle.open { transform: rotate(90deg); color: var(--accent); }
 .kids-badge { margin-left: 8px; font-size: 11.5px; padding: 1px 8px; border-radius: 8px; border: 1px solid var(--line); background: rgba(255, 255, 255, 0.04); color: var(--muted); white-space: nowrap; }
 .kids-badge.active { color: #ffd6bd; border-color: rgba(243, 122, 50, 0.5); background: var(--accent-soft); }
-tr.task-row.is-child td { background: rgba(255, 255, 255, 0.015); animation: riseIn 0.25s var(--ease) both; }
+tr.task-row.is-child td { background: rgba(255, 255, 255, 0.015); }
+tr.task-row.is-child.fresh td { animation: riseIn 0.25s var(--ease) both; }
 tr.task-row.has-kids td.title { cursor: pointer; }
 
 /* ---------- Boutons « Copier » ---------- */
@@ -659,6 +667,27 @@ td.title.child { padding-left: 30px; color: #c9ccd2; }
 .conv-base-select { max-width: 200px; }
 .kn-head .btn { white-space: nowrap; flex-shrink: 0; }
 .kn-head .kn-vault { min-width: 0; flex: 1 1 auto; max-width: 320px; }
+
+/* ---------- Connaissances › Recherche par le sens ---------- */
+.kn-sem { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--glass); }
+.kn-sem-row { display: flex; align-items: center; gap: 6px; }
+.kn-sem-row input { flex: 1; min-width: 0; }
+.kn-sem-icon { font-size: 14px; opacity: 0.85; }
+.kn-sem-row .icon-btn.active { background: var(--accent-soft); color: var(--accent); }
+.kn-sem-status { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 12px; min-height: 24px; }
+.kn-sem-status > span:first-child { flex: 1 1 auto; min-width: 0; }
+.kn-sem-status.warn { color: var(--warn); }
+.kn-sem-err { color: var(--warn); cursor: help; }
+.kn-sem-bar { flex-basis: 100%; height: 4px; border-radius: 4px; background: var(--bg-3); overflow: hidden; }
+.kn-sem-bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent-2), var(--accent)); transition: width 0.3s var(--ease); }
+.kn-sem-options { display: flex; flex-direction: column; gap: 6px; font-size: 12px; padding-top: 6px; border-top: 1px solid var(--line); }
+.kn-sem-options label { display: flex; flex-direction: column; gap: 3px; }
+.kn-sem-options select { width: 100%; }
+.kn-sem-options .kn-sem-check { flex-direction: row; align-items: center; gap: 6px; cursor: pointer; }
+.kn-sem-hit .kn-hit-title { display: flex; align-items: baseline; gap: 6px; }
+.kn-sem-hit .kn-hit-title > span:first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kn-sem-score { flex-shrink: 0; font-size: 11px; font-weight: 600; color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 1px 7px; }
+.kn-sem-error { color: var(--warn); }
 
 /* ---------- Réglages › Images locales : modèles ---------- */
 .img-models { display: flex; flex-direction: column; gap: 8px; }

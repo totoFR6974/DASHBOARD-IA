@@ -1,5 +1,5 @@
 // Process principal Electron : fenêtre, sécurité, pont IPC vers le Hub.
-import { app, BrowserWindow, dialog, ipcMain, Notification, protocol, session, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Notification, protocol, screen, session, shell } from 'electron';
 import { readFile } from 'node:fs/promises';
 import { copyFileSync, createReadStream, existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import { Readable } from 'node:stream';
@@ -10,8 +10,16 @@ import { runSmoke } from './smoke';
 import { WebPanels } from './web-panels';
 import { migrateDevData, resolveRootDir } from './data-root';
 import { Updater } from './updater';
+import { fixFinderPath } from './platform';
+import { installAppMenu, titleBarOptions } from './window-chrome';
+import { clipboardFilePaths } from './clipboard-files';
+import { IMAGE_TYPES, isAllowedImagePath, registerImageActions } from './image-actions';
 
 const appDir = app.getAppPath();
+
+// macOS : une appli ouverte depuis le Finder n'a pas le PATH du Terminal → on le complète (claude, ollama, node,
+// Homebrew…) AVANT toute recherche d'outil. Sans effet sous Windows.
+fixFinderPath();
 
 // --smoke : test complet ; --smoke=web : seulement l'onglet IA web.
 const smokeArg = process.argv.find((a) => a.startsWith('--smoke'));
@@ -54,7 +62,7 @@ protocol.registerSchemesAsPrivileged([
   { scheme: 'hub-file', privileges: { standard: true, secure: true, supportFetchAPI: true } },
   { scheme: 'hub-asset', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } },
 ]);
-const IMAGE_TYPES: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' };
+// IMAGE_TYPES / isAllowedImagePath (image-actions.ts) : mêmes règles pour hub-file et la visionneuse d'images.
 
 /** Icône de fenêtre : copiée dans dist/ par build.mjs (dev comme version packagée). */
 const windowIcon = join(__dirname, 'icon.png');
@@ -74,11 +82,9 @@ function createWindow(): void {
     title: 'Hub IA',
     ...(existsSync(windowIcon) ? { icon: windowIcon } : {}),
     autoHideMenuBar: true,
-    // Pas de barre de titre Windows : les boutons natifs (réduire / agrandir / fermer) sont dessinés par-dessus
-    // la barre du haut de l'appli (zone de déplacement définie en CSS avec -webkit-app-region).
-    ...(process.platform === 'win32'
-      ? { titleBarStyle: 'hidden' as const, titleBarOverlay: { color: '#00000000', symbolColor: '#c9ccd2', height: 64 } }
-      : {}),
+    // Pas de barre de titre système : Windows → boutons natifs dessinés à droite par-dessus la barre du haut ;
+    // macOS → feux tricolores à gauche (window-chrome.ts). Zone de déplacement en CSS (-webkit-app-region).
+    ...titleBarOptions(),
     // En test, la fenêtre s'affiche sans prendre le focus : une fenêtre cachée ne se redessine pas.
     show: false,
     webPreferences: {
@@ -89,7 +95,19 @@ function createWindow(): void {
       sandbox: true,
     },
   });
-  win.once('ready-to-show', () => (smoke ? win!.showInactive() : win!.show()));
+  win.once('ready-to-show', () => {
+    if (!smoke) return win!.show();
+    // Tests visuels : fenêtre affichée HORS de l'écran (à droite de tous les moniteurs) et absente de la barre des
+    // tâches, pour ne pas gêner l'utilisateur. Elle reste « visible » pour Windows, donc elle continue à se dessiner
+    // (une fenêtre cachée ou réduite ne se redessine pas et les captures seraient vides).
+    // HUB_SMOKE_VISIBLE=1 : affichage normal à l'écran (débogage).
+    if (process.env.HUB_SMOKE_VISIBLE !== '1') {
+      const right = Math.max(...screen.getAllDisplays().map((d) => d.bounds.x + d.bounds.width));
+      win!.setPosition(right + 200, 0);
+      win!.setSkipTaskbar(true);
+    }
+    win!.showInactive();
+  });
   // Fermeture pendant qu'une IA travaille : la réponse en cours serait perdue → on demande confirmation.
   let closeConfirmed = false;
   win.on('close', (e) => {
@@ -170,9 +188,7 @@ function registerHubFileProtocol(): void {
     try {
       const abs = pathFromHubFileUrl(req.url);
       const type = IMAGE_TYPES[extname(abs).toLowerCase()];
-      const lower = abs.toLowerCase();
-      const allowed = hub.imageRoots().some((root) => lower.startsWith(resolve(root).toLowerCase() + sep));
-      if (!type || !allowed) return new Response('Accès refusé', { status: 403 });
+      if (!type || !isAllowedImagePath(abs, hub.imageRoots())) return new Response('Accès refusé', { status: 403 });
       return new Response(await readFile(abs), { headers: { 'Content-Type': type, 'Cache-Control': 'no-cache' } });
     } catch {
       return new Response('Introuvable', { status: 404 });
@@ -182,7 +198,8 @@ function registerHubFileProtocol(): void {
 
 /**
  * hub-asset://app/<fichier>    → dist/renderer/ort/* (moteur ONNX Runtime WASM) et dist/renderer/voice-worker.js ;
- * hub-asset://models/<chemin>  → <données>/models/whisper/… (modèles téléchargés par le hub).
+ * hub-asset://models/<chemin>  → <données>/models/whisper/… (modèles téléchargés par le hub) ;
+ * hub-asset://models/cutout/…  → <données>/models/cutout/… (détourage BiRefNet) ; hub-asset://app/cutout-worker.js.
  * Liste blanche stricte d'extensions, aucun chemin hors de ces deux dossiers.
  */
 const ASSET_TYPES: Record<string, string> = {
@@ -205,7 +222,12 @@ function registerHubAssetProtocol(): void {
       let allowed: boolean;
       if (url.hostname === 'app') {
         abs = resolve(rendererDir, rel);
-        allowed = abs.startsWith(join(rendererDir, 'ort') + sep) || abs === join(rendererDir, 'voice-worker.js');
+        allowed = abs.startsWith(join(rendererDir, 'ort') + sep) || abs === join(rendererDir, 'voice-worker.js') || abs === join(rendererDir, 'cutout-worker.js');
+      } else if (url.hostname === 'models' && rel.startsWith('cutout/')) {
+        // Détourage : hub-asset://models/cutout/… → <données>/models/cutout/… (modèle BiRefNet téléchargé par le hub).
+        const root = resolve(hub.cutout.dir);
+        abs = resolve(root, rel.replace(/^cutout\//, ''));
+        allowed = abs.startsWith(root + sep);
       } else if (url.hostname === 'models') {
         const root = resolve(hub.voice.whisperDir);
         abs = resolve(root, rel.replace(/^whisper\//, ''));
@@ -270,17 +292,23 @@ function start(): void {
   const rootTools = join(rootDir, 'tools', 'ComfyUI');
   const toolsDir = !app.isPackaged && !existsSync(rootTools) && existsSync(projectTools) ? projectTools : rootTools;
   hub = new Hub(dataDir, smoke ? dataDir : rootDir, { toolsDir });
+  // macOS : menu d'application (⌘C ⌘V ⌘Q ⌘W…) ; icône du Dock en dev (la version packagée a son .icns).
+  installAppMenu();
+  if (process.platform === 'darwin' && !app.isPackaged && existsSync(windowIcon)) app.dock?.setIcon(windowIcon);
   registerHubFileProtocol();
   registerHubAssetProtocol();
   registerMainWindowPermissions();
+  // Visionneuse d'images : copier / enregistrer sous / afficher dans le dossier (chemins revalidés, cf. hub-file).
+  registerImageActions({ ipcMain, getWindow: () => win, roots: () => hub.imageRoots(), saveDir: () => app.getPath('downloads') });
 
   hub.onEvent((ev) => {
     if (win && !win.isDestroyed()) win.webContents.send('hub:event', ev);
   });
 
   // Mises à jour (releases GitHub publiques) : installée = automatique, portable = notification, dev = manuelle.
+  // Mac (signature ad hoc, Squirrel.Mac impossible) : notification + lien du .dmg, comme la version portable.
   updater = new Updater({
-    mode: !app.isPackaged ? 'dev' : process.env.PORTABLE_EXECUTABLE_DIR ? 'portable' : 'installed',
+    mode: !app.isPackaged ? 'dev' : process.platform === 'darwin' ? 'mac' : process.env.PORTABLE_EXECUTABLE_DIR ? 'portable' : 'installed',
     settings: () => hub.settings,
     emit: (state) => {
       if (win && !win.isDestroyed()) win.webContents.send('hub:event', { type: 'update', state });
@@ -319,6 +347,20 @@ function start(): void {
       case 'openPath':
         await shell.openPath(String(args[0]));
         return;
+      // Pièces jointes : chemin validé par le hub (dossier des pièces jointes uniquement, exécutables jamais ouverts).
+      case 'openAttachment': {
+        const target = hub.attachmentToOpen(String(args[0]), !!args[1]);
+        if (args[1]) return void shell.showItemInFolder(target);
+        const err = await shell.openPath(target);
+        if (err) throw new Error(err);
+        return;
+      }
+      case 'pasteClipboardFiles': {
+        const convId = String(args[0]);
+        const saved: string[] = [];
+        for (const p of await clipboardFilePaths()) saved.push(hub.importAttachmentFile(convId, p));
+        return saved;
+      }
       case 'pickFolder': {
         const res = await dialog.showOpenDialog(win!, { title: 'Choisir un dossier de travail', properties: ['openDirectory'] });
         return res.canceled ? null : (res.filePaths[0] ?? null);
@@ -337,7 +379,11 @@ function start(): void {
   });
 
   createWindow();
-  webPanels = new WebPanels(win!);
+  // Micro des sites (dictée / mode voix) : choix par panneau mémorisé dans les réglages du hub.
+  webPanels = new WebPanels(win!, {
+    get: (id) => hub.settings.webMic?.[id] ?? 'ask',
+    set: (id, choice) => hub.setWebMicChoice(id, choice),
+  });
 }
 
 // Fermeture : on attend que les cookies des sites web soient écrits sur disque (Chromium les écrit en différé),

@@ -2,6 +2,12 @@
 
 _26/11/2026 — état du code au moment de l'audit (après l'étape 3, packaging Windows fait)._
 
+> **Mise à jour :** étapes 1 à 5 du plan réalisées (`src/main/platform.ts`, `src/main/window-chrome.ts`,
+> `src/renderer/platform.ts`, config `mac` d'electron-builder, `build/icon.icns`, workflow
+> `.github/workflows/build-mac.yml`, sections Mac de `README.md` et `INSTALLATION.md`, tests `npm run test:platform`).
+> Reste l'étape 6 : recette sur un vrai Mac Apple Silicon. Choix faits : signature ad hoc sans notarisation,
+> mise à jour Mac = notification + .dmg, images via ComfyUI Desktop installé à part.
+
 ## En bref
 
 | Question | Réponse |

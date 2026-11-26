@@ -4,7 +4,9 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
-const files = [`Hub-IA-Setup-${version}.exe`, `Hub-IA-Setup-${version}.exe.blockmap`, 'latest.yml', `Hub-IA-${version}-portable.exe`].map((f) => join('release', f));
+// Préfixe de plateforme (Windows- / Mac-) : GitHub trie les fichiers par nom, donc chaque plateforme est groupée.
+// Le .dmg Mac est construit et joint à la même release par la CI GitHub Actions (macOS).
+const files = [`Hub-IA-Windows-Setup-${version}.exe`, `Hub-IA-Windows-Setup-${version}.exe.blockmap`, 'latest.yml', `Hub-IA-Windows-Portable-${version}.exe`].map((f) => join('release', f));
 
 let missing = false;
 for (const f of files) {

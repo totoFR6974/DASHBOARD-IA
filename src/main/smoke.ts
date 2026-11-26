@@ -3,6 +3,13 @@
 import type { BrowserWindow } from 'electron';
 import { clipboard } from 'electron';
 import type { WebPanels } from './web-panels';
+import { buildClaudeInvocation } from './providers/claude';
+import { smokeCutout } from './smoke-cutout';
+import { smokeWebMic } from './smoke-webmic';
+import { smokeWebLogout } from './smoke-weblogout';
+import { smokeFiles } from './smoke-files';
+import { smokeViewer } from './smoke-viewer';
+import { smokeIcons } from './smoke-icons';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -331,6 +338,155 @@ async function smokeClaudeCode(shot: (name: string) => Promise<void>, js: (code:
   await shot('24-archives');
 }
 
+/**
+ * Vision (`--smoke=vision`) : image de test dessinée dans la page (texte connu + disque rouge), collée comme une
+ * capture (Ctrl+V) dans une discussion Ollama réglée sur un modèle SANS vision → le hub doit basculer ce message sur
+ * le modèle vision et la réponse doit citer le texte et la couleur. Puis l'agent Observateur via un workflow.
+ * Claude n'est JAMAIS appelé : on vérifie seulement les arguments qui lui seraient passés.
+ */
+async function smokeVision(win: BrowserWindow, outDir: string, shot: (name: string) => Promise<void>, js: (code: string) => Promise<any>): Promise<void> {
+  const fake = join(outDir, 'attachments', 'conv-test', 'capture.png');
+  const inv = buildClaudeInvocation({ prompt: 'Que montre cette capture ?', images: [fake], permission: 'default', addDirs: [join(outDir, 'vault')] });
+  console.log(`Claude (arguments seulement, aucun appel) : ${JSON.stringify(inv.args)}`);
+  console.log(`Claude prompt : ${JSON.stringify(inv.prompt)}`);
+  const addDir = inv.args.indexOf('--add-dir');
+  console.log(`Claude vérification : ${addDir >= 0 && inv.args.includes(join(outDir, 'attachments', 'conv-test')) && inv.prompt.includes(fake) ? 'OK' : 'ÉCHEC'}`);
+
+  const r = await js(`(async () => {
+    const $ = (id) => document.getElementById(id);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const providers = await window.hub.listProviders(true);
+    const ollama = providers.find((p) => p.id === 'ollama');
+    if (!ollama?.available) return { error: 'Ollama indisponible' };
+    const vision = ollama.visionModels ?? [];
+    const textModel = ollama.models.find((m) => !vision.includes(m) && !/embed|bge|nomic/i.test(m));
+    if (!vision.length) return { error: 'aucun modèle vision installé', models: ollama.models };
+    document.querySelector('.tabs button[data-view="chat"]').click();
+    await sleep(300);
+    $('new-conv-btn').click();
+    await sleep(900);
+    // Ollama seul, avec un modèle de TEXTE (pour vérifier la bascule automatique vers le modèle vision).
+    $('ai-picker-btn').click();
+    await sleep(300);
+    const check = (id) => document.querySelector('.ai-check[data-provider="' + id + '"]');
+    if (!check('ollama').checked) { check('ollama').click(); await sleep(500); }
+    const sel = document.querySelector('.ai-model[data-provider="ollama"]');
+    const wanted = textModel ?? vision[0];
+    if (sel && sel.value !== wanted) { sel.value = wanted; sel.dispatchEvent(new Event('change', { bubbles: true })); await sleep(500); }
+    for (const c of [...document.querySelectorAll('.ai-check')]) {
+      if (c.dataset.provider !== 'ollama' && c.checked) { c.click(); await sleep(500); }
+    }
+    $('ai-picker-btn').click();
+    await sleep(300);
+
+    // Image de test : texte connu + disque rouge sur fond blanc.
+    const canvas = document.createElement('canvas');
+    canvas.width = 900; canvas.height = 420;
+    const g = canvas.getContext('2d');
+    g.fillStyle = '#ffffff'; g.fillRect(0, 0, 900, 420);
+    g.fillStyle = '#111111'; g.font = 'bold 72px Arial'; g.fillText('HUB VISION 2026', 40, 130);
+    g.fillStyle = '#e01b24'; g.beginPath(); g.arc(450, 290, 90, 0, Math.PI * 2); g.fill();
+    const blob = await new Promise((res) => canvas.toBlob(res, 'image/png'));
+    const file = new File([blob], 'capture-test.png', { type: 'image/png' });
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    $('prompt').focus();
+    $('prompt').dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    for (let i = 0; i < 40 && !document.querySelector('.attach-item img'); i++) await sleep(150);
+    const img = document.querySelector('.attach-item img');
+    for (let i = 0; i < 40 && img && !img.complete; i++) await sleep(100);
+    await sleep(300);
+    return {
+      textModel: wanted,
+      vision,
+      thumb: !!img && img.naturalWidth > 0,
+      notes: [...document.querySelectorAll('.attach-note')].map((n) => n.textContent.trim()),
+    };
+  })()`);
+  console.log(`Vision — pièce jointe : ${JSON.stringify(r)}`);
+  if (r?.error) throw new Error(r.error);
+  await shot('vision-1-miniature');
+
+  const reply = await js(`(async () => {
+    const $ = (id) => document.getElementById(id);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    $('prompt').value = "Quel texte est écrit sur cette image, et de quelle couleur est la forme ronde ? Réponds en une phrase.";
+    $('composer').requestSubmit();
+    await sleep(1500);
+    for (let i = 0; i < 600; i++) {
+      if ($('stop-btn').classList.contains('hidden')) break;
+      await sleep(500);
+    }
+    await sleep(500);
+    const turn = [...document.querySelectorAll('.turn')].pop();
+    const convs = await window.hub.listConversations();
+    const userMsg = convs[0]?.messages.find((m) => m.role === 'user');
+    const tasks = await window.hub.listTasks();
+    const t = tasks.find((x) => x.conversationId === convs[0]?.id);
+    return {
+      userBubbleImage: !!turn?.querySelector('.msg.user img.thumb'),
+      stripHidden: $('attach-strip').classList.contains('hidden'),
+      head: turn?.querySelector('.msg.assistant .reply-head')?.textContent?.trim(),
+      activity: [...(turn?.querySelectorAll('.msg.assistant .act') ?? [])].map((a) => a.textContent.trim()),
+      text: (turn?.querySelector('.msg.assistant .msg-body')?.textContent ?? '').trim(),
+      image: userMsg?.images?.[0],
+      model: t?.model,
+      status: t?.status,
+      error: t?.error,
+      usage: t?.usage,
+    };
+  })()`);
+  console.log(`Vision — réponse : ${JSON.stringify(reply)}`);
+  const norm = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  const txt = norm(reply?.text ?? '');
+  const ok = txt.includes('2026') && txt.includes('vision') && (txt.includes('rouge') || txt.includes('red'));
+  console.log(`Vision vérification : ${ok ? 'OK' : 'ÉCHEC'} (modèle utilisé : ${reply?.model})`);
+  await shot('vision-2-discussion');
+  // Capture serrée sur le dernier tour (bulle avec l'image + réponse).
+  const rect = await js(`(() => { const t = [...document.querySelectorAll('.turn')].pop(); if (!t) return null; t.scrollIntoView({ block: 'end' }); const r = t.getBoundingClientRect(); return { x: Math.max(0, Math.floor(r.left)), y: Math.max(0, Math.floor(r.top)), width: Math.ceil(r.width), height: Math.ceil(Math.min(r.height, window.innerHeight - r.top)) }; })()`);
+  if (rect && rect.width > 0 && rect.height > 0) {
+    const img = await win.webContents.capturePage(rect);
+    writeFileSync(join(outDir, 'vision-3-bulle.png'), img.toPNG());
+  }
+
+  // Agent Observateur (même image) via un workflow au plan fourni : aucun planificateur, donc aucun appel à Claude.
+  if (reply?.image) {
+    const wf = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const run = await window.hub.startWorkflow({
+        goal: 'Lire une capture avec l’Observateur',
+        autoStart: true,
+        steps: [{ id: 's1', title: 'Lire le texte de la capture', roleId: 'observateur', instructions: ${JSON.stringify(`Recopie exactement le texte écrit sur l'image ${reply.image} puis décris la forme colorée en une phrase.`)}, dependsOn: [] }],
+      });
+      for (let i = 0; i < 600; i++) {
+        const cur = (await window.hub.listWorkflows()).find((x) => x.id === run.id);
+        if (cur && ['done', 'error', 'cancelled'].includes(cur.status)) {
+          const tasks = await window.hub.listTasks();
+          const t = tasks.find((x) => x.id === cur.steps[0].taskId);
+          return { status: cur.status, step: cur.steps[0].status, error: cur.steps[0].error, output: (cur.steps[0].output ?? '').slice(0, 400), model: t?.model, agent: t?.agent };
+        }
+        await sleep(500);
+      }
+      return { status: 'timeout' };
+    })()`);
+    const out = norm(wf?.output ?? '');
+    console.log(`Observateur (workflow) : ${JSON.stringify(wf)}`);
+    console.log(`Observateur vérification : ${wf?.status === 'done' && out.includes('2026') ? 'OK' : 'ÉCHEC'}`);
+  }
+
+  // Réglages › Modèle vision (affichage seulement, aucun téléchargement).
+  const card = await js(`(async () => {
+    document.querySelector('.tabs button[data-view="settings"]').click();
+    for (let i = 0; i < 60 && !document.querySelector('#vision-settings-body .vision-row'); i++) await new Promise((r) => setTimeout(r, 150));
+    await new Promise((r) => setTimeout(r, 6000)); // analyse de la machine (setupStatus)
+    document.getElementById('vision-settings')?.scrollIntoView({ block: 'center' });
+    await new Promise((r) => setTimeout(r, 400));
+    return document.getElementById('vision-settings-body')?.innerText.replace(/\\s+/g, ' ').slice(0, 600);
+  })()`);
+  console.log(`Réglages vision : ${JSON.stringify(card)}`);
+  await shot('vision-4-reglages');
+}
+
 export async function runSmoke(win: BrowserWindow, outDir: string, getWeb: () => WebPanels | null, only?: string): Promise<void> {
   const shot = async (name: string) => {
     const img = await win.webContents.capturePage();
@@ -348,9 +504,14 @@ export async function runSmoke(win: BrowserWindow, outDir: string, getWeb: () =>
   })()`);
   await wait(400);
   if (only === 'web') return smokeWeb(win, outDir, getWeb, shot, js);
+  if (only === 'webmic') return smokeWebMic(win, outDir, getWeb, shot, js);
+  if (only === 'weblogout') return smokeWebLogout(win, outDir, getWeb, shot, js);
   if (only === 'workflow') return smokeWorkflow(shot, js);
   if (only === 'knowledge') return smokeKnowledge(shot, js);
+  if (only === 'search') return smokeSearch(shot, js);
   if (only === 'ui') return smokeShell(shot, js);
+  if (only === 'vision') return smokeVision(win, outDir, shot, js);
+  if (only === 'files') return smokeFiles(win, outDir, shot, js);
   if (only === 'titlebar') {
     // Capture de la fenêtre entière (boutons natifs Windows dessinés par-dessus la barre du haut compris).
     await wait(1500);
@@ -395,6 +556,9 @@ export async function runSmoke(win: BrowserWindow, outDir: string, getWeb: () =>
     console.log(`Copier demande + réponse : ${JSON.stringify(r2)} | presse-papiers (${typeof copiedBoth}) = ${JSON.stringify(String(copiedBoth))}`);
     return;
   }
+  if (only === 'cutout') return smokeCutout(win, outDir, shot, js);
+  if (only === 'viewer') return smokeViewer(win, outDir, shot, js);
+  if (only === 'icons') return smokeIcons(win, outDir, shot, js);
   if (only === 'voice') {
     // Dictée vocale sans micro : HUB_VOICE_WAV = WAV de test (synthèse vocale Windows). Même pipeline que le micro.
     const wav = process.env.HUB_VOICE_WAV ? readFileSync(process.env.HUB_VOICE_WAV).toString('base64') : '';
@@ -457,6 +621,23 @@ export async function runSmoke(win: BrowserWindow, outDir: string, getWeb: () =>
     })()`);
     console.log(`Tâches dépliées : ${JSON.stringify(r2)}`);
     await shot('29-taches-depliees');
+    // Anti-clignotement : pendant qu'une tâche tourne, l'onglet est redessiné chaque seconde ; les cartes de stats et les
+    // listes de filtres doivent rester les MÊMES éléments (sinon leur animation d'entrée se rejoue), et les sous-tâches
+    // déjà affichées ne doivent plus avoir la classe « fresh ».
+    // Fausse tâche « en cours » envoyée à l'interface (la base de départ n'en a pas : au chargement, les tâches
+    // interrompues ne sont plus « en cours ») → déclenche le rafraîchissement d'horloge.
+    win.webContents.send('hub:event', { type: 'task', task: { id: 'smoke-running', title: 'Tâche factice en cours', prompt: '', output: '', status: 'running', providerId: 'ollama', model: 'test', agent: 'Discussion', createdAt: Date.now() - 5000, startedAt: Date.now() - 5000 } });
+    await wait(600);
+    const blink = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const card = document.querySelector('#task-stats .stat');
+      const opt = document.querySelector('#tf-provider option');
+      const running = [...document.querySelectorAll('tr.task-row')].some((r) => /En cours/.test(r.textContent));
+      await sleep(2300);
+      return { running, sameCard: card === document.querySelector('#task-stats .stat'), sameOptions: opt === document.querySelector('#tf-provider option'), freshLeft: document.querySelectorAll('tr.task-row.fresh').length };
+    })()`);
+    console.log(`Anti-clignotement : ${JSON.stringify(blink)}`);
+    if (!blink.running || !blink.sameCard || !blink.sameOptions || blink.freshLeft) throw new Error('Onglet Tâches : éléments recréés à chaque seconde (clignotement)');
     const r3 = await js(`(async () => {
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       document.querySelector('.tabs button[data-view="claude"]')?.click();
@@ -624,6 +805,110 @@ export async function runSmoke(win: BrowserWindow, outDir: string, getWeb: () =>
   await smokeKnowledge(shot, js);
   await smokeShell(shot, js);
   await smokeWeb(win, outDir, getWeb, shot, js);
+}
+
+/**
+ * Recherche par le sens (--smoke=search) : notes de test → indexation (bouton « Indexer ») → questions formulées
+ * autrement (aucun mot commun avec la note) → la bonne note arrive en tête → clic = note ouverte →
+ * mise à jour incrémentale (note modifiée + note effacée). Nécessite Ollama et le modèle d'embeddings.
+ */
+async function smokeSearch(shot: (name: string) => Promise<void>, js: (code: string) => Promise<any>): Promise<void> {
+  const notes: Record<string, string> = {
+    'Notes/Potager.md': "# Potager\n\nJ'arrose les tomates et les courgettes tôt le matin, au pied, jamais sur les feuilles.\n\nUn paillage de paille garde la terre fraîche pendant les canicules d'août.",
+    'Notes/Voiture.md': '# Entretien de la Clio\n\nLa vidange se fait tous les 15 000 km ou une fois par an, avec le filtre.\n\nPneus hiver montés en novembre, permutés au printemps.',
+    'Notes/Gâteau.md': '# Fondant au chocolat\n\nFaire fondre 200 g de chocolat noir avec 150 g de beurre, ajouter 4 œufs et 100 g de sucre.\n\nCuire 22 minutes à 180 °C : le cœur doit rester coulant.',
+    'Notes/NAS.md': '# Copies de secours du NAS\n\nChaque nuit à 3 h, rsync recopie le dossier des photos sur le disque externe USB.\n\nUne fois par mois, une copie part chez mes parents.',
+  };
+  const questions = [
+    { q: 'Comment garder mes plants de légumes bien hydratés quand il fait très chaud ?', want: 'Notes/Potager.md' },
+    { q: 'À quelle fréquence faut-il changer l’huile du moteur de ma bagnole ?', want: 'Notes/Voiture.md' },
+    { q: 'Où sont sauvegardées mes images en cas de panne ?', want: 'Notes/NAS.md' },
+  ];
+  const prep = await js(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const notes = ${JSON.stringify(notes)};
+    for (const [p, c] of Object.entries(notes)) await window.hub.writeNote(p, c, 'hub');
+    document.querySelector('.tabs button[data-view="knowledge"]').click();
+    for (let i = 0; i < 40 && !document.getElementById('kn-sem-state') && !document.getElementById('kn-sem-pull'); i++) await sleep(250);
+    const before = await window.hub.semanticStatus('hub');
+    return { model: before.model, installed: before.modelInstalled, ollama: before.ollama, indexed: before.notes, pullButton: !!document.getElementById('kn-sem-pull'), label: document.getElementById('kn-sem-state')?.textContent ?? null };
+  })()`);
+  console.log(`Recherche par le sens — avant : ${JSON.stringify(prep)}`);
+  if (!prep?.installed) {
+    await shot('40-recherche-sens-modele-absent');
+    console.log('Recherche par le sens : modèle absent → ÉCHEC (télécharge-le puis relance)');
+    return;
+  }
+  await shot('40-recherche-sens-avant');
+
+  // Indexation par le bouton, comme un utilisateur.
+  const idx = await js(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const t0 = performance.now();
+    document.getElementById('kn-sem-index').click();
+    await sleep(500);
+    let st;
+    for (let i = 0; i < 600; i++) { st = await window.hub.semanticStatus('hub'); if (!st.indexing) break; await sleep(500); }
+    await sleep(400);
+    return { ms: Math.round(performance.now() - t0), notes: st.notes, chunks: st.chunks, stale: st.stale, error: st.error ?? null, label: document.getElementById('kn-sem-state')?.textContent ?? null };
+  })()`);
+  console.log(`Indexation : ${JSON.stringify(idx)}`);
+
+  let ok = 0;
+  for (const [i, { q, want }] of questions.entries()) {
+    const r = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      let input = document.getElementById('kn-sem-search');
+      // Efface la question précédente (et ses résultats) avant de poser la suivante.
+      input.value = '';
+      input.dispatchEvent(new Event('input'));
+      await sleep(200);
+      input = document.getElementById('kn-sem-search');
+      input.value = ${JSON.stringify(q)};
+      input.dispatchEvent(new Event('input'));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      await sleep(300);
+      for (let i = 0; i < 240 && !document.querySelector('.kn-sem-hit') && !document.querySelector('.kn-sem-error'); i++) await sleep(250);
+      await sleep(300);
+      const hits = [...document.querySelectorAll('.kn-sem-hit')].map((h) => ({ path: h.dataset.path, score: h.querySelector('.kn-sem-score')?.textContent }));
+      return { hits: hits.slice(0, 3), error: document.querySelector('.kn-sem-error')?.textContent ?? null };
+    })()`);
+    const top = r?.hits?.[0]?.path;
+    if (top === want) ok++;
+    console.log(`Question ${i + 1} « ${q} » → ${JSON.stringify(r)} ${top === want ? '✔' : `✘ (attendu ${want})`}`);
+    if (i === 0) {
+      await wait(1200); // laisse la fenêtre (affichée en arrière-plan) repeindre avant la capture
+      await shot('41-recherche-sens-resultats');
+    }
+  }
+
+  // Clic sur le 1er résultat : la note s'ouvre.
+  const open = await js(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    document.querySelector('.kn-sem-hit')?.click();
+    await sleep(900);
+    return { opened: document.getElementById('kn-path')?.value ?? null };
+  })()`);
+  console.log(`Clic sur le résultat : ${JSON.stringify(open)}`);
+  await wait(1200);
+  await shot('42-recherche-sens-note-ouverte');
+
+  // Incrémental : une note modifiée, une effacée → seules elles changent dans l'index.
+  const inc = await js(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    await window.hub.writeNote('Notes/Gâteau.md', '# Fondant au chocolat\\n\\nVersion sans gluten : remplacer la farine par de la poudre d’amande.', 'hub');
+    await window.hub.deleteNote('Notes/NAS.md', 'hub');
+    await sleep(300);
+    const stale = (await window.hub.semanticStatus('hub')).stale;
+    const t0 = performance.now();
+    const after = await window.hub.semanticIndex('hub');
+    const hits = await window.hub.semanticSearch('recette de dessert sans blé', 'hub', 3);
+    const gone = await window.hub.semanticSearch('copie de secours des photos', 'hub', 5);
+    return { staleBefore: stale, ms: Math.round(performance.now() - t0), notes: after.notes, stale: after.stale, top: hits[0]?.path, topExcerpt: hits[0]?.excerpt.slice(0, 120), nasStillThere: gone.some((h) => h.path === 'Notes/NAS.md') };
+  })()`);
+  const incOk = inc?.staleBefore === 2 && inc?.stale === 0 && inc?.top === 'Notes/Gâteau.md' && /amande/.test(inc?.topExcerpt ?? '') && inc?.nasStillThere === false;
+  console.log(`Incrémental : ${JSON.stringify(inc)} ${incOk ? '✔' : '✘'}`);
+  console.log(`Recherche par le sens : ${ok}/${questions.length} questions → bonne note en tête ; incrémental ${incOk ? 'OK' : 'ÉCHEC'} → ${ok === questions.length && incOk ? 'OK' : 'ÉCHEC'}`);
 }
 
 /**

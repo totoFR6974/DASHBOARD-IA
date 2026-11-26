@@ -1,5 +1,6 @@
 // Serveur MCP local du hub (transport « streamable HTTP », réponses JSON) : expose aux agents Claude les outils
-// `lister_agents` et `demander_a` pour confier une sous-tâche à un autre agent du hub.
+// `lister_agents` et `demander_a` pour confier une sous-tâche à un autre agent du hub, et `chercher_notes`
+// (recherche par le sens dans les bases de connaissances).
 // Sécurité : écoute uniquement 127.0.0.1, port aléatoire, jeton secret par lancement (Bearer, comparaison à temps
 // constant), contrôle des en-têtes Host/Origin (anti DNS rebinding). Sans Electron : testable par le selftest.
 import { randomBytes, timingSafeEqual } from 'node:crypto';
@@ -8,6 +9,8 @@ import type { AddressInfo } from 'node:net';
 
 export const MCP_SERVER_NAME = 'hub';
 export const DELEGATION_TOOLS = [`mcp__${MCP_SERVER_NAME}__demander_a`, `mcp__${MCP_SERVER_NAME}__lister_agents`];
+/** Recherche par le sens dans les bases de connaissances (lecture seule). */
+export const KNOWLEDGE_TOOLS = [`mcp__${MCP_SERVER_NAME}__chercher_notes`];
 export const PARENT_HEADER = 'x-hub-parent-task';
 
 const SUPPORTED_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
@@ -28,7 +31,13 @@ export interface DelegationResult {
 /** Ce que le serveur demande au Hub. */
 export interface McpToolHost {
   listAgents(): Promise<DelegableAgent[]>;
-  delegate(parentTaskId: string, agent: string, demande: string, contexte?: string): Promise<DelegationResult>;
+  /** options.transparent : images détourées (fond transparent) ; absent = réglage de l'agent / mots de la demande. */
+  /** options.images : chemins absolus d'images à montrer à l'agent (Observateur = modèle vision local). */
+  delegate(parentTaskId: string, agent: string, demande: string, contexte?: string, options?: { transparent?: boolean; images?: string[] }): Promise<DelegationResult>;
+  /** Passages des notes les plus proches de la question (texte prêt à lire). Base par défaut : celle de la tâche appelante. */
+  searchNotes(parentTaskId: string, question: string, base?: string, nombre?: number): Promise<string>;
+  /** false = délégation désactivée dans les réglages : demander_a / lister_agents ne sont pas proposés. */
+  delegationEnabled?(): boolean;
 }
 
 const TOOLS = [
@@ -40,19 +49,46 @@ const TOOLS = [
   {
     name: 'demander_a',
     description:
-      "Confie une sous-tâche à un autre agent du Hub IA (ex. Rédacteur pour écrire, Relecteur pour relire, Illustrateur pour générer une image) et renvoie son résultat. L'agent ne voit pas ta conversation : donne des consignes complètes et autonomes.",
+      "Confie une sous-tâche à un autre agent du Hub IA (ex. Rédacteur pour écrire, Relecteur pour relire, Illustrateur pour générer une image, Observateur pour regarder une image) et renvoie son résultat. L'agent ne voit pas ta conversation : donne des consignes complètes et autonomes.",
     inputSchema: {
       type: 'object',
       properties: {
         agent: { type: 'string', description: "Id ou nom de l'agent (voir lister_agents)." },
         demande: { type: 'string', description: 'Consignes complètes de la sous-tâche.' },
         contexte: { type: 'string', description: 'Informations utiles en plus (facultatif).' },
+        fond_transparent: {
+          type: 'boolean',
+          description:
+            "Agent d'images uniquement : true = l'image est aussi détourée en local (PNG à fond transparent « …-detoure.png », l'original est conservé) — pour une icône, un objet ou un personnage à intégrer. false = jamais. Absent = réglage de l'agent.",
+        },
+        images: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            "Chemins ABSOLUS d'images PNG/JPEG à montrer à l'agent (6 maximum) — surtout pour l'Observateur (modèle vision local) : décrire une capture, lire un texte, vérifier une image générée.",
+        },
       },
       required: ['agent', 'demande'],
       additionalProperties: false,
     },
   },
+  {
+    name: 'chercher_notes',
+    description:
+      "Cherche PAR LE SENS dans les bases de connaissances de l'utilisateur (notes Markdown / Obsidian du Hub IA) et renvoie les passages les plus proches de la question : note, section, extrait, score. Formule la question en langage naturel ; pas besoin des mots exacts. Lis ensuite la note complète si besoin (chemin fourni).",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: 'Ce que tu cherches, en langage naturel.' },
+        base: { type: 'string', description: 'Id ou nom de la base (facultatif ; par défaut celle de la discussion ou du dossier de travail).' },
+        nombre: { type: 'integer', minimum: 1, maximum: 20, description: 'Nombre de passages (défaut 6).' },
+      },
+      required: ['question'],
+      additionalProperties: false,
+    },
+  },
 ];
+const DELEGATION_TOOL_NAMES = new Set(['lister_agents', 'demander_a']);
 
 interface RpcMessage {
   jsonrpc?: string;
@@ -169,13 +205,16 @@ export class McpServer {
           protocolVersion: SUPPORTED_VERSIONS.includes(asked) ? asked : SUPPORTED_VERSIONS[0],
           capabilities: { tools: { listChanged: false } },
           serverInfo: { name: 'hub-ia', version: '0.1.0' },
-          instructions: 'Outils du Hub IA : lister_agents puis demander_a pour confier une sous-tâche à un autre agent.',
+          instructions:
+            'Outils du Hub IA : lister_agents puis demander_a pour confier une sous-tâche à un autre agent ; chercher_notes pour retrouver par le sens un passage des notes de l’utilisateur.',
         });
       }
       case 'ping':
         return rpcResult(id, {});
-      case 'tools/list':
-        return rpcResult(id, { tools: TOOLS });
+      case 'tools/list': {
+        const delegation = this.host.delegationEnabled?.() !== false;
+        return rpcResult(id, { tools: TOOLS.filter((t) => delegation || !DELEGATION_TOOL_NAMES.has(t.name)) });
+      }
       case 'tools/call':
         return rpcResult(id, await this.callTool(String(msg.params?.name ?? ''), msg.params?.arguments ?? {}, parent));
       default:
@@ -197,9 +236,26 @@ export class McpServer {
         const contexte = typeof args?.contexte === 'string' && args.contexte.trim() ? args.contexte.trim() : undefined;
         if (!agent || !demande) return text('Paramètres manquants : « agent » et « demande » sont obligatoires.', true);
         if (!parent) return text("Délégation impossible : tâche appelante inconnue (en-tête manquant).", true);
-        const r = await this.host.delegate(parent, agent, demande, contexte);
-        const images = r.images?.length ? `\n\nImages générées :\n${r.images.map((p) => `- ${p}`).join('\n')}` : '';
+        // fond_transparent : booléen (ou "true"/"false" envoyé en texte par certains clients).
+        const ft = args?.fond_transparent;
+        const transparent = ft === true || ft === 'true' ? true : ft === false || ft === 'false' ? false : undefined;
+        // images : liste de chemins (ou un seul chemin en texte, toléré).
+        const rawImages: unknown[] = Array.isArray(args?.images) ? args.images : typeof args?.images === 'string' && args.images.trim() ? [args.images] : [];
+        const imagePaths = rawImages.filter((p): p is string => typeof p === 'string' && !!p.trim()).map((p) => p.trim());
+        const r = await this.host.delegate(parent, agent, demande, contexte, {
+          ...(transparent === undefined ? {} : { transparent }),
+          ...(imagePaths.length ? { images: imagePaths } : {}),
+        });
+        const label = (p: string) => (p.toLowerCase().endsWith('-detoure.png') ? `${p} (détourée, fond transparent)` : p);
+        const images = r.images?.length ? `\n\nImages générées :\n${r.images.map((p) => `- ${label(p)}`).join('\n')}` : '';
         return text(`${r.text || '(réponse vide)'}${images}`);
+      }
+      if (name === 'chercher_notes') {
+        const question = String(args?.question ?? '').trim();
+        if (!question) return text('Paramètre manquant : « question » est obligatoire.', true);
+        const base = typeof args?.base === 'string' && args.base.trim() ? args.base.trim() : undefined;
+        const n = Number(args?.nombre);
+        return text(await this.host.searchNotes(parent, question, base, Number.isFinite(n) ? Math.max(1, Math.min(20, Math.round(n))) : undefined));
       }
       return text(`Outil inconnu : ${name}`, true);
     } catch (err: any) {

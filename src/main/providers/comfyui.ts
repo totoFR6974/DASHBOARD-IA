@@ -3,8 +3,9 @@ import { randomInt, randomUUID } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ProviderInfo } from '../../shared/types';
-import { COMFY_URL, type ImageEngine } from '../image-engine';
+import type { ImageEngine } from '../image-engine';
 import { imagePreset } from '../image-models';
+import { promptForCutout } from '../cutout';
 import { CancelledError, type Provider, type RunContext, type RunResult } from './provider';
 
 /** Connecteurs qui produisent des images (le prompt doit être une description d'image, pas un gabarit d'agent). */
@@ -50,11 +51,14 @@ export class ComfyUIProvider implements Provider {
     const preset = imagePreset(presetId);
     if (!preset) throw new Error('Aucun modèle d’image installé (Réglages › Images locales)');
     const model = preset.name;
-    const prompt = ctx.prompt.trim();
-    if (!prompt) throw new Error("Décris l'image à générer");
+    if (!ctx.prompt.trim()) throw new Error("Décris l'image à générer");
+    // Fond transparent demandé : sujet isolé sur fond uni (le détourage est fait ensuite par le hub).
+    const prompt = ctx.transparent ? promptForCutout(ctx.prompt) : ctx.prompt.trim();
 
     await this.engine.ensureServer((text) => ctx.onActivity({ kind: 'info', text }), ctx.signal);
     if (ctx.signal.aborted) throw new CancelledError();
+    // Serveur qui a répondu (Windows : 127.0.0.1:8188 ; Mac : ComfyUI Desktop sur 8000, ou 8188).
+    const COMFY_URL = this.engine.url;
     await this.freeOllamaVram(ctx);
 
     // Graine fixable pour les comparaisons (variable d'environnement HUB_IMAGE_SEED), aléatoire sinon.

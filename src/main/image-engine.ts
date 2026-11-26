@@ -1,16 +1,32 @@
 // Images locales : installation de ComfyUI (portable, dans le dossier de l'appli) + pilotage de son serveur.
 // L'installation n'est lancée QUE par l'utilisateur (bouton « Installer », téléchargements affichés avant).
-// Ne dépend pas d'Electron.
+// macOS : pas d'archive portable → le hub utilise ComfyUI Desktop (installé à part par l'utilisateur) : il détecte
+// son dossier (modèles téléchargés dedans), l'ouvre quand une image est demandée, ou utilise tout serveur ComfyUI
+// local déjà lancé (ports 8000 de ComfyUI Desktop et 8188 par défaut). Ne dépend pas d'Electron.
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { statfs } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import type { ImageEngineStatus, ImageModelInfo, PlannedDownload } from '../shared/types';
 import { IMAGE_PRESETS, imagePreset, presetSize, type ImageModelFile, type ImageModelPreset } from './image-models';
+import { killProcessTree, macAppPath } from './platform';
 
 const PORT = 8188;
 export const COMFY_URL = `http://127.0.0.1:${PORT}`;
+const IS_MAC = process.platform === 'darwin';
+/** Serveurs ComfyUI essayés : Mac → ComfyUI Desktop (port 8000) puis ComfyUI classique (8188) ; ailleurs 8188. */
+export function comfyUrlCandidates(platform: NodeJS.Platform = process.platform): string[] {
+  return platform === 'darwin' ? ['http://127.0.0.1:8000', COMFY_URL] : [COMFY_URL];
+}
+/** Page de téléchargement officielle de ComfyUI Desktop (Mac). */
+export const COMFY_DESKTOP_URL = 'https://www.comfy.org/download';
+/** Message quand un dossier ComfyUI choisi n'est pas valide. */
+export const COMFY_DIR_HINT = IS_MAC
+  ? 'Ce dossier n’est pas un dossier ComfyUI (il faut un sous-dossier « models », comme dans Documents/ComfyUI de ComfyUI Desktop)'
+  : 'Ce dossier ne contient pas ComfyUI portable (il faut python_embeded\\python.exe et ComfyUI\\main.py)';
+const MAC_NO_COMFY =
+  'sur Mac, installe d’abord ComfyUI Desktop (gratuit, comfy.org/download), ouvre-le une fois pour terminer sa configuration, puis réessaie (ou choisis son dossier ci-dessus)';
 const UA = { 'User-Agent': 'hub-ia' };
 const RELEASE_API = 'https://api.github.com/repos/Comfy-Org/ComfyUI/releases/latest';
 /** Modèle installé par défaut avec ComfyUI (le meilleur préréglage). */
@@ -52,15 +68,21 @@ export class ImageEngine {
     return c ? findComfyRoot(c) : null;
   }
 
-  /** Dossier qui contient python_embeded et ComfyUI : celui choisi par l'utilisateur, sinon celui de l'appli. */
+  /**
+   * Dossier qui contient python_embeded et ComfyUI : celui choisi par l'utilisateur, sinon celui de l'appli.
+   * macOS : celui choisi, sinon le dossier de ComfyUI Desktop (contient models/).
+   */
   root(): string | null {
-    return this.customRoot() ?? findComfyRoot(this.dir);
+    return this.customRoot() ?? (IS_MAC ? detectComfyDesktopBase() : findComfyRoot(this.dir));
   }
 
   /** Dossier réellement utilisé (pour l'affichage et l'espace disque). */
   activeDir(): string {
-    return this.customRoot() ?? this.dir;
+    return this.customRoot() ?? (IS_MAC ? (detectComfyDesktopBase() ?? this.dir) : this.dir);
   }
+
+  /** Serveur ComfyUI utilisé (Mac : celui qui a répondu, ComfyUI Desktop par défaut). */
+  url = comfyUrlCandidates()[0];
 
   /** Vérifie que 7za (extraction de l'archive ComfyUI) se lance : crée puis extrait une petite archive de test. */
   async diagnose7z(): Promise<{ ok: boolean; path7za: string; message: string }> {
@@ -85,7 +107,8 @@ export class ImageEngine {
   /** Dossier ComfyUI/models. */
   modelsDir(): string | null {
     const r = this.root();
-    return r ? join(r, 'ComfyUI', 'models') : null;
+    // Windows (portable) : <racine>/ComfyUI/models ; macOS (ComfyUI Desktop, ou dépôt cloné) : <racine>/models.
+    return r ? (IS_MAC ? join(r, 'models') : join(r, 'ComfyUI', 'models')) : null;
   }
 
   private filePath(f: ImageModelFile): string | null {
@@ -197,6 +220,7 @@ export class ImageEngine {
 
   /** Téléchargements nécessaires à une 1re installation : archive portable ComfyUI (GitHub) + fichiers du modèle conseillé. */
   private async computePlanned(): Promise<PlannedDownload[]> {
+    if (IS_MAC && !this.root()) throw new Error(MAC_NO_COMFY);
     const comfy = this.root() ? [] : [await this.comfyAsset()];
     return [...comfy, ...RECOMMENDED.files.map((f) => ({ name: `${RECOMMENDED.name} — ${f.subdir}/${f.file}`, url: f.url, sizeBytes: f.sizeBytes }))];
   }
@@ -231,6 +255,12 @@ export class ImageEngine {
     const preset = imagePreset(id);
     if (!preset) throw new Error(`Modèle d'image inconnu : ${id}`);
     if (this.installing) throw new Error('Installation déjà en cours');
+    // Mac : ComfyUI lui-même n'est jamais installé par le hub (seulement les modèles, dans le dossier de ComfyUI Desktop).
+    if (IS_MAC && !this.root()) {
+      this.lastError = `Installation impossible : ${MAC_NO_COMFY}`;
+      this.push(true);
+      throw new Error(this.lastError);
+    }
     this.installing = true;
     this.lastError = undefined;
     this.installAbort = new AbortController();
@@ -349,12 +379,19 @@ export class ImageEngine {
   // ---------- Serveur ----------
 
   private async alive(): Promise<boolean> {
-    try {
-      const res = await fetch(`${COMFY_URL}/system_stats`, { signal: AbortSignal.timeout(2000) });
-      return res.ok;
-    } catch {
-      return false;
+    // Serveur déjà connu d'abord, puis les autres ports possibles (Mac : ComfyUI Desktop 8000, ComfyUI 8188).
+    for (const url of [this.url, ...comfyUrlCandidates().filter((u) => u !== this.url)]) {
+      try {
+        const res = await fetch(`${url}/system_stats`, { signal: AbortSignal.timeout(2000) });
+        if (res.ok) {
+          this.url = url;
+          return true;
+        }
+      } catch {
+        /* port suivant */
+      }
     }
+    return false;
   }
 
   /** Démarre le serveur ComfyUI si besoin et attend qu'il réponde. */
@@ -370,6 +407,7 @@ export class ImageEngine {
   private async startServer(onInfo: (text: string) => void, signal?: AbortSignal): Promise<void> {
     const root = this.root();
     if (!root) throw new Error('ComfyUI n’est pas installé (Réglages › Images locales)');
+    if (IS_MAC) return this.startMacServer(onInfo, signal);
     onInfo('Démarrage de ComfyUI…');
     this.stderrTail = '';
     const child = spawn(
@@ -400,6 +438,27 @@ export class ImageEngine {
     throw new Error('ComfyUI ne répond pas après 3 minutes');
   }
 
+  /**
+   * macOS : ouvre ComfyUI Desktop (son serveur démarre avec l'appli) et attend qu'il réponde. Le hub ne le
+   * considère pas comme « son » process : il ne l'arrête jamais (l'utilisateur ferme ComfyUI Desktop lui-même).
+   */
+  private async startMacServer(onInfo: (text: string) => void, signal?: AbortSignal): Promise<void> {
+    const app = macAppPath('ComfyUI');
+    if (!app) throw new Error('Aucun serveur ComfyUI ne répond : ouvre ComfyUI Desktop (ou lance ton serveur ComfyUI local), puis réessaie.');
+    onInfo('Ouverture de ComfyUI Desktop…');
+    spawn('open', ['-g', app], { detached: true, stdio: 'ignore' }).unref();
+    const deadline = Date.now() + START_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      if (signal?.aborted) throw new Error('Annulé pendant le démarrage de ComfyUI');
+      if (await this.alive()) {
+        onInfo('ComfyUI est prêt');
+        return;
+      }
+      await sleep(1500);
+    }
+    throw new Error('ComfyUI Desktop ne répond pas après 3 minutes (termine sa configuration au premier lancement, puis réessaie)');
+  }
+
   /** Programme l'arrêt du serveur après 10 min sans image (libère la carte graphique). */
   scheduleIdleStop(): void {
     this.clearIdle();
@@ -416,8 +475,7 @@ export class ImageEngine {
     this.clearIdle();
     const child = this.child;
     if (!child || child.exitCode !== null || !child.pid) return;
-    if (process.platform === 'win32') spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true });
-    else child.kill('SIGTERM');
+    killProcessTree(child.pid); // Windows : taskkill /T /F (comme avant)
     this.child = null;
     this.push(true);
   }
@@ -467,8 +525,12 @@ export function resolve7za(): string {
  * Dossier ComfyUI portable valide (python_embeded\python.exe + ComfyUI\main.py) : le dossier lui-même,
  * ou un de ses sous-dossiers directs (ex. tools\ComfyUI\ComfyUI_windows_portable). null sinon.
  */
-export function findComfyRoot(dir: string): string | null {
-  const ok = (d: string) => existsSync(join(d, 'python_embeded', 'python.exe')) && existsSync(join(d, 'ComfyUI', 'main.py'));
+export function findComfyRoot(dir: string, platform: NodeJS.Platform = process.platform): string | null {
+  // macOS : dossier de ComfyUI Desktop (models/ + user/ ou custom_nodes/) ou dépôt ComfyUI cloné (models/ + main.py).
+  const ok =
+    platform === 'darwin'
+      ? (d: string) => existsSync(join(d, 'models')) && ['main.py', 'user', 'custom_nodes'].some((x) => existsSync(join(d, x)))
+      : (d: string) => existsSync(join(d, 'python_embeded', 'python.exe')) && existsSync(join(d, 'ComfyUI', 'main.py'));
   try {
     if (ok(dir)) return dir;
     for (const e of readdirSync(dir, { withFileTypes: true })) {
@@ -477,6 +539,25 @@ export function findComfyRoot(dir: string): string | null {
   } catch {
     /* dossier absent ou illisible */
   }
+  return null;
+}
+
+/**
+ * macOS : dossier de base de ComfyUI Desktop (celui qui contient models/, user/, input/, output/…).
+ * Lu dans sa configuration (~/Library/Application Support/ComfyUI/config.json, clé « basePath »), sinon
+ * l'emplacement proposé par défaut à l'installation (~/Documents/ComfyUI). null s'il est introuvable.
+ */
+export function detectComfyDesktopBase(home: string = homedir(), platform: NodeJS.Platform = process.platform): string | null {
+  if (platform !== 'darwin') return null;
+  const candidates: string[] = [];
+  try {
+    const cfg = JSON.parse(readFileSync(join(home, 'Library', 'Application Support', 'ComfyUI', 'config.json'), 'utf8'));
+    if (typeof cfg?.basePath === 'string' && cfg.basePath) candidates.push(cfg.basePath);
+  } catch {
+    /* pas de config (ComfyUI Desktop jamais lancé) : emplacement par défaut */
+  }
+  candidates.push(join(home, 'Documents', 'ComfyUI'));
+  for (const c of candidates) if (findComfyRoot(c, platform) === c) return c;
   return null;
 }
 

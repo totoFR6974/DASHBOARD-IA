@@ -4,7 +4,9 @@
 import { randomBytes } from 'node:crypto';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { brewPath, macAppPath, macAppVersion, processRunning } from './platform';
 
 export interface ObsidianStatus {
   installed: boolean;
@@ -25,17 +27,22 @@ export interface RegisterResult {
 /** Commande winget d'installation (arguments en tableau, jamais de shell). */
 export const OBSIDIAN_WINGET_ARGS = ['install', '--id', 'Obsidian.Obsidian', '-e', '--silent', '--accept-package-agreements', '--accept-source-agreements'];
 
+/** Exécutable d'Obsidian (Windows) ou son appli Obsidian.app (macOS) ; null s'il n'est pas installé. */
 export function obsidianExe(): string | null {
+  if (process.platform === 'darwin') return macAppPath('Obsidian');
   if (process.platform !== 'win32') return null;
   const exe = join(process.env.LOCALAPPDATA ?? '', 'Programs', 'Obsidian', 'Obsidian.exe');
   return process.env.LOCALAPPDATA && existsSync(exe) ? exe : null;
 }
 
 export function obsidianConfigPath(): string {
+  // macOS : ~/Library/Application Support/obsidian/obsidian.json.
+  if (process.platform === 'darwin') return join(homedir(), 'Library', 'Application Support', 'obsidian', 'obsidian.json');
   return join(process.env.APPDATA ?? join(process.env.USERPROFILE ?? '', 'AppData', 'Roaming'), 'obsidian', 'obsidian.json');
 }
 
 export function obsidianRunning(): boolean {
+  if (process.platform === 'darwin') return processRunning('Obsidian');
   if (process.platform !== 'win32') return false;
   const res = spawnSync('tasklist', ['/FI', 'IMAGENAME eq Obsidian.exe', '/NH', '/FO', 'CSV'], { encoding: 'utf8', timeout: 8000, windowsHide: true });
   return !!res.stdout && /"Obsidian\.exe"/i.test(res.stdout);
@@ -50,7 +57,9 @@ export function obsidianStatus(): ObsidianStatus {
     installed = res.status === 0;
   }
   let version: string | undefined;
-  if (exe) {
+  if (exe && process.platform === 'darwin') {
+    version = macAppVersion(exe);
+  } else if (exe) {
     const res = spawnSync('powershell', ['-NoProfile', '-Command', `(Get-Item -LiteralPath '${exe.replace(/'/g, "''")}').VersionInfo.ProductVersion`], {
       encoding: 'utf8',
       timeout: 8000,
@@ -122,8 +131,35 @@ export function obsidianUri(absPath: string): string {
   return `obsidian://open?path=${encodeURIComponent(absPath)}`;
 }
 
-/** Installation via winget (annulable). `onLine` reçoit les lignes utiles de la sortie. */
+/** Commande Homebrew d'installation sur macOS (arguments en tableau, jamais de shell). */
+export const OBSIDIAN_BREW_ARGS = ['install', '--cask', 'obsidian'];
+
+/**
+ * Installation via winget (Windows) ou Homebrew (macOS, `brew install --cask obsidian`), annulable.
+ * `onLine` reçoit les lignes utiles de la sortie.
+ */
 export function installObsidian(onLine: (line: string) => void): { child: ChildProcess; done: Promise<void> } {
+  if (process.platform === 'darwin') {
+    const brew = brewPath();
+    if (!brew) throw new Error('Homebrew est introuvable : télécharge Obsidian sur obsidian.md/download, glisse-le dans Applications, puis « Revérifier ».');
+    const child = spawn(brew, OBSIDIAN_BREW_ARGS, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const handle = (buf: Buffer) => {
+      for (const raw of buf.toString('utf8').split(/\r?\n|\r/)) {
+        const line = raw.replace(/\x1b\[[0-9;]*m/g, '').trim();
+        if (line && /[a-zA-Zà-ÿ]/.test(line)) onLine(line.slice(0, 160));
+      }
+    };
+    child.stdout?.on('data', handle);
+    child.stderr?.on('data', handle);
+    const done = new Promise<void>((res, rej) => {
+      child.on('error', (err) => rej(new Error(`Homebrew en échec : ${err.message}`)));
+      child.on('close', (code) => {
+        if (code === 0 || obsidianExe()) res();
+        else rej(new Error(`Homebrew a échoué (code ${code}). Télécharge Obsidian sur obsidian.md/download.`));
+      });
+    });
+    return { child, done };
+  }
   const child = spawn('winget', OBSIDIAN_WINGET_ARGS, { windowsHide: true });
   const handle = (buf: Buffer) => {
     for (const raw of buf.toString('utf8').split(/\r?\n|\r/)) {

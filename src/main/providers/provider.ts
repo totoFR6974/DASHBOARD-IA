@@ -3,6 +3,15 @@ import type { ChatMessage, ClaudeEffort, ClaudePermission, ProviderInfo, TaskAct
 
 export interface RunContext {
   prompt: string;
+  /** Images jointes au prompt courant (chemins absolus, PNG/JPEG). Ollama les envoie en base64 (modèle vision). */
+  images?: string[];
+  /**
+   * Autres fichiers joints au prompt courant (chemins absolus : texte, code, PDF, binaires…). Claude les lit lui-même ;
+   * pour les IA sans outils (Ollama), le hub a déjà mis leur texte dans le prompt.
+   */
+  files?: string[];
+  /** Ollama : taille de contexte demandée (num_ctx), ex. pour le texte de fichiers joints. */
+  numCtx?: number;
   model?: string;
   /** Messages précédents de la discussion (sans le prompt courant). */
   history: ChatMessage[];
@@ -24,6 +33,8 @@ export interface RunContext {
   extraEnv?: Record<string, string>;
   /** Consigne système ajoutée (Claude : --append-system-prompt) : présentation du hub, agents, règles. */
   systemAppend?: string;
+  /** Images : le résultat sera détouré (fond transparent) → prompt adapté (sujet isolé sur fond uni). */
+  transparent?: boolean;
   signal: AbortSignal;
   onDelta(text: string): void;
   onActivity(activity: Omit<TaskActivity, 'at'>): void;

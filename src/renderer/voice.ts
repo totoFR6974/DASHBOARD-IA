@@ -1,6 +1,11 @@
 // Dictée vocale (interface) : micro → PCM 16 kHz → Whisper local (worker WebGPU / WASM) → texte inséré au curseur.
 // Le modèle est téléchargé une fois par le hub (Hugging Face, dépôts onnx-community) puis tout reste sur le PC.
 import { VOICE_MODELS, VOICE_VARIANTS, type HubApi, type HubSettings, type VoiceLanguage, type VoiceModelId, type VoiceStatus, type VoiceVariant } from '../shared/types';
+import { IS_MAC } from './platform';
+import { iconSvg } from './icons';
+
+/** Raccourci de la dictée affiché à l'utilisateur. */
+const VOICE_KEYS = IS_MAC ? '⌘⇧Espace' : 'Ctrl+Maj+Espace';
 
 type Field = HTMLTextAreaElement | HTMLInputElement;
 
@@ -246,7 +251,10 @@ export function insertText(el: Field, text: string): void {
   el.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
-// ---------- Boutons 🎤 ----------
+// ---------- Boutons micro ----------
+
+/** Contenu d'un bouton de dictée : icône micro (icons.ts), jauge de niveau, libellé d'état. */
+const MIC_INNER = `<span class="mic-ico">${iconSvg('mic')}</span><span class="mic-level"></span><span class="mic-label"></span>`;
 
 const buttons = new Set<{ btn: HTMLButtonElement; target: () => Field | null }>();
 let activeBtn: HTMLButtonElement | null = null;
@@ -265,7 +273,7 @@ function setButtonsState(state: 'idle' | 'rec' | 'busy', label?: string): void {
         ? 'Enregistrement… clic pour arrêter et transcrire (Échap pour annuler)'
         : state === 'busy' && mine
           ? label ?? 'Patiente…'
-          : 'Dictée vocale (Ctrl+Maj+Espace) — reconnaissance locale, rien ne sort du PC';
+          : `Dictée vocale (${VOICE_KEYS}) — reconnaissance locale, rien ne sort ${IS_MAC ? 'du Mac' : 'du PC'}`;
   }
   if (state === 'idle') activeBtn = null;
 }
@@ -274,20 +282,20 @@ function setLevel(v: number): void {
   if (activeBtn) activeBtn.style.setProperty('--lvl', v.toFixed(2));
 }
 
-/** Crée un bouton 🎤 qui dicte dans le champ renvoyé par target(). */
+/** Crée un bouton micro qui dicte dans le champ renvoyé par target(). */
 export function micButton(target: () => Field | null, extraClass = ''): HTMLButtonElement {
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = `btn mic-btn ${extraClass}`.trim();
   btn.setAttribute('aria-label', 'Dictée vocale');
-  btn.innerHTML = '<span class="mic-ico">🎤</span><span class="mic-level"></span><span class="mic-label"></span>';
+  btn.innerHTML = MIC_INNER;
   attachMic(btn, target);
   return btn;
 }
 
 /** Branche un bouton existant (ex. celui du composer dans index.html). */
 export function attachMic(btn: HTMLButtonElement, target: () => Field | null): void {
-  if (!btn.querySelector('.mic-label')) btn.innerHTML = '<span class="mic-ico">🎤</span><span class="mic-level"></span><span class="mic-label"></span>';
+  if (!btn.querySelector('.mic-label')) btn.innerHTML = MIC_INNER;
   const entry = { btn, target };
   buttons.add(entry);
   btn.addEventListener('click', (e) => {
@@ -313,7 +321,8 @@ function bindShortcuts(): void {
         cancelRecording();
         return;
       }
-      if (e.code === 'Space' && e.ctrlKey && e.shiftKey && !e.altKey) {
+      // Mac : ⌘⇧Espace (ou ⌃⇧Espace) ; Windows : Ctrl+Maj+Espace uniquement (Win+Maj+Espace = changement de langue).
+      if (e.code === 'Space' && (e.ctrlKey || (IS_MAC && e.metaKey)) && e.shiftKey && !e.altKey) {
         e.preventDefault();
         if (rec) return void stopRecording();
         const a = document.activeElement;
@@ -349,7 +358,7 @@ export async function renderVoiceSettings(box: HTMLElement): Promise<void> {
   };
   const machine = variant === 'wasm' ? 'processeur (pas de carte graphique compatible WebGPU)' : `carte graphique (WebGPU${variant === 'webgpu-f16' ? ', fp16' : ''})`;
   const lines: HTMLElement[] = [];
-  lines.push(el('p', 'muted small', `Reconnaissance vocale locale (Whisper) : ta voix ne quitte jamais ce PC. Cette machine utilisera : ${machine}. Raccourci : Ctrl+Maj+Espace, Échap pour annuler.`));
+  lines.push(el('p', 'muted small', `Reconnaissance vocale locale (Whisper) : ta voix ne quitte jamais ce PC. Cette machine utilisera : ${machine}. Raccourci : ${VOICE_KEYS}, Échap pour annuler.`));
 
   const mkSelect = (name: string, opts: [string, string][], value: string) => {
     const sel = document.createElement('select');

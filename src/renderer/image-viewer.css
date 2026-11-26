@@ -1,0 +1,112 @@
+/* ============================================================================
+   Visionneuse d'images (image-viewer.ts) + aperçus d'images dans les bulles de réponse.
+   Chargé après theme.css : reprend ses couleurs (--accent, --line, --glass…).
+   ========================================================================== */
+
+/* ---------- Aperçus dans les bulles de réponse ----------
+   Taille fixée AVANT le chargement (aspect-ratio) : une image chargée en différé ne fait pas sauter le défilement. */
+.msg.assistant .thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; max-width: 640px; margin-top: 10px; }
+.msg.assistant .thumbs:has(> :only-child) { grid-template-columns: minmax(0, 340px); }
+.msg.assistant .thumbs > .thumb-wrap { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.msg.assistant .thumbs .thumb { display: block; width: 100%; height: auto; aspect-ratio: 1 / 1; object-fit: cover; background: rgba(255, 255, 255, 0.03); }
+.msg.assistant .thumbs .thumb.transparent { object-fit: contain; }
+/* Images jointes par l'utilisateur : hauteur fixe (seule la largeur s'adapte au chargement). */
+.msg.user.with-images .thumb { height: 160px; max-height: 160px; }
+.thumb:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---------- Visionneuse ---------- */
+.iv-overlay {
+  position: fixed; inset: 0; z-index: 10000; outline: none;
+  background: rgba(4, 5, 7, 0.93); backdrop-filter: blur(8px);
+  color: var(--text, #ececee); -webkit-app-region: no-drag;
+  animation: ivIn 0.18s var(--ease, ease-out) both;
+}
+.iv-overlay[hidden] { display: none; }
+.iv-overlay.closing { animation: ivOut 0.16s ease-in both; }
+.iv-overlay * { -webkit-app-region: no-drag; }
+@keyframes ivIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes ivOut { from { opacity: 1; } to { opacity: 0; } }
+
+.iv-stage { position: absolute; inset: 0; overflow: hidden; touch-action: none; cursor: default; }
+.iv-overlay.zoomed .iv-stage { cursor: grab; }
+.iv-stage.dragging { cursor: grabbing !important; }
+.iv-img {
+  position: absolute; left: 0; top: 0; max-width: none; max-height: none; transform-origin: 0 0;
+  user-select: none; -webkit-user-drag: none; image-rendering: auto; cursor: zoom-in;
+  box-shadow: 0 30px 80px -30px rgba(0, 0, 0, 0.9);
+}
+.iv-overlay.zoomed .iv-img { cursor: inherit; }
+.iv-img.animate { transition: transform 0.2s var(--ease, ease-out); }
+.iv-img.transparent {
+  background-color: #f2f2f2;
+  background-image: linear-gradient(45deg, #cfcfcf 25%, transparent 25%), linear-gradient(-45deg, #cfcfcf 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #cfcfcf 75%), linear-gradient(-45deg, transparent 75%, #cfcfcf 75%);
+  background-size: 20px 20px; background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+}
+.iv-msg { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted, #8d9199); font-size: 14px; pointer-events: none; }
+.iv-msg[hidden] { display: none; }
+.iv-overlay.loading .iv-stage::after {
+  content: ''; position: absolute; left: 50%; top: 50%; width: 28px; height: 28px; margin: -14px 0 0 -14px;
+  border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.15); border-top-color: var(--accent, #f37a32);
+  animation: ivSpin 0.8s linear infinite;
+}
+@keyframes ivSpin { to { transform: rotate(360deg); } }
+
+/* Barre du haut : nom, dimensions, position ; à droite, place laissée aux boutons natifs de Windows (64 px de haut). */
+.iv-top {
+  position: absolute; left: 0; right: 0; top: 0; height: 64px; display: flex; align-items: center; gap: 12px;
+  padding: 0 156px 0 20px; pointer-events: none;
+  background: linear-gradient(rgba(0, 0, 0, 0.55), transparent);
+}
+body.platform-mac .iv-top { padding: 0 20px 0 96px; }
+.iv-top > * { pointer-events: auto; }
+.iv-info { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 10px; font-size: 13px; }
+.iv-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #f3f3f5; }
+.iv-dims, .iv-count { color: var(--muted, #8d9199); font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 12px; }
+.iv-count:not(:empty)::before { content: '·'; margin-right: 10px; opacity: 0.6; }
+
+.iv-btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 10px; border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1); background: rgba(255, 255, 255, 0.06); color: #e6e7ea;
+  font: inherit; font-size: 12.5px; cursor: pointer; white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.15s var(--ease, ease-out);
+}
+.iv-btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
+.iv-btn:hover:not(:disabled) { background: var(--accent-soft, rgba(243, 122, 50, 0.16)); border-color: rgba(243, 122, 50, 0.55); color: #ffd6bd; }
+.iv-btn:active:not(:disabled) { transform: scale(0.96); }
+.iv-btn:focus-visible { outline: 2px solid var(--accent, #f37a32); outline-offset: 2px; }
+.iv-btn:disabled { opacity: 0.35; cursor: default; }
+.iv-close { width: 36px; padding: 0; justify-content: center; border-radius: 50%; }
+
+.iv-nav { position: absolute; top: 50%; width: 46px; height: 46px; margin-top: -23px; padding: 0; justify-content: center; border-radius: 50%; background: rgba(20, 22, 27, 0.7); }
+.iv-nav svg { width: 22px; height: 22px; }
+.iv-nav[hidden] { display: none; }
+.iv-prev { left: 18px; }
+.iv-next { right: 18px; }
+
+.iv-bar {
+  position: absolute; left: 16px; right: 16px; bottom: 18px; width: fit-content; max-width: calc(100% - 32px); margin: 0 auto;
+  display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; padding: 8px;
+  border-radius: 16px; border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(18, 20, 25, 0.82); backdrop-filter: blur(14px);
+  box-shadow: 0 20px 50px -20px rgba(0, 0, 0, 0.9);
+}
+.iv-group { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.iv-group + .iv-group { padding-left: 10px; border-left: 1px solid rgba(255, 255, 255, 0.08); }
+.iv-zoom { min-width: 62px; justify-content: center; font-variant-numeric: tabular-nums; }
+.iv-cut-slot:empty { display: none; }
+.iv-cut-slot { display: inline-flex; }
+.iv-cut.thumb-cut { height: 34px; padding: 0 10px; font-size: 12.5px; border-radius: 10px; }
+.iv-badge { display: inline-flex; align-items: center; height: 34px; padding: 0 10px; border-radius: 10px; border: 1px dashed rgba(255, 255, 255, 0.18); color: var(--muted, #8d9199); font-size: 12px; }
+
+.iv-status {
+  position: absolute; left: 16px; right: 16px; bottom: 84px; width: fit-content; max-width: min(560px, calc(100% - 32px)); margin: 0 auto; transform: translateY(8px);
+  padding: 8px 14px; border-radius: 10px; font-size: 13px; text-align: center;
+  background: rgba(30, 33, 40, 0.95); border: 1px solid rgba(143, 220, 107, 0.35); color: #d9f5cc;
+  opacity: 0; pointer-events: none; transition: opacity 0.18s, transform 0.18s var(--ease, ease-out);
+}
+.iv-status.error { border-color: rgba(255, 110, 110, 0.45); color: #ffd0d0; }
+.iv-status.show { opacity: 1; transform: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .iv-overlay, .iv-overlay.closing, .iv-img.animate, .iv-status { animation: none; transition: none; }
+}

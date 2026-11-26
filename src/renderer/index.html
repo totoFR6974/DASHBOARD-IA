@@ -8,6 +8,7 @@
     <title>Hub IA</title>
     <link rel="stylesheet" href="styles.css" />
     <link rel="stylesheet" href="theme.css" />
+    <link rel="stylesheet" href="image-viewer.css" />
   </head>
   <body>
     <!-- Fond : halos lumineux qui dérivent lentement, grille et grain discrets -->
@@ -97,7 +98,7 @@
           <div id="usage-menu" class="usage-menu hidden"></div>
         </div>
         <div class="folder-picker">
-          <button id="folder-btn" class="folder-btn" title="Dossier de travail : filtre les discussions et sert aux nouvelles">📁 Tous les dossiers ▾</button>
+          <button id="folder-btn" class="folder-btn" title="Dossier de travail : filtre les discussions et sert aux nouvelles"><span data-icon="folder"></span> Tous les dossiers ▾</button>
           <div id="folder-menu" class="folder-menu hidden"></div>
         </div>
         <div id="provider-pills" class="pills"></div>
@@ -117,17 +118,21 @@
           <div id="chat-header" class="chat-header"></div>
           <div id="messages" class="messages"></div>
           <form id="composer" class="composer">
+            <!-- Images jointes au prochain message (miniatures + avertissement si l'IA choisie ne voit pas les images) -->
+            <div id="attach-strip" class="attach-strip hidden"></div>
+            <input type="file" id="attach-input" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" multiple hidden />
             <textarea id="prompt" rows="3" placeholder="Écris ton message… (Entrée pour envoyer, Maj+Entrée pour aller à la ligne)"></textarea>
             <div class="composer-actions">
               <button type="button" id="stop-btn" class="btn danger hidden">■ Arrêter</button>
-              <button type="button" id="mic-btn" class="btn mic-btn" title="Dictée vocale (Ctrl+Maj+Espace)">🎤</button>
-              <button type="button" id="kn-toggle" class="btn kn-toggle" title="Base de connaissances : désactivée">📚</button>
+              <button type="button" id="attach-btn" class="btn attach-btn" title="Joindre une image (ou glisse-la ici, ou colle une capture avec Ctrl+V)">📎</button>
+              <button type="button" id="mic-btn" class="btn mic-btn" title="Dictée vocale (Ctrl+Maj+Espace)"><span data-icon="mic"></span></button>
+              <button type="button" id="kn-toggle" class="btn kn-toggle" title="Base de connaissances : désactivée"><span data-icon="books"></span></button>
               <div class="effort-picker hidden" id="effort-picker">
-                <button type="button" id="effort-btn" class="btn" title="Niveau d'effort de Claude dans cette discussion">⚡ Auto ▾</button>
+                <button type="button" id="effort-btn" class="btn" title="Niveau d'effort de Claude dans cette discussion"><span data-icon="bolt"></span> Auto ▾</button>
                 <div id="effort-menu" class="ai-menu effort-menu hidden"></div>
               </div>
               <div class="ai-picker">
-                <button type="button" id="ai-picker-btn" class="btn" title="Choisir les IA qui répondent dans cette discussion">🤖 ▾</button>
+                <button type="button" id="ai-picker-btn" class="btn" title="Choisir les IA qui répondent dans cette discussion"><span data-icon="robot"></span> ▾</button>
                 <div id="ai-menu" class="ai-menu hidden"></div>
               </div>
               <button type="submit" id="send-btn" class="btn primary">Envoyer</button>
@@ -152,6 +157,8 @@
             <input id="kn-search" type="search" placeholder="Rechercher dans les notes…" />
             <button id="kn-new-btn" class="btn primary small" title="Nouvelle note">+ Note</button>
           </div>
+          <!-- Recherche par le sens (embeddings Ollama) : rempli par semantic-search.ts -->
+          <div id="kn-sem" class="kn-sem"></div>
           <div id="kn-new-row" class="kn-new-row hidden">
             <input id="kn-new-name" placeholder="Dossier/Nom de la note" />
             <div class="row">
@@ -232,7 +239,7 @@
         <form id="settings-form" class="settings">
           <h2>Réglages</h2>
           <fieldset id="voice-settings" class="info-card">
-            <legend>🎤 Dictée vocale</legend>
+            <legend><span data-icon="mic"></span> Dictée vocale</legend>
             <div id="voice-settings-body"></div>
           </fieldset>
           <fieldset>
@@ -263,6 +270,10 @@
           <fieldset>
             <legend>Ollama</legend>
             <label>Adresse du serveur <input name="ollamaUrl" /></label>
+          </fieldset>
+          <fieldset id="vision-settings" class="info-card">
+            <legend>🖼 Modèle vision (lire les images)</legend>
+            <div id="vision-settings-body"></div>
           </fieldset>
           <fieldset id="kn-settings" class="info-card">
             <legend>Base de connaissances</legend>

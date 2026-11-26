@@ -3,6 +3,8 @@
 //   qu'au clic sur « Télécharger et installer » (puis installe et relance). Il lit release/latest.yml joint à la release.
 // - Version portable : electron-updater ne sait pas la remplacer → vérification via l'API GitHub et bannière
 //   « Nouvelle version disponible » avec lien de téléchargement.
+// - Mac : même fonctionnement que la version portable (Squirrel.Mac, utilisé par electron-updater, exige une appli
+//   signée Developer ID ; la nôtre est signée « ad hoc »). « Télécharger » ouvre le .dmg arm64 de la release.
 // - Dev (non packagé) : rien d'automatique ; « Vérifier maintenant » fait la vérification via l'API (tests).
 //
 // Appli non signée : electron-updater ne vérifie la signature de l'installateur téléchargé que si la version
@@ -124,12 +126,14 @@ export class Updater {
       }
       return this.getState();
     }
-    // Portable / dev : API publique GitHub.
+    // Portable / Mac / dev : API publique GitHub.
+    // Mac : seules les releases qui contiennent un .dmg arm64 comptent, et « Télécharger » ouvre ce .dmg.
     this.set({ status: 'checking', error: undefined });
     try {
-      const picked = pickLatestRelease(await fetchReleases(), this.state.currentVersion, this.includePrerelease());
+      const mac = this.o.mode === 'mac';
+      const picked = pickLatestRelease(await fetchReleases(), this.state.currentVersion, this.includePrerelease(), mac ? 'mac-arm64' : undefined);
       if (!picked) return this.set({ status: 'up-to-date', version: undefined, notes: undefined, url: undefined, checkedAt: Date.now() });
-      return this.set({ status: 'available', version: picked.version, notes: picked.notes, url: picked.url, checkedAt: Date.now() });
+      return this.set({ status: 'available', version: picked.version, notes: picked.notes, url: (mac && picked.downloadUrl) || picked.url, checkedAt: Date.now() });
     } catch (err) {
       return this.set({ status: 'error', error: readableUpdateError(err), checkedAt: Date.now() });
     }
