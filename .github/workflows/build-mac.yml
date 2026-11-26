@@ -5,7 +5,7 @@
 # - La release du tag est créée par la publication Windows (prerelease) : ce workflow ne crée, ne remplace ni ne
 #   supprime AUCUN fichier Windows ; il ajoute seulement Hub-IA-Mac-AppleSilicon-<version>.dmg et .zip.
 #   Pas de latest-mac.yml ni de .blockmap : sur Mac la mise à jour se limite à une notification (API GitHub).
-# - Zéro coût : runner macos-14 (Apple Silicon) gratuit pour un dépôt public ; signature « ad hoc » (pas de compte
+# - Zéro coût : runner macos-latest (Apple Silicon) gratuit pour un dépôt public ; signature « ad hoc » (pas de compte
 #   Apple Developer, pas de notarisation) ; aucun secret autre que le GITHUB_TOKEN fourni par GitHub.
 # - Ordre garanti par electron-builder : fuses Electron (package.json › build.electronFuses, dont
 #   EnableCookieEncryption) appliqués AVANT la signature ad hoc ; le workflow vérifie les deux après coup.
@@ -32,7 +32,8 @@ concurrency:
 jobs:
   mac-arm64:
     name: Mac arm64 (.dmg)
-    runs-on: macos-14
+    # macos-latest = image Apple Silicon (arm64) la plus récente proposée par GitHub (macos-14 n'est plus disponible).
+    runs-on: macos-latest
     timeout-minutes: 60
     env:
       TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
