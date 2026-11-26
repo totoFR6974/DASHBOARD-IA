@@ -1,7 +1,7 @@
 // Process principal Electron : fenêtre, sécurité, pont IPC vers le Hub.
 import { app, BrowserWindow, dialog, ipcMain, Notification, protocol, shell } from 'electron';
 import { readFile } from 'node:fs/promises';
-import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { extname, join, resolve, sep } from 'node:path';
 import { HUB_METHODS, type HubMethod } from '../shared/types';
 import { Hub } from './hub';
@@ -36,6 +36,11 @@ mkdirSync(rootDir, { recursive: true });
 // HUB_SMOKE_DIR : dossier de test propre (plusieurs tests visuels en parallèle sans s'écraser), ex. data/smoke-obsidian.
 const dataDir = smoke ? join(rootDir, 'data', process.env.HUB_SMOKE_DIR?.replace(/[^\w-]/g, '') || 'smoke') : join(rootDir, 'data');
 if (smoke) rmSync(dataDir, { recursive: true, force: true });
+// Test visuel : base de départ fournie (HUB_SMOKE_SEED = chemin d'un db.json), pour tester sans appeler d'IA.
+if (smoke && process.env.HUB_SMOKE_SEED && existsSync(process.env.HUB_SMOKE_SEED)) {
+  mkdirSync(dataDir, { recursive: true });
+  copyFileSync(process.env.HUB_SMOKE_SEED, join(dataDir, 'db.json'));
+}
 
 // Portable : le profil Electron (sessions ChatGPT / Gemini, cache) vit dans le dossier de l'appli.
 // À faire AVANT le verrou d'instance unique et avant « ready ».

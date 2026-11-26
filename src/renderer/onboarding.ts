@@ -299,8 +299,34 @@ function stepClaude(): HTMLElement[] {
     h('p', { class: 'ob-lead' }, 'Claude Code donne accès à Claude : il planifie les workflows, écrit du code et peut utiliser des outils. Il faut un abonnement Claude (Pro ou Max).'),
   ];
   if (!s) body.push(badge(null, 'Vérification…'));
-  else if (s.claude.installed) body.push(badge(true, `Claude Code est installé (${s.claude.version ?? 'version inconnue'}).`));
-  else {
+  else if (s.claude.installed && s.claude.loggedIn) body.push(badge(true, `Claude Code est installé et connecté (${s.claude.version ?? 'version inconnue'}).`));
+  else if (s.claude.installed) {
+    // Installé mais pas connecté : chaque message renverrait « Not logged in ».
+    body.push(
+      badge(false, `Claude Code est installé (${s.claude.version ?? 'version inconnue'}) mais pas connecté à ton compte Claude.`),
+      h(
+        'ol',
+        { class: 'ob-list' },
+        h('li', {}, 'Clique sur « Se connecter à Claude » : une fenêtre de terminal s’ouvre et lance la connexion.'),
+        h('li', {}, 'Ton navigateur s’ouvre : connecte-toi à ton compte Claude (abonnement Pro ou Max) et autorise Claude Code.'),
+        h('li', {}, 'Ferme la fenêtre du terminal une fois « Login successful » affiché, puis clique sur Revérifier.'),
+      ),
+      h(
+        'div',
+        { class: 'ob-actions' },
+        h(
+          'button',
+          {
+            type: 'button',
+            class: 'btn primary',
+            onclick: () => void d().hub.claudeLogin().catch(() => undefined),
+          },
+          'Se connecter à Claude',
+        ),
+      ),
+      h('p', { class: 'muted small' }, 'Sans le bouton : ouvre un terminal et lance « claude auth login ».'),
+    );
+  } else {
     const cmd = h('code', {}, CLAUDE_INSTALL_CMD);
     body.push(
       badge(false, 'Claude Code n’est pas installé.'),
@@ -364,7 +390,7 @@ function stepDone(): HTMLElement[] {
   const { h } = d();
   const s = ob.status;
   const row = (ok: boolean, text: string) => h('div', { class: `ob-recap ${ok ? 'ok' : 'todo'}` }, h('span', {}, ok ? '✓' : '⚠'), h('span', {}, text));
-  const anyAi = !!s && (s.claude.installed || (s.ollama.running && s.ollama.models.length > 0));
+  const anyAi = !!s && ((s.claude.installed && s.claude.loggedIn) || (s.ollama.running && s.ollama.models.length > 0));
   return [
     h('h2', {}, anyAi ? 'C’est prêt !' : 'Presque prêt'),
     h('p', { class: 'ob-lead' }, anyAi ? 'Crée ta première discussion ou ton premier workflow.' : 'Il te faut au moins une IA (Ollama avec un modèle, ou Claude Code) pour commencer.'),
@@ -375,7 +401,10 @@ function stepDone(): HTMLElement[] {
           row(s.ollama.running, s.ollama.running ? 'Ollama prêt' : 'Ollama non disponible'),
           row(s.ollama.models.length > 0, s.ollama.models.length ? `Modèle local : ${s.ollama.models[0]}` : 'Aucun modèle local'),
           row(!!s.obsidian?.installed, s.obsidian?.installed ? 'Obsidian prêt' : 'Obsidian non installé (conseillé)'),
-          row(s.claude.installed, s.claude.installed ? 'Claude Code prêt' : 'Claude Code non installé (facultatif)'),
+          row(
+            s.claude.installed && s.claude.loggedIn,
+            s.claude.installed ? (s.claude.loggedIn ? 'Claude Code prêt' : 'Claude Code installé mais pas connecté') : 'Claude Code non installé (facultatif)',
+          ),
           row(s.comfyInstalled, s.comfyInstalled ? 'Images locales prêtes' : 'Images locales non installées (facultatif)'),
         )
       : badge(null, 'Vérification…'),
@@ -437,7 +466,7 @@ function render(): void {
           },
           last
             ? 'Commencer'
-            : (ob.step === CLAUDE_STEP && ob.status && !ob.status.claude.installed) || (STEPS[ob.step] === 'Obsidian' && ob.status && !ob.status.obsidian?.installed)
+            : (ob.step === CLAUDE_STEP && ob.status && !(ob.status.claude.installed && ob.status.claude.loggedIn)) || (STEPS[ob.step] === 'Obsidian' && ob.status && !ob.status.obsidian?.installed)
               ? 'Passer'
               : 'Suivant',
         ),

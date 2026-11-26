@@ -298,7 +298,8 @@ export interface HubSettings {
 // ---------- Assistant de premier démarrage ----------
 
 export interface SetupStatus {
-  claude: { installed: boolean; version?: string };
+  /** loggedIn : connecté à un compte Claude (claude auth status). Installé sans être connecté = chaque message échoue. */
+  claude: { installed: boolean; loggedIn: boolean; version?: string };
   ollama: { installed: boolean; running: boolean; version?: string; models: string[] };
   /** Carte graphique NVIDIA détectée (null si aucune ou nvidia-smi absent). */
   gpu: { name: string; vramGb: number } | null;
@@ -671,6 +672,8 @@ export interface HubApi {
   /** Version installée : redémarre et installe la mise à jour téléchargée. */
   installUpdateNow(): Promise<void>;
   getClaudeAccess(): Promise<ClaudeAccess>;
+  /** Ouvre une fenêtre de terminal qui lance « claude auth login » (connexion au compte Claude dans le navigateur). */
+  claudeLogin(): Promise<void>;
   saveClaudeAccess(allowed: string[], extraDirs: string[]): Promise<ClaudeAccess>;
   /** Conso Claude Code de tout ce PC depuis le début (lit ~/.claude/projects ; refresh = relever les nouveautés). */
   claudeLogUsage(refresh?: boolean): Promise<ClaudeLogUsage>;
@@ -785,6 +788,7 @@ export const HUB_METHODS = [
   'getLimits',
   'refreshLimits',
   'getClaudeAccess',
+  'claudeLogin',
   'saveClaudeAccess',
   'claudeLogUsage',
   'listClaudeSessions',

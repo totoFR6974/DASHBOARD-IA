@@ -2107,14 +2107,53 @@ function renderTasks(): void {
 
   const tasks = filteredTasks();
   const rows: HTMLElement[] = [];
-  const rowFor = (t: Task) =>
-    h(
+  // Sous-tâches (délégations) : repliées sous leur tâche principale ; la principale reste « en cours » tant qu'une
+  // sous-tâche tourne. Clic sur la ligne principale = déplier / replier.
+  const allKids = new Map<string, Task[]>();
+  for (const t of state.tasks.values()) {
+    if (!t.parentTaskId) continue;
+    if (!allKids.has(t.parentTaskId)) allKids.set(t.parentTaskId, []);
+    allKids.get(t.parentTaskId)!.push(t);
+  }
+  const selected = state.selectedTaskId ? state.tasks.get(state.selectedTaskId) : undefined;
+  if (selected?.parentTaskId) expandedTasks.add(selected.parentTaskId);
+  const effStatus = (t: Task): TaskStatus => {
+    const kids = allKids.get(t.id) ?? [];
+    return kids.some((k) => k.status === 'running' || k.status === 'queued') ? 'running' : t.status;
+  };
+  const rowFor = (t: Task) => {
+    const kids = allKids.get(t.id) ?? [];
+    const open = expandedTasks.has(t.id);
+    const st = effStatus(t);
+    const activeKids = kids.filter((k) => k.status === 'running' || k.status === 'queued').length;
+    return h(
       'tr',
-      { class: `task-row ${t.id === state.selectedTaskId ? 'selected' : ''}`, onclick: () => selectTask(t.id) },
-      h('td', {}, h('span', { class: `status ${t.status}` }, STATUS_LABEL[t.status])),
+      {
+        class: `task-row ${t.id === state.selectedTaskId ? 'selected' : ''} ${t.parentTaskId ? 'is-child' : ''} ${kids.length ? 'has-kids' : ''}`,
+        onclick: () => {
+          if (kids.length && !t.parentTaskId) {
+            if (open) expandedTasks.delete(t.id);
+            else expandedTasks.add(t.id);
+          }
+          selectTask(t.id);
+        },
+      },
+      h('td', {}, h('span', { class: `status ${st}` }, STATUS_LABEL[st])),
       t.parentTaskId
         ? h('td', { class: 'title child', title: 'Sous-tâche déléguée par un autre agent' }, h('span', { class: 'deleg-arrow' }, '↪'), t.title.replace(/^↪\s*/, ''))
-        : h('td', { class: 'title' }, t.title),
+        : h(
+            'td',
+            { class: 'title' },
+            kids.length ? h('span', { class: `kids-toggle ${open ? 'open' : ''}`, title: open ? 'Replier les sous-tâches' : 'Déplier les sous-tâches' }, '▸') : null,
+            t.title,
+            kids.length
+              ? h(
+                  'span',
+                  { class: `kids-badge ${activeKids ? 'active' : ''}`, title: 'Sous-tâches confiées à d’autres agents' },
+                  activeKids ? `${activeKids}/${kids.length} en cours` : `${kids.length} sous-tâche${kids.length > 1 ? 's' : ''}`,
+                )
+              : null,
+          ),
       h('td', {}, providerTag(t.providerId)),
       h('td', { class: 'muted' }, modelLabel(t.model)),
       h('td', {}, t.agent),
@@ -2128,6 +2167,19 @@ function renderTasks(): void {
           : null,
       ),
     );
+  };
+
+  /** Ajoute une liste de tâches : les sous-tâches dont la principale est dans la liste n'apparaissent que dépliées. */
+  const pushWithKids = (list: Task[]) => {
+    const inList = new Set(list.map((t) => t.id));
+    for (const t of list) {
+      if (t.parentTaskId && inList.has(t.parentTaskId)) continue;
+      rows.push(rowFor(t));
+      if (!t.parentTaskId && expandedTasks.has(t.id)) {
+        for (const k of (allKids.get(t.id) ?? []).filter((x) => inList.has(x.id)).sort((a, b) => a.createdAt - b.createdAt)) rows.push(rowFor(k));
+      }
+    }
+  };
 
   const group = state.filters.group as '' | 'providerId' | 'agent' | 'status' | 'workflowRunId';
   if (group) {
@@ -2148,24 +2200,12 @@ function renderTasks(): void {
                 ? `Workflow : ${state.workflows.find((r) => r.id === k)?.title ?? '(supprimé)'}`
                 : 'Discussions'
               : k;
-      rows.push(h('tr', { class: 'group' }, h('td', { colspan: '8' }, `${label} · ${list.length}`)));
-      rows.push(...list.map(rowFor));
+      const topLevel = list.filter((t) => !(t.parentTaskId && list.some((p) => p.id === t.parentTaskId))).length;
+      rows.push(h('tr', { class: 'group' }, h('td', { colspan: '8' }, `${label} · ${topLevel}`)));
+      pushWithKids(list);
     }
   } else {
-    // Les sous-tâches déléguées s'affichent juste sous leur tâche parente (si elle est dans la liste).
-    const shown = new Set(tasks.map((t) => t.id));
-    const kidsOf = new Map<string, Task[]>();
-    for (const t of tasks) {
-      if (t.parentTaskId && shown.has(t.parentTaskId)) {
-        if (!kidsOf.has(t.parentTaskId)) kidsOf.set(t.parentTaskId, []);
-        kidsOf.get(t.parentTaskId)!.push(t);
-      }
-    }
-    for (const t of tasks) {
-      if (t.parentTaskId && shown.has(t.parentTaskId)) continue;
-      rows.push(rowFor(t));
-      for (const k of (kidsOf.get(t.id) ?? []).sort((a, b) => a.createdAt - b.createdAt)) rows.push(rowFor(k));
-    }
+    pushWithKids(tasks);
   }
 
   if (tasks.length === 0) {
@@ -2174,6 +2214,9 @@ function renderTasks(): void {
   table.replaceChildren(h('thead', {}, head), h('tbody', {}, ...rows));
   renderTaskDetail();
 }
+
+/** Tâches principales dont les sous-tâches sont dépliées dans l'onglet Tâches. */
+const expandedTasks = new Set<string>();
 
 function selectTask(id: string | null): void {
   state.selectedTaskId = id;

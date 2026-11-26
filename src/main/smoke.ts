@@ -350,6 +350,43 @@ export async function runSmoke(win: BrowserWindow, outDir: string, getWeb: () =>
   if (only === 'workflow') return smokeWorkflow(shot, js);
   if (only === 'knowledge') return smokeKnowledge(shot, js);
   if (only === 'ui') return smokeShell(shot, js);
+  if (only === 'tasks') {
+    // Sous-tâches repliées / dépliées (avec HUB_SMOKE_SEED : une principale + 3 sous-tâches dont une en cours),
+    // puis une longue session Claude Code pour vérifier que les bulles ne sont pas écrasées.
+    const r = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      document.querySelector('.tabs button[data-view="tasks"]').click();
+      await sleep(800);
+      const collapsed = { rows: document.querySelectorAll('tr.task-row').length, badge: document.querySelector('.kids-badge')?.textContent, status: document.querySelector('tr.task-row.has-kids .status')?.textContent };
+      return collapsed;
+    })()`);
+    console.log(`Tâches repliées : ${JSON.stringify(r)}`);
+    await shot('28-taches-repliees');
+    const r2 = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      document.querySelector('tr.task-row.has-kids')?.click();
+      await sleep(600);
+      return { rows: document.querySelectorAll('tr.task-row').length, children: document.querySelectorAll('tr.task-row.is-child').length };
+    })()`);
+    console.log(`Tâches dépliées : ${JSON.stringify(r2)}`);
+    await shot('29-taches-depliees');
+    const r3 = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      document.querySelector('.tabs button[data-view="claude"]')?.click();
+      for (let i = 0; i < 180 && !document.querySelector('.cc-item'); i++) await sleep(500); // 1re lecture des journaux : ~20 s
+      const items = [...document.querySelectorAll('.cc-item')];
+      const msgs = (el) => Number((el.textContent.match(/(\\d+) msg/) || [0, 0])[1]);
+      const big = items.sort((a, b) => msgs(b) - msgs(a))[0];
+      big?.click();
+      await sleep(2500);
+      const bubbles = [...document.querySelectorAll('#view-claude .msg')];
+      const heights = bubbles.map((b) => Math.round(b.getBoundingClientRect().height));
+      return { sessions: items.length, opened: big ? msgs(big) : 0, bubbles: bubbles.length, minHeight: Math.min(...heights), squashed: heights.filter((x) => x < 24).length };
+    })()`);
+    console.log(`Bulles Claude Code : ${JSON.stringify(r3)}`);
+    await shot('30-bulles-session');
+    return;
+  }
   if (only === 'images') {
     // 7za (depuis app.asar.unpacked dans l'appli packagée) + ComfyUI déjà installé (HUB_TEST_COMFY, lecture seule).
     const comfy = process.env.HUB_TEST_COMFY ?? '';

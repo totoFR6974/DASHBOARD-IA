@@ -1016,6 +1016,11 @@ export class Hub {
     return conv;
   }
 
+  claudeLogin(): void {
+    const claude = this.providers.get('claude') as ClaudeProvider | undefined;
+    claude?.openLogin();
+  }
+
   getClaudeAccess(): ClaudeAccess {
     return { servers: this.db.data.claudeMcpServers ?? [], allowed: [...this.settings.claudeAllowedMcp], extraDirs: [...this.settings.claudeExtraDirs] };
   }

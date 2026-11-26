@@ -242,7 +242,8 @@ input[type='checkbox'] { accent-color: var(--accent); }
 .chat-header { border-bottom: 1px solid var(--line); min-height: 58px; padding: 10px 18px; }
 .chat-title { font-size: 15.5px; font-weight: 600; letter-spacing: -0.015em; }
 .messages { padding: 22px 22px; }
-.msg { animation: msgIn 0.4s var(--ease) both; max-width: min(860px, 100%); min-width: 0; }
+/* flex-shrink: 0 — dans une liste qui défile (colonne flex), une bulle en overflow:hidden pouvait être écrasée à une ligne. */
+.msg { animation: msgIn 0.4s var(--ease) both; max-width: min(860px, 100%); min-width: 0; flex-shrink: 0; }
 .msg.assistant { overflow: hidden; }
 .activity, .act { max-width: 100%; }
 @keyframes msgIn { from { opacity: 0; transform: translateY(10px) scale(0.99); } to { opacity: 1; transform: none; } }
@@ -481,6 +482,14 @@ tr.group td { background: transparent; color: var(--accent); }
 .comfy-dir { display: flex; flex-direction: column; gap: 6px; padding: 8px 0; }
 .comfy-dir code { font-size: 12px; background: rgba(0, 0, 0, 0.3); padding: 2px 6px; border-radius: 6px; word-break: break-all; }
 .comfy-suggest { color: #ffd6bd; }
+
+/* ---------- Tâches : sous-tâches repliables ---------- */
+.kids-toggle { display: inline-block; width: 16px; margin-right: 4px; color: var(--muted); transition: transform 0.2s var(--ease); }
+.kids-toggle.open { transform: rotate(90deg); color: var(--accent); }
+.kids-badge { margin-left: 8px; font-size: 11.5px; padding: 1px 8px; border-radius: 8px; border: 1px solid var(--line); background: rgba(255, 255, 255, 0.04); color: var(--muted); white-space: nowrap; }
+.kids-badge.active { color: #ffd6bd; border-color: rgba(243, 122, 50, 0.5); background: var(--accent-soft); }
+tr.task-row.is-child td { background: rgba(255, 255, 255, 0.015); animation: riseIn 0.25s var(--ease) both; }
+tr.task-row.has-kids td.title { cursor: pointer; }
 
 /* ---------- Palette de recherche (Ctrl+K) ---------- */
 .cmdk { position: fixed; inset: 0; z-index: 100; display: grid; place-items: start center; padding-top: 12vh; background: rgba(4, 5, 7, 0.55); backdrop-filter: blur(6px); animation: fadeIn 0.18s ease; }

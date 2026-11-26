@@ -35,7 +35,39 @@ export class ClaudeProvider implements Provider {
     if (res.error || res.status !== 0) {
       return { ...base, available: false, detail: `Introuvable (${res.error?.message ?? res.stderr?.trim() ?? 'erreur'})` };
     }
-    return { ...base, available: true, detail: res.stdout.trim() };
+    const version = res.stdout.trim();
+    // Installé ne veut pas dire connecté : sans compte, chaque message échoue avec « Not logged in ».
+    const auth = this.authStatus();
+    if (auth.loggedIn === false) {
+      return { ...base, available: false, detail: `${version} — installé mais NON CONNECTÉ à un compte Claude (Réglages › Assistant d'installation › Claude Code, ou lance « claude auth login »)` };
+    }
+    return { ...base, available: true, detail: auth.plan ? `${version} · ${auth.plan}` : version };
+  }
+
+  /**
+   * État de connexion via « claude auth status --json ». On ne lit QUE loggedIn / authMethod / subscriptionType
+   * (jamais l'e-mail ni l'organisation). loggedIn = null si la commande n'existe pas (ancienne version) ou échoue.
+   */
+  authStatus(): { loggedIn: boolean | null; method?: string; plan?: string } {
+    const res = spawnSync(this.resolvePath(), ['auth', 'status', '--json'], { encoding: 'utf8', timeout: 15000, env: childEnv(), windowsHide: true });
+    try {
+      const j = JSON.parse(res.stdout || '');
+      if (typeof j?.loggedIn !== 'boolean') return { loggedIn: null };
+      const plan = typeof j.subscriptionType === 'string' && j.subscriptionType ? `abonnement ${j.subscriptionType}` : typeof j.authMethod === 'string' ? j.authMethod : undefined;
+      return { loggedIn: j.loggedIn, method: typeof j.authMethod === 'string' ? j.authMethod : undefined, plan };
+    } catch {
+      return { loggedIn: null };
+    }
+  }
+
+  /** Ouvre une fenêtre de terminal visible qui lance « claude auth login » (connexion dans le navigateur). */
+  openLogin(): void {
+    const exe = this.resolvePath();
+    if (process.platform === 'win32') {
+      spawn('cmd.exe', ['/c', 'start', 'Connexion a Claude Code', 'cmd.exe', '/k', exe, 'auth', 'login'], { detached: true, stdio: 'ignore', windowsHide: false, env: childEnv() }).unref();
+    } else {
+      spawn(exe, ['auth', 'login'], { detached: true, stdio: 'ignore', env: childEnv() }).unref();
+    }
   }
 
   run(ctx: RunContext): Promise<RunResult> {
@@ -154,7 +186,12 @@ export class ClaudeProvider implements Provider {
         ctx.signal.removeEventListener('abort', onAbort);
         if (buffer) handleLine(buffer);
         if (ctx.signal.aborted) return reject(new CancelledError());
-        if (failure) return reject(new Error(failure));
+        if (failure) {
+          if (/not logged in|please run \/login/i.test(failure)) {
+            return reject(new Error("Claude Code n'est pas connecté à un compte Claude. Réglages › Assistant d'installation › Claude Code › « Se connecter » (ou lance « claude auth login » dans un terminal), puis réessaie."));
+          }
+          return reject(new Error(failure));
+        }
         if (result) return resolve(result);
         reject(new Error(`Claude s'est arrêté (code ${code}). ${stderr.trim()}`.trim()));
       });

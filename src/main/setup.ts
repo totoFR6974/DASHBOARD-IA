@@ -103,7 +103,12 @@ export class Setup {
     ]);
     const gpu = detectGpu();
     return {
-      claude: { installed: !!claude?.available, ...(claude?.available ? { version: claude.detail } : {}) },
+      // Installé mais non connecté : describe() renvoie available=false avec « NON CONNECTÉ » dans le détail.
+      claude: (() => {
+        const notLogged = !!claude && /NON CONNECT/i.test(claude.detail);
+        const installed = !!claude?.available || notLogged;
+        return { installed, loggedIn: !!claude?.available, ...(installed ? { version: claude!.detail.split(' — ')[0] } : {}) };
+      })(),
       ollama: { installed: ollamaState.running || !!ollamaExe(), ...ollamaState },
       gpu,
       recommendedModel: recommendModel(gpu?.vramGb ?? null),
