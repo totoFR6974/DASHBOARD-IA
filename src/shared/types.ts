@@ -384,6 +384,23 @@ export interface Participant {
   model?: string;
 }
 
+/** Claude demande l'autorisation d'une action (mode « Prudent » ou « Modifs fichiers ») : réponse dans le hub ou le téléphone. */
+export interface PermissionRequest {
+  id: string;
+  conversationId: string;
+  /** Réponse en cours qui a demandé (si connue). */
+  taskId?: string;
+  /** Outil (Write, Bash, PowerShell, mcp__…). */
+  tool: string;
+  /** Ce que l'outil va faire : commande, fichier, adresse… */
+  detail: string;
+  /** « Toujours pour cette session » proposé par Claude (ex. passer en « Modifs fichiers »). */
+  canAlways: boolean;
+  at: number;
+}
+
+export type PermissionDecision = 'allow' | 'deny' | 'always';
+
 /** Message en file d'attente d'une discussion (envoyé quand la réponse en cours se termine). */
 export interface QueuedMessage {
   id: string;
@@ -906,7 +923,10 @@ export type HubEvent =
   /** Progression du calcul (fichiers relus). */
   | { type: 'claudeLogProgress'; done: number; total: number }
   /** Agents Claude d'arrière-plan en cours dans la session persistante d'une discussion. */
-  | { type: 'claudeBackground'; conversationId: string; count: number };
+  | { type: 'claudeBackground'; conversationId: string; count: number }
+  /** Claude demande une autorisation / la demande est réglée (répondue, annulée, session fermée). */
+  | { type: 'permission'; request: PermissionRequest }
+  | { type: 'permissionDone'; id: string; conversationId: string; decision: PermissionDecision };
 
 /**
  * État des mises à jour. mode : installed = version installée (téléchargement + installation automatiques),
@@ -1103,7 +1123,11 @@ export interface HubApi {
   /** Ferme la session Claude de la discussion et la rouvre dans un terminal (`claude --resume`), dans son dossier. */
   continueClaudeInTerminal(conversationId: string, force?: boolean): Promise<void>;
   /** Redémarre la session Claude de la discussion (fermée maintenant, rouverte avec tout l'historique au prochain message). */
-  closeClaudeSession(conversationId: string): void;
+  closeClaudeSession(conversationId: string): Promise<void>;
+  /** Demandes d'autorisation de Claude en attente. */
+  listPermissions(): Promise<PermissionRequest[]>;
+  /** Répond à une demande d'autorisation de Claude. */
+  answerPermission(id: string, decision: PermissionDecision): Promise<void>;
   /** Copie les sessions dans les archives du hub et les masque de la liste (rien ne change dans ~/.claude). */
   archiveClaudeSessions(ids: string[]): Promise<ClaudeArchiveResult>;
   /** Remet les sessions dans la liste ; la copie archivée est conservée. */
@@ -1309,6 +1333,8 @@ export const HUB_METHODS = [
   'sendQueuedNow',
   'continueClaudeInTerminal',
   'closeClaudeSession',
+  'listPermissions',
+  'answerPermission',
   'archiveClaudeSessions',
   'unarchiveClaudeSessions',
   'deleteClaudeArchive',

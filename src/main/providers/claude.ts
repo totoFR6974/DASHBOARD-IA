@@ -23,7 +23,7 @@ export class ClaudeProvider implements Provider {
 
   /** Sessions persistantes, une par discussion (voir claude-live.ts). Les rappels sont branchés par le hub. */
   readonly live: ClaudeLiveSessions;
-  liveHooks: LiveHooks = { spontaneous: () => null, background: () => undefined, closed: () => undefined };
+  liveHooks: LiveHooks = { spontaneous: () => null, background: () => undefined, closed: () => undefined, permission: async () => 'deny' };
 
   constructor(private getPath: () => string) {
     this.live = new ClaudeLiveSessions(
@@ -39,6 +39,7 @@ export class ClaudeProvider implements Provider {
         spontaneous: (key) => this.liveHooks.spontaneous(key),
         background: (key, n) => this.liveHooks.background(key, n),
         closed: (key) => this.liveHooks.closed(key),
+        permission: (key, req) => this.liveHooks.permission(key, req),
       },
     );
   }

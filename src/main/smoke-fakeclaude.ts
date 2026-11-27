@@ -422,6 +422,39 @@ export async function smokeFakeClaude(win: BrowserWindow, outDir: string, shot: 
     check('Q2 agents en cours : pastille masquée quand plus rien ne tourne', pillAfter === true || (await tasks()).some((t) => t.status === 'running'), pillAfter);
   }
 
+  // ---------- P. Demandes d'autorisation de Claude (mode « Prudent ») : Autoriser / Toujours / Refuser ----------
+  {
+    const title = 'FC · autorisations';
+    const pc = await newConv(title, { permission: 'default' });
+    await select(title);
+    const ask = async (answer: 'allow' | 'always' | 'deny', shotName?: string) => {
+      const ids = await send(pc.id, '[fake:perm] écris le fichier');
+      let card = false;
+      for (let i = 0; i < 40 && !card; i++) {
+        await wait(250);
+        card = await js(`!!document.querySelector('#perm-strip:not(.hidden) .perm-card [data-perm-answer="${answer}"]')`);
+      }
+      const view = await js(`(() => { const c = document.querySelector('#perm-strip .perm-card'); return { text: c?.textContent ?? '', dot: !!document.querySelector('#conv-list .conv-item.active .perm-dot') }; })()`);
+      if (shotName) await shot(shotName);
+      await js(`document.querySelector('#perm-strip .perm-card [data-perm-answer="${answer}"]')?.click()`);
+      const [t] = await waitDone(ids);
+      await wait(300);
+      const gone = await js(`document.getElementById('perm-strip').classList.contains('hidden')`);
+      return { t, card, view, gone, log: readLog().filter((e) => e.event === 'permission').pop(), start: lastStart() };
+    };
+    const a1 = await ask('allow', 'fc-autorisation');
+    check('P autorisation : carte « Claude demande l’autorisation » (outil + fichier) + repère dans la liste ; « Autoriser » → action faite', a1.card && /Write/.test(a1.view.text) && /demo-autorisation\.txt/.test(a1.view.text) && a1.view.dot && a1.t?.status === 'done' && /Autorisation : allow/.test(a1.t.output) && a1.gone && a1.start?.args?.['permission-prompt-tool'] === 'stdio', { card: a1.card, view: a1.view, status: a1.t?.status, output: a1.t?.output?.slice(0, 80), gone: a1.gone, tool: a1.start?.args?.['permission-prompt-tool'] });
+    const a2 = await ask('always');
+    check('P « Toujours (cette session) » : autorisé et règle transmise à Claude pour la session', a2.t?.status === 'done' && /Autorisation : allow \(toujours\)/.test(a2.t.output) && a2.log?.always === true, { output: a2.t?.output?.slice(0, 80), log: a2.log });
+    const a3 = await ask('deny');
+    check('P « Refuser » : Claude reçoit le refus, activité « Refusé »', a3.t?.status === 'done' && /Autorisation : deny/.test(a3.t.output) && (a3.t.activity ?? []).some((a: any) => /Refusé : Write/.test(a.text)), { output: a3.t?.output?.slice(0, 80), activity: (a3.t?.activity ?? []).map((a: any) => a.text) });
+    // « Tout autorisé » : aucune demande (comme avant).
+    const bc = await newConv('FC · tout autorisé', { permission: 'bypassPermissions' });
+    const [tb] = await waitDone(await send(bc.id, '[fake:perm] écris le fichier'));
+    const sb = lastStart();
+    check('P « Tout autorisé » : aucune demande d’autorisation, action faite directement', tb?.status === 'done' && /Autorisation : allow/.test(tb.output) && !sb?.args?.['permission-prompt-tool'], { output: tb?.output?.slice(0, 80), tool: sb?.args?.['permission-prompt-tool'] });
+  }
+
   // ---------- L. Session persistante : agent d'arrière-plan (comme l'appli Claude) ----------
   {
     const title = 'FC · agent en arrière-plan';

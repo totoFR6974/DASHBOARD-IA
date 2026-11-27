@@ -28,6 +28,8 @@
 //   bg-agent          lance un agent en arrière-plan (task_started), répond, puis (session persistante) le résultat
 //                     de l'agent revient seul ~1,5 s plus tard (task_notification + nouveau tour « spontané »)
 //   echo              répète le texte qui suit le mot-clé
+//   perm              (session persistante, --permission-prompt-tool stdio) demande l'autorisation d'écrire un
+//                     fichier (control_request can_use_tool) et attend la réponse du hub (control_response)
 // Autres variables :
 //   HUB_FAKE_CLAUDE_AUTH=loggedout|old   état renvoyé par « auth status » (défaut : connecté)
 //   HUB_FAKE_CLAUDE_LOG=<fichier>        journal JSONL de chaque appel (arguments, session, pid, résultats)
@@ -101,7 +103,7 @@ if (argv[0] === 'agents') {
 
 // ---------- Arguments du mode -p ----------
 
-const VALUE = new Set(['--output-format', '--input-format', '--permission-mode', '--model', '--resume', '--append-system-prompt', '--effort', '--session-id']);
+const VALUE = new Set(['--output-format', '--input-format', '--permission-mode', '--model', '--resume', '--append-system-prompt', '--effort', '--session-id', '--permission-prompt-tool']);
 const MULTI = new Set(['--mcp-config', '--allowedTools', '--add-dir']);
 const FLAGS = new Set(['-p', '--print', '--verbose', '--include-partial-messages', '--fork-session']);
 const opts = { print: false, verbose: false, partial: false, fork: false, mcpConfig: [], allowedTools: [], addDir: [] };
@@ -502,6 +504,36 @@ function later(fn, ms) {
   }, ms);
 }
 
+/** Réponses du hub aux demandes (control_response), par identifiant de demande. */
+const controlWaiters = new Map();
+function askHost(request) {
+  const id = randomUUID();
+  return new Promise((resolve) => {
+    controlWaiters.set(id, resolve);
+    out({ type: 'control_request', request_id: id, request });
+  });
+}
+
+async function perm() {
+  rateLimit();
+  const input = { file_path: join(process.cwd(), 'demo-autorisation.txt'), content: 'ok' };
+  const block = await assistantMessage("J'écris le fichier demandé.", { name: 'Write', input });
+  let behavior = 'deny';
+  let always = false;
+  if (opts['permission-mode'] === 'bypassPermissions') {
+    behavior = 'allow'; // « Tout autorisé » : rien n'est demandé
+  } else if (opts['permission-prompt-tool'] === 'stdio') {
+    const r = await askHost({ subtype: 'can_use_tool', tool_name: 'Write', display_name: 'Write', input, description: 'demo-autorisation.txt', permission_suggestions: [{ type: 'setMode', mode: 'acceptEdits', destination: 'session' }], tool_use_id: block.id });
+    behavior = r?.response?.behavior ?? 'deny';
+    always = Array.isArray(r?.response?.updatedPermissions) && r.response.updatedPermissions.length > 0;
+    log({ event: 'permission', behavior, always, message: r?.response?.message ?? null });
+  }
+  const text = behavior === 'allow' ? 'File created successfully' : 'Permission refusée par l’utilisateur';
+  out({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: block.id, content: [{ type: 'text', text }], is_error: behavior !== 'allow' }] }, session_id: sessionId });
+  await assistantMessage(`${SIGNATURE} Autorisation : ${behavior}${always ? ' (toujours)' : ''}`);
+  finish();
+}
+
 async function bgAgent() {
   rateLimit();
   const block = await assistantMessage('Je lance un agent en arrière-plan.', { name: 'Agent', input: { description: 'Agent de test', prompt: 'travaille', run_in_background: true } });
@@ -588,6 +620,9 @@ switch (scenario) {
   case 'bg-agent':
     await bgAgent();
     break;
+  case 'perm':
+    await perm();
+    break;
   default:
     die(`Faux Claude : scénario inconnu « ${scenario} »`, 2);
 }
@@ -614,6 +649,15 @@ if (!LIVE) {
         msg = JSON.parse(line);
       } catch {
         die(`Error: invalid stream-json input line: ${line.slice(0, 80)}`);
+      }
+      if (msg.type === 'control_response') {
+        const id = msg.response?.request_id;
+        const wake = controlWaiters.get(id);
+        if (wake) {
+          controlWaiters.delete(id);
+          wake(msg.response);
+        }
+        continue;
       }
       if (msg.type !== 'user') continue;
       const c = msg.message?.content;

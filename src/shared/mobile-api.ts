@@ -42,6 +42,8 @@ export interface MobileConversation {
   participants: { providerId: string; model?: string }[];
   /** Effort de Claude (absent = par défaut). */
   effort?: string;
+  /** Demandes d'autorisation de Claude en attente dans cette discussion. */
+  permissions?: { id: string; tool: string; detail: string; canAlways: boolean }[];
   messages: MobileMessage[];
   /** Messages plus anciens non envoyés (discussion très longue). */
   olderCount: number;

@@ -50,7 +50,7 @@ import { isRealPathInside } from './path-guard';
 import { findCitedImagePaths, isCitableImage, MAX_CITED_IMAGES } from './cited-images';
 import { isVoiceModel, isVoiceVariant, VoiceModels } from './voice';
 import { Cutout, isCutoutPath, isCutoutVariant, wantsTransparent } from './cutout';
-import type { CutoutStatus, CutoutVariant, QueuedMessage } from '../shared/types';
+import type { CutoutStatus, CutoutVariant, PermissionDecision, PermissionRequest, QueuedMessage } from '../shared/types';
 import { ClaudeLogs } from './claude-logs';
 import { checkClaudePath } from './claude-launch';
 import { Setup } from './setup';
@@ -285,6 +285,8 @@ export class Hub {
   private liveTask = new Map<string, string>();
   /** Agents Claude d'arrière-plan en cours, par discussion. */
   private claudeBackground = new Map<string, number>();
+  /** Demandes d'autorisation de Claude en attente de réponse. */
+  private permissions = new Map<string, { request: PermissionRequest; resolve: (d: PermissionDecision) => void }>();
   readonly knowledge: Knowledge;
   readonly vaults: Vaults;
   /** Emplacement des bases (dossier synchronisé possible), déplacement vérifié, conflits de synchro. */
@@ -473,8 +475,15 @@ export class Hub {
         this.emit({ type: 'claudeBackground', conversationId: convId, count });
       },
       // Session fermée (redémarrage, plantage, terminal) : sa config MCP est gardée pour la suivante ; elle n'est
-      // révoquée qu'à la suppression de la discussion ou à l'arrêt du hub.
-      closed: () => undefined,
+      // révoquée qu'à la suppression de la discussion ou à l'arrêt du hub. Ses demandes d'autorisation tombent.
+      closed: (convId) => this.dropPermissions(convId),
+      // Demande d'autorisation de Claude : montrée dans le hub (et sur le téléphone) jusqu'à la réponse.
+      permission: (convId, r) =>
+        new Promise((resolve) => {
+          const request: PermissionRequest = { id: randomUUID(), conversationId: convId, taskId: this.liveTask.get(convId), tool: r.tool, detail: r.detail, canAlways: r.canAlways, at: Date.now() };
+          this.permissions.set(request.id, { request, resolve });
+          this.emit({ type: 'permission', request });
+        }),
     };
     const list: Provider[] = [
       claude,
@@ -1769,6 +1778,30 @@ export class Hub {
       done: (result) => end('done', result),
       fail: (err) => end(controller.signal.aborted || err instanceof CancelledError ? 'cancelled' : 'error', undefined, err.message),
     };
+  }
+
+  listPermissions(): PermissionRequest[] {
+    return [...this.permissions.values()].map((p) => p.request);
+  }
+
+  /** Réponse de l'utilisateur à une demande d'autorisation de Claude (hub ou téléphone). */
+  answerPermission(id: string, decision: PermissionDecision): void {
+    const p = this.permissions.get(id);
+    if (!p) throw new Error('Cette demande d’autorisation n’est plus en attente');
+    if (!['allow', 'deny', 'always'].includes(decision)) throw new Error('Réponse inconnue');
+    this.permissions.delete(id);
+    p.resolve(decision);
+    this.emit({ type: 'permissionDone', id, conversationId: p.request.conversationId, decision });
+  }
+
+  /** Session fermée ou réponse annulée : ses demandes en attente sont refusées et retirées. */
+  private dropPermissions(conversationId: string): void {
+    for (const [id, p] of [...this.permissions]) {
+      if (p.request.conversationId !== conversationId) continue;
+      this.permissions.delete(id);
+      p.resolve('deny');
+      this.emit({ type: 'permissionDone', id, conversationId, decision: 'deny' });
+    }
   }
 
   /** Ferme la session Claude persistante d'une discussion (elle sera rouverte, avec --resume, au prochain message). */

@@ -119,3 +119,10 @@ Cas où l'installation automatique est refusée (bouton « Télécharger » manu
 - [ ] Statistiques : les chiffres changent sans que l'onglet clignote
 - [ ] Une image citée par Claude (chemin complet) s'affiche en vignette sous sa réponse
 - [ ] Téléphone : puce « Claude · modèle ▾ » au-dessus de la saisie, panneau « Qui répond ? »
+
+## 14. Sessions Claude persistantes (après l'alpha.16)
+- [ ] Deux messages de suite à Claude dans une discussion : le 2e répond plus vite (session déjà ouverte), « Session ouverte » dans l'activité
+- [ ] Demander à Claude de lancer un agent en arrière-plan : sa réponse se termine tout de suite, bandeau « 1 agent Claude en arrière-plan », on peut écrire ; le résultat de l'agent arrive seul comme nouvelle réponse
+- [ ] Mode « Prudent » : Claude veut créer un fichier → carte « Claude demande l'autorisation » (Autoriser / Toujours / Refuser), aussi sur le téléphone
+- [ ] Menu « ⋯ » › « Continuer dans un terminal » : le Terminal s'ouvre dans le dossier de la discussion avec la même session (`claude --resume`) ; revenir dans le hub et écrire : la session reprend
+- [ ] Menu « ⋯ » › « Redémarrer la session Claude » ; quitter le hub : plus aucun process `claude` dans le Moniteur d'activité

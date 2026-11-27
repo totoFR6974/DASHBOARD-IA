@@ -176,6 +176,21 @@ export async function smokeMobile(win: BrowserWindow, outDir: string, shot: (nam
     h.sendMessage = realSend;
     await pshot('mobile-discussion');
 
+    // ---------- 3a. Demande d'autorisation de Claude répondue depuis le téléphone ----------
+    {
+      let decided = '';
+      const request = { id: 'smoke-perm-1', conversationId: conv.id, tool: 'Write', detail: 'C:\\projet\\fichier.txt', canAlways: true, at: Date.now() };
+      h.permissions.set(request.id, { request, resolve: (d: string) => (decided = d) });
+      h.emit({ type: 'permission', request });
+      check(await until(() => pjs(`!!document.querySelector('.perm-card') && document.querySelector('.perm-card').textContent.includes('fichier.txt')`), 8000), 'Téléphone : carte « Claude demande l’autorisation » affichée');
+      await pshot('mobile-autorisation');
+      await pjs(`[...document.querySelectorAll('.perm-card button')].find((b) => b.textContent === 'Autoriser')?.click()`);
+      check(await until(() => decided === 'allow'), `Téléphone : « Autoriser » transmis au hub (${decided || 'rien'})`);
+      check(await until(() => pjs(`!document.querySelector('.perm-card')`)), 'Téléphone : carte retirée une fois répondue');
+      r = await fetch(`${base}/api/permissions/smoke-perm-1`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ decision: 'allow' }) });
+      check(r.status === 404, `Demande déjà réglée → ${r.status}`);
+    }
+
     // ---------- 3b. Choix de l'IA sur le téléphone (avant : toutes les IA cochées sur le PC répondaient) ----------
     const auth = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
     const prov = await fetch(`${base}/api/providers`, { headers: auth }).then((x) => x.json());

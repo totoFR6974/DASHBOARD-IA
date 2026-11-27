@@ -16,6 +16,8 @@ import { initMobileSettings, refreshMobileSettings } from './mobile-settings';
 import type {
   AgentRole,
   ChatMessage,
+  PermissionDecision,
+  PermissionRequest,
   QueuedMessage,
   ClaudePermission,
   RunStatus,
@@ -1078,6 +1080,7 @@ function renderConvList(): void {
           ...participantsOf(c).map((p) => providerTag(p.providerId)),
           h('span', {}, c.agent),
           runningTasksFor(c.id).length ? h('span', { class: 'spinner', title: 'Réponse en cours' }) : null,
+          [...claudePermissions.values()].some((p) => p.conversationId === c.id) ? h('span', { class: 'perm-dot', title: 'Claude attend ton autorisation' }, icon('shield', 13)) : null,
         ),
       ),
     ),
@@ -1923,6 +1926,7 @@ function renderComposer(conv: Conversation | undefined): void {
   $<HTMLTextAreaElement>('prompt').disabled = !conv;
   renderQueueStrip(conv, running);
   renderBackgroundStrip(conv);
+  renderPermissionStrip(conv);
   const picker = $<HTMLButtonElement>('ai-picker-btn');
   picker.replaceChildren(iconText('robot', pickerLabel(conv)));
   picker.disabled = !conv;
@@ -1936,6 +1940,39 @@ function renderComposer(conv: Conversation | undefined): void {
   renderBgToggle(conv);
   renderAttachStrip();
   renderAiMenu();
+}
+
+/** Demandes d'autorisation de Claude en attente (toutes discussions). */
+const claudePermissions = new Map<string, PermissionRequest>();
+
+/** Cartes « Claude demande l'autorisation » de la discussion ouverte : Autoriser / Toujours / Refuser. */
+function renderPermissionStrip(conv: Conversation | undefined): void {
+  const strip = $('perm-strip');
+  const list = conv ? [...claudePermissions.values()].filter((p) => p.conversationId === conv.id).sort((a, b) => a.at - b.at) : [];
+  strip.classList.toggle('hidden', !list.length);
+  if (!list.length) return strip.replaceChildren();
+  const answer = (p: PermissionRequest, d: PermissionDecision) => {
+    hub.answerPermission(p.id, d).catch((err: any) => toast(err?.message ?? String(err)));
+  };
+  strip.replaceChildren(
+    ...list.map((p) =>
+      h(
+        'div',
+        { class: 'perm-card', 'data-perm': p.id },
+        h('div', { class: 'perm-head' }, icon('shield', 16), h('span', {}, 'Claude demande l’autorisation : '), h('b', {}, p.tool)),
+        p.detail ? h('code', { class: 'perm-detail', title: p.detail }, p.detail) : null,
+        h(
+          'div',
+          { class: 'perm-actions' },
+          h('button', { type: 'button', class: 'btn small primary', 'data-perm-answer': 'allow', onclick: () => answer(p, 'allow') }, 'Autoriser'),
+          p.canAlways
+            ? h('button', { type: 'button', class: 'btn small', 'data-perm-answer': 'always', title: 'Autoriser, et ne plus demander pour ce type d’action jusqu’à la fin de la session', onclick: () => answer(p, 'always') }, 'Toujours (cette session)')
+            : null,
+          h('button', { type: 'button', class: 'btn small ghost danger', 'data-perm-answer': 'deny', onclick: () => answer(p, 'deny') }, 'Refuser'),
+        ),
+      ),
+    ),
+  );
 }
 
 /** Agents Claude d'arrière-plan en cours, par discussion (sessions persistantes). */
@@ -4239,6 +4276,18 @@ function onHubEvent(ev: HubEvent): void {
       if (cc.usage && !cc.loading && state.view === 'stats') void loadClaudeUsage(false, true);
       break;
     }
+    case 'permission': {
+      claudePermissions.set(ev.request.id, ev.request);
+      if (state.activeConvId === ev.request.conversationId && state.view === 'chat') renderComposer(activeConv());
+      renderConvList();
+      break;
+    }
+    case 'permissionDone': {
+      claudePermissions.delete(ev.id);
+      if (state.activeConvId === ev.conversationId && state.view === 'chat') renderComposer(activeConv());
+      renderConvList();
+      break;
+    }
     case 'claudeBackground': {
       if (ev.count) claudeBackground.set(ev.conversationId, ev.count);
       else claudeBackground.delete(ev.conversationId);
@@ -5795,6 +5844,7 @@ async function init(): Promise<void> {
   state.folders = folders.folders;
   state.activeFolderId = folders.activeFolderId;
   state.activeConvId = visibleConversations()[0]?.id ?? null;
+  for (const p of await hub.listPermissions().catch(() => [] as PermissionRequest[])) claudePermissions.set(p.id, p);
   // Workflows et réglages : tolère un moteur qui ne répond pas (l'appli reste utilisable).
   const [workflows, roles, settings, templates] = await Promise.all([
     hub.listWorkflows().catch(() => [] as WorkflowRun[]),

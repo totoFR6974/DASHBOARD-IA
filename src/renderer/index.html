@@ -133,6 +133,8 @@
           <div id="messages" class="messages"></div>
           <form id="composer" class="composer">
             <!-- Messages en attente (écrits pendant une réponse) : envoyés automatiquement, ou « Envoyer maintenant » -->
+            <!-- Claude demande l'autorisation d'une action (mode « Prudent » / « Modifs fichiers ») -->
+            <div id="perm-strip" class="perm-strip hidden"></div>
             <div id="queue-strip" class="queue-strip hidden"></div>
             <!-- Agents Claude lancés en arrière-plan (session persistante) : leur résultat arrivera dans la discussion -->
             <div id="bg-agents-strip" class="bg-agents-strip hidden"></div>

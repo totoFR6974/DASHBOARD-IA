@@ -228,3 +228,12 @@ legend .ico { vertical-align: -0.2em; margin-right: 2px; }
 /* Agents Claude d'arrière-plan (session persistante) : bandeau au-dessus de la saisie. */
 .bg-agents-strip { flex-basis: 100%; order: -3; display: flex; align-items: center; gap: 8px; padding: 7px 11px; border-radius: 11px; border: 1px solid rgba(111, 208, 230, 0.3); background: rgba(111, 208, 230, 0.07); font-size: 12.5px; color: #cfe9ef; }
 .bg-agents-strip .spinner { border-color: #6fd0e6; border-right-color: transparent; }
+
+/* Demandes d'autorisation de Claude : carte au-dessus de la saisie, repère dans la liste des discussions. */
+.perm-strip { flex-basis: 100%; order: -4; display: flex; flex-direction: column; gap: 8px; }
+.perm-card { display: flex; flex-direction: column; gap: 7px; padding: 10px 12px; border-radius: 12px; border: 1px solid rgba(245, 165, 36, 0.55); background: rgba(245, 165, 36, 0.09); }
+.perm-head { display: flex; align-items: center; gap: 7px; font-size: 13.5px; }
+.perm-detail { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 5px 8px; border-radius: 7px; background: rgba(0, 0, 0, 0.3); font-size: 12px; color: #ffe1ad; }
+.perm-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
+.perm-dot { display: inline-flex; align-items: center; }
+.perm-dot .ico { --icon-fill: #b37712; }

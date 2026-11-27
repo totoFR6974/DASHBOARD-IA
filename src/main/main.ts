@@ -369,6 +369,8 @@ function start(): void {
       listProviders: () => hub.listProviders(),
       createConversation: (input) => hub.createConversation(input ?? {}),
       updateConversation: (id, patch) => hub.updateConversation(id, patch),
+      listPermissions: () => hub.listPermissions(),
+      answerPermission: (id, decision) => hub.answerPermission(id, decision),
       sendMessage: (id, text) => hub.sendMessage(id, text),
       cancelTask: (id) => hub.cancelTask(id),
       imageRoots: () => hub.imageRoots(),

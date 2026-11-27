@@ -41,6 +41,11 @@ export interface LiveHooks {
   background(key: string, count: number): void;
   /** Le process de la session s'est arrêté (fin normale, arrêt du hub, plantage…). */
   closed(key: string): void;
+  /**
+   * Claude demande l'autorisation d'utiliser un outil (modes autres que « Tout autorisé ») : le hub la montre à
+   * l'utilisateur et résout avec sa réponse ('always' = autoriser et ne plus demander pour ce type d'action dans la session).
+   */
+  permission(key: string, req: { tool: string; detail: string; canAlways: boolean }): Promise<'allow' | 'deny' | 'always'>;
 }
 
 interface Turn {
@@ -88,7 +93,10 @@ class LiveSession {
   ) {
     this.sessionId = ctx.sessionId;
     const { args } = host.invocation(ctx);
-    const c = host.command([...args, '--input-format', 'stream-json']);
+    // Hors « Tout autorisé » : les demandes d'autorisation de Claude arrivent au hub (bouton Autoriser / Refuser)
+    // au lieu d'être refusées d'office.
+    const ask = ctx.permission !== 'bypassPermissions' ? ['--permission-prompt-tool', 'stdio'] : [];
+    const c = host.command([...args, '--input-format', 'stream-json', ...ask]);
     this.child = spawn(c.cmd, c.args, {
       cwd: ctx.cwd,
       env: { ...c.env, ...(ctx.extraEnv ?? {}) },
@@ -211,6 +219,10 @@ class LiveSession {
     } catch {
       return; // avertissement non JSON : ignoré
     }
+    if (msg.type === 'control_request') {
+      void this.answerControl(msg);
+      return;
+    }
     if (typeof msg.session_id === 'string' && msg.session_id) this.sessionId = msg.session_id;
     if (msg.type === 'rate_limit_event' && msg.rate_limit_info) {
       try {
@@ -306,6 +318,46 @@ class LiveSession {
         },
       });
     }
+  }
+
+  /** Demande de Claude au hub (autorisation d'un outil) ; toute autre demande est refusée proprement. */
+  private async answerControl(msg: any): Promise<void> {
+    const reply = (response: unknown) => {
+      if (this.exited || this.stopping) return;
+      try {
+        this.child.stdin!.write(`${JSON.stringify({ type: 'control_response', response })}\n`, 'utf8');
+      } catch {
+        /* process parti */
+      }
+    };
+    const req = msg.request ?? {};
+    if (req.subtype !== 'can_use_tool') {
+      reply({ subtype: 'error', request_id: msg.request_id, error: `Demande non prise en charge par le Hub IA : ${req.subtype ?? '?'}` });
+      return;
+    }
+    const tool = String(req.tool_name ?? req.display_name ?? '?');
+    // Détail sans le nom de l'outil (affiché à part) : « Write · fichier.txt » → « fichier.txt ».
+    const described = this.host.describeTool(tool, req.input);
+    const detail = (described.startsWith(tool) ? described.slice(tool.length).replace(/^ · /, '') : described) || String(req.description ?? '');
+    const suggestions = Array.isArray(req.permission_suggestions) ? req.permission_suggestions : [];
+    const turn = this.current;
+    turn?.ctx.onActivity({ kind: 'info', text: `Autorisation demandée : ${tool}${detail ? ` · ${detail}` : ''}` });
+    let decision: 'allow' | 'deny' | 'always' = 'deny';
+    try {
+      decision = await this.hooks.permission(this.key, { tool, detail, canAlways: suggestions.length > 0 });
+    } catch {
+      decision = 'deny';
+    }
+    if (decision === 'deny') {
+      reply({ subtype: 'success', request_id: msg.request_id, response: { behavior: 'deny', message: "L'utilisateur a refusé cette action dans le Hub IA." } });
+    } else {
+      reply({
+        subtype: 'success',
+        request_id: msg.request_id,
+        response: { behavior: 'allow', updatedInput: req.input ?? {}, ...(decision === 'always' && suggestions.length ? { updatedPermissions: suggestions } : {}) },
+      });
+    }
+    (this.current ?? turn)?.ctx.onActivity({ kind: decision === 'deny' ? 'error' : 'info', text: decision === 'deny' ? `Refusé : ${tool}` : decision === 'always' ? `Autorisé (toujours, pour cette session) : ${tool}` : `Autorisé : ${tool}` });
   }
 
   /** Process parti : les tours en attente échouent (ou sont annulés), le hub est prévenu. */

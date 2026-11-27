@@ -317,6 +317,8 @@ async function loadConversation(id: string, scroll = false): Promise<void> {
   const nodes: Node[] = [];
   if (current.olderCount) nodes.push(h('div', { class: 'older muted small' }, `${current.olderCount} message(s) plus ancien(s) : visibles sur le PC`));
   for (const m of current.messages) nodes.push(bubble(m));
+  // Claude attend une autorisation : carte avec Autoriser / Toujours / Refuser.
+  for (const p of current.permissions ?? []) nodes.push(permissionCard(current.id, p));
   for (const r of current.running) {
     const text = h('div', { class: 'text' });
     if (r.output) text.append(renderText(r.output));
@@ -327,6 +329,31 @@ async function loadConversation(id: string, scroll = false): Promise<void> {
   messagesEl.replaceChildren(...nodes);
   updateAction();
   if (stick) toBottom();
+}
+
+function permissionCard(convId: string, p: { id: string; tool: string; detail: string; canAlways: boolean }): HTMLElement {
+  const answer = async (decision: string, btn: HTMLButtonElement) => {
+    btn.setAttribute('disabled', '');
+    try {
+      await api(`/api/permissions/${encodeURIComponent(p.id)}`, 'POST', { decision });
+      await loadConversation(convId);
+    } catch (err: any) {
+      if (!(err instanceof Unauthorized)) toast(err?.message ?? String(err));
+      btn.removeAttribute('disabled');
+    }
+  };
+  const btn = (label: string, decision: string, cls: string) => {
+    const b = h('button', { class: `btn ${cls}`, type: 'button' }, label);
+    b.addEventListener('click', () => void answer(decision, b));
+    return b;
+  };
+  return h(
+    'div',
+    { class: 'perm-card' },
+    h('div', { class: 'perm-head' }, 'Claude demande l’autorisation : ', h('strong', {}, p.tool)),
+    p.detail ? h('code', { class: 'perm-detail' }, p.detail) : null,
+    h('div', { class: 'perm-actions' }, btn('Autoriser', 'allow', 'primary'), p.canAlways ? btn('Toujours', 'always', '') : null, btn('Refuser', 'deny', 'danger')),
+  );
 }
 
 function bubble(m: MobileMessage): HTMLElement {

@@ -21,7 +21,7 @@ import qrcode from 'qrcode-generator';
 import { JsonFile } from './store';
 import { IMAGE_TYPES, isAllowedImagePath } from './image-actions';
 import { isRealPathInside } from './path-guard';
-import { CLAUDE_EFFORTS, type ClaudeEffort, type Conversation, type ConversationPatch, type HubEvent, type MobileDevice, type MobileState, type NewConversationInput, type Participant, type ProviderInfo, type Task } from '../shared/types';
+import { CLAUDE_EFFORTS, type ClaudeEffort, type Conversation, type ConversationPatch, type HubEvent, type MobileDevice, type MobileState, type NewConversationInput, type Participant, type PermissionDecision, type PermissionRequest, type ProviderInfo, type Task } from '../shared/types';
 import type { MobileConversation, MobileConversationResponse, MobileEvent, MobileListResponse, MobileProvidersResponse } from '../shared/mobile-api';
 
 export const MOBILE_DEFAULT_PORT = 8770;
@@ -79,6 +79,8 @@ export interface MobileHub {
   listProviders(): Promise<ProviderInfo[]>;
   createConversation(input?: NewConversationInput): Promise<Conversation>;
   updateConversation(id: string, patch: ConversationPatch): Promise<Conversation>;
+  listPermissions(): PermissionRequest[];
+  answerPermission(id: string, decision: PermissionDecision): void;
   sendMessage(conversationId: string, text: string): Promise<Task[]>;
   cancelTask(taskId: string): void;
   imageRoots(): string[];
@@ -432,6 +434,15 @@ export class MobileServer {
         const tasks = await this.opts.hub.sendMessage(m[1], t);
         return this.send(res, 200, { taskIds: tasks.map((x) => x.id) });
       }
+      // Réponse à une demande d'autorisation de Claude (bouton Autoriser / Refuser du téléphone).
+      m = /^\/api\/permissions\/([A-Za-z0-9-]{1,80})$/.exec(path);
+      if (method === 'POST' && m) {
+        const { decision } = await this.body(req);
+        if (!['allow', 'deny', 'always'].includes(decision)) return this.send(res, 400, { error: 'Réponse inconnue' });
+        if (!this.opts.hub.listPermissions().some((p) => p.id === m![1])) return this.send(res, 404, { error: 'Demande déjà réglée' });
+        this.opts.hub.answerPermission(m[1], decision as PermissionDecision);
+        return this.send(res, 200, { ok: true });
+      }
       m = /^\/api\/tasks\/([A-Za-z0-9-]{1,80})\/cancel$/.exec(path);
       if (method === 'POST' && m) {
         const task = this.opts.hub.listTasks().find((x) => x.id === m![1]);
@@ -520,6 +531,10 @@ export class MobileServer {
       providers: c.participants.map((p) => p.providerId),
       participants: c.participants.map((p) => ({ providerId: p.providerId, ...(p.model ? { model: p.model } : {}) })),
       ...(c.effort ? { effort: c.effort } : {}),
+      permissions: this.opts.hub
+        .listPermissions()
+        .filter((p) => p.conversationId === c.id)
+        .map((p) => ({ id: p.id, tool: p.tool, detail: p.detail, canAlways: p.canAlways })),
       olderCount: c.messages.length - msgs.length,
       messages: msgs.map((m) => ({
         role: m.role,
@@ -582,6 +597,9 @@ export class MobileServer {
       out = { type: 'conversation', id: ev.conversation.id, updatedAt: ev.conversation.updatedAt };
     } else if (ev.type === 'conversationDeleted') {
       out = { type: 'conversationDeleted', id: ev.id };
+    } else if (ev.type === 'permission' || ev.type === 'permissionDone') {
+      // Demande d'autorisation posée ou réglée : le téléphone recharge la discussion concernée.
+      out = { type: 'conversation', id: ev.type === 'permission' ? ev.request.conversationId : ev.conversationId, updatedAt: Date.now() };
     }
     if (!out) return;
     for (const res of [...this.streams.keys()]) this.write(res, out);
