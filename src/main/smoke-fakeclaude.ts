@@ -1123,7 +1123,9 @@ export async function smokeFakeClaude(win: BrowserWindow, outDir: string, shot: 
     const fake3 = logFor().find((e) => e.scenario === 'delegate-cancel');
     await wait(3000);
     check('G2 annulation pendant délégation : parente et sous-tâche annulées', p3?.status === 'cancelled' && k3?.status === 'cancelled', { parent: p3?.status, child: k3?.status, childError: k3?.error });
-    check('G2 annulation pendant délégation : faux Claude arrêté', !!fake3 && !alive(fake3.pid), { pid: fake3?.pid, alive: alive(fake3?.pid) });
+    // Arrêter interrompt le tour (la session reste ouverte) ; repli : session coupée si Claude ne répond pas.
+    const interrupted = readLog().some((e) => e.event === 'end' && e.scenario === 'delegate-cancel' && e.interrupted);
+    check('G2 annulation pendant délégation : tour de Claude interrompu (ou Claude arrêté)', !!fake3 && (interrupted || !alive(fake3.pid)), { pid: fake3?.pid, alive: alive(fake3?.pid), interrupted });
   }
 
   // ---------- F. Erreurs : messages en français ----------
