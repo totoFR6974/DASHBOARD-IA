@@ -106,7 +106,7 @@
 .web-tab-check { display: inline-flex; width: 14px; height: 14px; align-items: center; justify-content: center; border-radius: 4px; border: 1px solid currentColor; font-size: 10px; line-height: 1; opacity: 0.85; }
 
 /* ---------- File d'attente des messages (au-dessus de la zone de saisie) ---------- */
-.queue-strip { flex-basis: 100%; order: -2; display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px dashed rgba(243, 122, 50, 0.45); border-radius: 12px; background: rgba(243, 122, 50, 0.06); }
+.queue-strip { flex-basis: 100%; order: -2; display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px dashed rgb(var(--accent-rgb) / 0.45); border-radius: 12px; background: rgb(var(--accent-rgb) / 0.06); }
 .queue-head { font-size: 12.5px; color: var(--muted); }
 .queue-item { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .queue-item.error .queue-text { color: var(--warn); }
@@ -116,7 +116,7 @@
 
 /* ---------- Agents en cours (barre du haut) ---------- */
 .agents-picker { position: relative; }
-.agents-pill { gap: 8px; border-color: rgba(243, 122, 50, 0.45); }
+.agents-pill { gap: 8px; border-color: rgb(var(--accent-rgb) / 0.45); }
 .agents-menu { width: 420px; max-height: 70vh; overflow-y: auto; }
 .agents-rows { display: flex; flex-direction: column; gap: 10px; }
 .agents-row { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: rgba(255, 255, 255, 0.03); }
@@ -153,8 +153,8 @@
 .list-folder-picker .folder-btn svg { flex-shrink: 0; }
 .folder-btn-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; }
 .folder-btn-caret { color: var(--muted); font-size: 11px; flex-shrink: 0; }
-.list-folder-picker .folder-btn.filtering { border-color: rgba(243, 122, 50, 0.45); background: var(--accent-soft); }
-.list-folder-picker .folder-btn.open { border-color: rgba(243, 122, 50, 0.6); }
+.list-folder-picker .folder-btn.filtering { border-color: rgb(var(--accent-rgb) / 0.45); background: var(--accent-soft); }
+.list-folder-picker .folder-btn.open { border-color: rgb(var(--accent-rgb) / 0.6); }
 /* Menu sous le bouton, à la largeur de la colonne ; la colonne passe au premier plan quand il est ouvert
    (chaque panneau en verre a son propre contexte d'empilement : sans ça, le panneau voisin le recouvrirait). */
 .list-folder-picker .folder-menu { left: 0; right: 0; width: auto; max-height: min(420px, 60vh); overflow-y: auto; transform-origin: top center; }

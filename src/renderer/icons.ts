@@ -47,6 +47,7 @@ export type IconName =
   | 'film'
   | 'cube'
   | 'eye'
+  | 'palette'
   | 'terminal';
 
 const FILL = 'var(--icon-fill, #4f5257)';
@@ -197,6 +198,14 @@ const SHAPES: Record<IconName, string> = {
   terminal: ['<rect x="2.6" y="4" width="18.8" height="16" rx="2.6"/>', `<path ${line} d="M6.8 9.4l3.2 2.6-3.2 2.6M12 15.6h5"/>`].join(''),
   // Œil (reconnaissance d'images) : amande et iris.
   eye: ['<path d="M2.4 12C4.6 7.6 8 5.4 12 5.4s7.4 2.2 9.6 6.6c-2.2 4.4-5.6 6.6-9.6 6.6S4.6 16.4 2.4 12z"/>', `<circle ${ink} cx="12" cy="12" r="2.9"/>`].join(''),
+  // Palette de peintre : galet arrondi avec le trou du pouce en bas à droite, quatre pastilles de couleur blanches.
+  palette: [
+    '<path d="M12 2.8c-5.2 0-9.2 3.8-9.2 8.9 0 4.9 4 8.5 8.9 8.5 1.2 0 2-.7 2-1.7 0-.5-.2-.9-.5-1.2-.3-.4-.5-.8-.5-1.3 0-1 .8-1.7 1.8-1.7h2.3c2.6 0 4.4-1.9 4.4-4.4 0-4-4-7.1-9.2-7.1z"/>',
+    `<circle ${ink} cx="7.3" cy="11.6" r="1.35"/>`,
+    `<circle ${ink} cx="9.2" cy="7.4" r="1.35"/>`,
+    `<circle ${ink} cx="13.9" cy="6.6" r="1.35"/>`,
+    `<circle ${ink} cx="17.2" cy="9.6" r="1.35"/>`,
+  ].join(''),
   cube: ['<path d="M12 2.8 20 7.2v9.6L12 21.2 4 16.8V7.2z"/>', `<path ${line} d="M4.2 7.3 12 11.6l7.8-4.3M12 11.6v9.4"/>`].join(''),
 };
 

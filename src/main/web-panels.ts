@@ -511,7 +511,11 @@ export class WebPanels {
   layout(rects: WebRect[]): void {
     this.lastRects = rects;
     const shown = new Set<string>();
-    for (const r of rects) {
+    // Rectangles mesurés par l'interface en pixels CSS : avec un zoom (Réglages › Apparence › Taille du texte), les
+    // vues natives se placent en pixels de fenêtre → × facteur de zoom.
+    const z = this.win.isDestroyed() ? 1 : this.win.webContents.getZoomFactor() || 1;
+    for (const raw of rects) {
+      const r = { ...raw, x: raw.x * z, y: raw.y * z, width: raw.width * z, height: raw.height * z };
       if (!PANELS.some((p) => p.id === r.id) || r.width < 10 || r.height < 10) continue;
       // Déconnexion en cours : ne pas recréer la vue tant que la session n'est pas vidée (voir logout).
       if (this.loggingOut.has(r.id)) continue;

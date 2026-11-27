@@ -44,6 +44,7 @@ import type {
   SetupStatus,
 } from '../shared/types';
 import { CLAUDE_EFFORTS } from '../shared/types';
+import { DEFAULT_APPEARANCE, sanitizeAppearance, type Appearance } from '../shared/appearance';
 import { COMFY_DIR_HINT, detectExistingComfy, findComfyRoot, ImageEngine } from './image-engine';
 import { caseInsensitiveFs } from './platform';
 import { isRealPathInside } from './path-guard';
@@ -325,10 +326,13 @@ export class Hub {
       vaultDir: 'vault',
       knowledgeBaseMap: {},
       conversationNotes: true,
+      appearance: { ...DEFAULT_APPEARANCE },
       // onboardingDone volontairement absent : son absence dans settings.json signale une 1re ouverture (voir plus bas).
     } as Omit<HubSettings, 'onboardingDone'> as HubSettings);
     const s = this.settingsFile.data;
     if (!Array.isArray(s.defaultParticipants)) s.defaultParticipants = [];
+    // Apparence : fichier modifié à la main ou ancienne version → valeurs inconnues remplacées par celles par défaut.
+    s.appearance = sanitizeAppearance(s.appearance);
     if (!Array.isArray(s.folders)) s.folders = [];
     s.activeFolderId ??= '';
     if (!Array.isArray(s.roles) || s.roles.length === 0) s.roles = defaultRoles();
@@ -2730,6 +2734,22 @@ export class Hub {
     this.settingsFile.flush();
   }
 
+  /** Réglages › Apparence (toujours complète et valide). */
+  get appearance(): Appearance {
+    return sanitizeAppearance(this.settingsFile.data.appearance);
+  }
+
+  /**
+   * Réglages › Apparence : enregistré à chaque changement (aperçu immédiat dans l'interface). Validation stricte :
+   * couleur #rrggbb, listes fermées pour le reste ; un champ invalide ou absent garde sa valeur actuelle.
+   */
+  setAppearance(next: Partial<Appearance>): Appearance {
+    const s = this.settingsFile.data;
+    s.appearance = sanitizeAppearance(next, this.appearance);
+    this.settingsFile.flush();
+    return { ...s.appearance };
+  }
+
   saveSettings(next: HubSettings): HubSettings {
     const s = this.settingsFile.data;
     // Chemin de Claude Code : validé AVANT toute écriture (nom claude/claude.exe/claude.cmd, fichier existant, aucun
@@ -2754,6 +2774,8 @@ export class Hub {
     if (typeof next.updateIncludePrerelease === 'boolean') s.updateIncludePrerelease = next.updateIncludePrerelease;
     if (next.voiceModel === 'auto' || isVoiceModel(next.voiceModel)) s.voiceModel = next.voiceModel;
     if (next.voiceLanguage === 'fr' || next.voiceLanguage === 'en' || next.voiceLanguage === 'auto') s.voiceLanguage = next.voiceLanguage;
+    // Apparence : revalidée champ par champ (une valeur invalide garde la valeur actuelle).
+    if (next.appearance !== undefined) s.appearance = sanitizeAppearance(next.appearance, this.appearance);
     // Les agents se modifient via saveRoles (validation dédiée) : on ne les touche pas ici.
     this.settingsFile.flush();
     void this.listProviders(true);

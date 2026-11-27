@@ -23,6 +23,7 @@ import { IMAGE_TYPES, isAllowedImagePath } from './image-actions';
 import { isRealPathInside } from './path-guard';
 import { CLAUDE_EFFORTS, type ClaudeEffort, type Conversation, type ConversationPatch, type HubEvent, type MobileDevice, type MobileState, type NewConversationInput, type Participant, type PermissionDecision, type PermissionRequest, type ProviderInfo, type Task } from '../shared/types';
 import type { MobileConversation, MobileConversationResponse, MobileEvent, MobileListResponse, MobileProvidersResponse } from '../shared/mobile-api';
+import { normalizeHex } from '../shared/appearance';
 
 export const MOBILE_DEFAULT_PORT = 8770;
 const PAIRING_MS = 5 * 60_000;
@@ -85,6 +86,8 @@ export interface MobileHub {
   cancelTask(taskId: string): void;
   imageRoots(): string[];
   onEvent(listener: (ev: HubEvent) => void): () => void;
+  /** Couleur d'accent du hub (#rrggbb, Réglages › Apparence) : la seule information d'apparence envoyée au téléphone. */
+  accent?(): string;
 }
 
 export interface MobileServerOptions {
@@ -508,7 +511,8 @@ export class MobileServer {
       const preview = last ? (last.content || (last.images?.length ? '🖼 Image' : last.files?.length ? '📎 Fichier' : '')).replace(/\s+/g, ' ').slice(0, 120) : '';
       return { id: c.id, title: c.title, updatedAt: c.updatedAt, providers: c.participants.map((p) => p.providerId), running: running.has(c.id), preview };
     });
-    return { conversations, providerNames: await this.names() };
+    const accent = normalizeHex(this.opts.hub.accent?.());
+    return { conversations, providerNames: await this.names(), ...(accent ? { accent } : {}) };
   }
 
   /** IA proposées sur le téléphone : connecteurs du hub (pas les sites web), facultatives seulement si prêtes. */

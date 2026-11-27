@@ -1,4 +1,7 @@
 // Types partagés entre le process principal et l'interface.
+import type { Appearance } from './appearance';
+// Réglages › Apparence : type, valeur par défaut et validation dans appearance.ts (réexportés ici).
+export { DEFAULT_APPEARANCE, sanitizeAppearance, type Appearance } from './appearance';
 
 export type ProviderKind = 'cli' | 'local' | 'web';
 
@@ -515,7 +518,13 @@ export interface HubSettings {
   /** ComfyUI portable déjà installé ailleurs, utilisé à la place de <données>/tools/ComfyUI (vide = dossier de l'appli). */
   comfyuiDir?: string;
   /** Micro des panneaux web, par panneau ('chatgpt', 'gemini') ; absent = demander à la première utilisation. */
-  webMic?: Record<string, WebMicChoice>;  /** L'assistant de premier démarrage a été terminé ou passé. */
+  webMic?: Record<string, WebMicChoice>;
+  /**
+   * Réglages › Apparence (accent, fond, taille du texte, densité, effets). Absent = DEFAULT_APPEARANCE.
+   * Écrit par setAppearance (enregistré à chaque changement) ; saveSettings le revalide s'il est présent.
+   */
+  appearance?: Appearance;
+  /** L'assistant de premier démarrage a été terminé ou passé. */
   onboardingDone: boolean;
 }
 
@@ -989,6 +998,8 @@ export interface HubApi {
   clearFinishedTasks(): Promise<void>;
   getSettings(): Promise<HubSettings>;
   saveSettings(settings: HubSettings): Promise<HubSettings>;
+  /** Réglages › Apparence : validé strictement, enregistré tout de suite, zoom de la fenêtre appliqué. */
+  setAppearance(appearance: Partial<Appearance>): Promise<Appearance>;
   openPath(path: string): Promise<void>;
   listFolders(): Promise<FoldersState>;
   addFolder(path: string, name?: string): Promise<WorkFolder>;
@@ -1259,6 +1270,7 @@ export const HUB_METHODS = [
   'clearFinishedTasks',
   'getSettings',
   'saveSettings',
+  'setAppearance',
   'openPath',
   'listFolders',
   'addFolder',

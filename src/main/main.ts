@@ -11,7 +11,8 @@ import { WebPanels } from './web-panels';
 import { migrateDevData, resolveRootDir } from './data-root';
 import { Updater } from './updater';
 import { fixFinderPath } from './platform';
-import { installAppMenu, titleBarOptions } from './window-chrome';
+import { installAppMenu, titleBarOptions, TITLEBAR_HEIGHT } from './window-chrome';
+import type { Appearance } from '../shared/appearance';
 import { clipboardFilePaths } from './clipboard-files';
 import { IMAGE_TYPES, isAllowedImagePath, registerImageActions } from './image-actions';
 import { checkOpenPath, isRealPathInside, mainWindowPermission } from './path-guard';
@@ -81,13 +82,33 @@ let keepAwakeId: number | null = null;
 /** Fermeture déjà confirmée (tâches en cours) : pas de seconde question. */
 let closeConfirmed = false;
 
+/**
+ * Réglages › Apparence côté fenêtre : taille du texte = zoom de toute l'interface (comme Ctrl + molette dans un
+ * navigateur, rien ne se chevauche car tout grandit ensemble). Sous Windows, la zone des boutons natifs (réduire /
+ * agrandir / fermer) suit la hauteur de la barre du haut zoomée. Les panneaux web convertissent leurs rectangles
+ * (web-panels.ts : facteur de zoom). Fond « Noir profond » : couleur de la fenêtre avant le premier affichage.
+ */
+function applyWindowAppearance(a: Appearance): void {
+  if (!win || win.isDestroyed()) return;
+  const factor = a.textScale / 100;
+  if (Math.abs(win.webContents.getZoomFactor() - factor) > 0.001) win.webContents.setZoomFactor(factor);
+  if (process.platform === 'win32') {
+    try {
+      win.setTitleBarOverlay({ height: Math.round(TITLEBAR_HEIGHT * factor) });
+    } catch {
+      /* fenêtre sans barre de titre intégrée */
+    }
+  }
+  win.setBackgroundColor(a.background === 'oled' ? '#000000' : '#0f1115');
+}
+
 function createWindow(): void {
   win = new BrowserWindow({
     width: 1400,
     height: 900,
     minWidth: 900,
     minHeight: 600,
-    backgroundColor: '#0f1115',
+    backgroundColor: hub.appearance.background === 'oled' ? '#000000' : '#0f1115',
     title: 'Hub IA',
     ...(existsSync(windowIcon) ? { icon: windowIcon } : {}),
     autoHideMenuBar: true,
@@ -140,7 +161,12 @@ function createWindow(): void {
     }
   });
   // En test, ?smoke=1 active les crochets de test de l'interface (ex. transcription d'un fichier audio).
-  win.loadFile(join(__dirname, 'renderer', 'index.html'), smoke ? { query: { smoke: '1' } } : undefined);
+  // ?ap= : apparence enregistrée, appliquée par appearance-boot.js dans <head> AVANT le premier affichage (pas de flash
+  // orange puis bleu). Revalidée par la page (listes fermées, couleur #rrggbb).
+  const ap = JSON.stringify(hub.appearance);
+  win.loadFile(join(__dirname, 'renderer', 'index.html'), { query: smoke ? { smoke: '1', ap } : { ap } });
+  applyWindowAppearance(hub.appearance);
+  win.webContents.on('dom-ready', () => applyWindowAppearance(hub.appearance));
 
   // Aucun lien ne s'ouvre dans l'appli : ils partent dans le navigateur par défaut.
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -375,6 +401,7 @@ function start(): void {
       cancelTask: (id) => hub.cancelTask(id),
       imageRoots: () => hub.imageRoots(),
       onEvent: (l) => hub.onEvent(l),
+      accent: () => hub.appearance.accent,
     },
     file: join(dataDir, 'mobile.json'),
     staticDir: join(appDir, 'dist', 'mobile'),
@@ -473,6 +500,11 @@ function start(): void {
         return mobile!.revokeDevice(String(args[0]));
       case 'setMobileKeepAwake':
         return mobile!.setKeepAwake(!!args[0]);
+      case 'setAppearance': {
+        const a = hub.setAppearance(args[0] && typeof args[0] === 'object' ? (args[0] as Partial<Appearance>) : {});
+        applyWindowAppearance(a);
+        return a;
+      }
       case 'openInObsidian':
         return openInObsidian(args[0] === undefined || args[0] === null || args[0] === '' ? undefined : String(args[0]), args[1] ? String(args[1]) : undefined);
       default:

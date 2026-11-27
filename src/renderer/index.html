@@ -12,6 +12,8 @@
     <link rel="stylesheet" href="theme.css" />
     <link rel="stylesheet" href="image-viewer.css" />
     <link rel="stylesheet" href="modules.css" />
+    <!-- Réglages › Apparence appliqués avant le premier affichage (couleur d'accent, fond, densité…) -->
+    <script src="appearance-boot.js"></script>
   </head>
   <body>
     <!-- Fond : halos lumineux qui dérivent lentement, grille et grain discrets -->
@@ -325,6 +327,11 @@
             <label class="check" title="Par défaut, l'outil chercher_notes d'un agent ne fouille que les bases liées à sa tâche : la base de la discussion et celle du dossier de travail. Coche pour lui permettre de chercher dans toutes tes bases de connaissances.">
               <input type="checkbox" id="set-notes-all" /> Autoriser les agents à chercher dans toutes les bases de notes (sinon : seulement celles de la discussion et du dossier)
             </label>
+          </fieldset>
+          <!-- Apparence : couleur d'accent, fond, taille du texte, densité, effets (appearance.ts, enregistré immédiatement) -->
+          <fieldset id="appearance-settings" class="info-card">
+            <legend><span data-icon="palette"></span> Apparence</legend>
+            <div id="appearance-settings-body"></div>
           </fieldset>
           <fieldset class="info-card">
             <legend>Mises à jour</legend>

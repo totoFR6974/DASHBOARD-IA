@@ -12,6 +12,7 @@ import { smokeViewer } from './smoke-viewer';
 import { smokeIcons } from './smoke-icons';
 import { smokeModules } from './smoke-modules';
 import { smokeFakeClaude } from './smoke-fakeclaude';
+import { smokeAppearance } from './smoke-appearance';
 import { smokeVaultSync } from './smoke-vaultsync';
 import { smokeMobile } from './smoke-mobile';
 import { smokeAgents } from './smoke-agents';
@@ -573,7 +574,10 @@ export async function runSmoke(win: BrowserWindow, outDir: string, getWeb: () =>
   if (only === 'knowledge') return smokeKnowledge(shot, js);
   if (only === 'vaultsync') return smokeVaultSync(win, outDir, shot, js);
   if (only === 'search') return smokeSearch(shot, js);
-  if (only === 'ui') return smokeShell(shot, js);
+  if (only === 'ui') {
+    await smokeShell(shot, js);
+    return smokeAppearance(win, shot, js); // AP. Réglages › Apparence
+  }
   if (only === 'vision') return smokeVision(win, outDir, shot, js);
   if (only === 'files') return smokeFiles(win, outDir, shot, js);
   if (only === 'titlebar') {

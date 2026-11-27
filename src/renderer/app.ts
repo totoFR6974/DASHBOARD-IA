@@ -13,6 +13,7 @@ import { hydrateIcons, icon, iconSelect, iconText, type IconName } from './icons
 import { initModules, moduleHintForError, moduleOptionsBox, openModuleCard, renderModulesSettings } from './module-offer';
 import { wikiLinks } from './wikilinks';
 import { initMobileSettings, refreshMobileSettings } from './mobile-settings';
+import { initAppearance, renderAppearanceSettings } from './appearance';
 import type {
   AgentRole,
   ChatMessage,
@@ -4040,6 +4041,7 @@ async function renderSettings(): Promise<void> {
   renderWebAccountSettings(webPanels, state.web.panels, toast);
   renderVisionSettings($('vision-settings-body'));
   renderUpdateSettings();
+  renderAppearanceSettings();
   refreshMobileSettings();
   try {
     const { roles, plannerRoleId } = await hub.listRoles();
@@ -5857,6 +5859,8 @@ async function init(): Promise<void> {
   state.roles = roles.roles;
   state.plannerRoleId = roles.plannerRoleId;
   state.settings = settings;
+  // Réglages › Apparence (déjà posée avant le premier affichage par appearance-boot.js) : alignée sur les réglages.
+  initAppearance(hub, toast, settings?.appearance);
   await loadKnowledgeBases();
   usageUi.stats = await hub.getUsage().catch(() => ({ days: {} }));
   usageUi.limits = await hub.getLimits().catch(() => ({ providers: {} }));

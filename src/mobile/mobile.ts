@@ -2,6 +2,7 @@
 // Tout passe par l'API du hub avec le jeton de ce téléphone (localStorage), obtenu à l'appairage.
 // Le texte des messages est inséré en textContent (jamais en HTML) : un message ne peut pas injecter de code.
 import type { MobileConvSummary, MobileConversation, MobileConversationResponse, MobileEvent, MobileListResponse, MobileMessage, MobileProvider, MobileProvidersResponse } from '../shared/mobile-api';
+import { accentVars, normalizeHex } from '../shared/appearance';
 
 const TOKEN_KEY = 'hubia.mobile.token';
 /** Dernier choix d'IA fait sur ce téléphone : repris pour les nouvelles discussions. */
@@ -10,6 +11,21 @@ const app = document.getElementById('app')!;
 const toastEl = document.getElementById('toast')!;
 
 let token = localStorage.getItem(TOKEN_KEY);
+
+/** Couleur d'accent du PC (Réglages › Apparence), gardée sur le téléphone pour l'appliquer dès l'ouverture suivante. */
+const ACCENT_KEY = 'hubia.mobile.accent';
+function applyAccent(hex: unknown): void {
+  const color = normalizeHex(hex);
+  const rgb = color ? accentVars(color)['--accent-rgb'] : undefined;
+  if (rgb && color) {
+    document.documentElement.style.setProperty('--accent-rgb', rgb);
+    localStorage.setItem(ACCENT_KEY, color);
+  } else {
+    document.documentElement.style.removeProperty('--accent-rgb'); // orange par défaut (mobile.css)
+    localStorage.removeItem(ACCENT_KEY);
+  }
+}
+applyAccent(localStorage.getItem(ACCENT_KEY));
 let names: Record<string, string> = {};
 let current: MobileConversation | null = null;
 let online = false;
@@ -230,6 +246,7 @@ async function refreshList(list = app.querySelector<HTMLUListElement>('.conv-lis
   if (!list) return;
   const data = await api<MobileListResponse>('/api/conversations');
   names = data.providerNames;
+  applyAccent(data.accent);
   if (current || !list.isConnected) return;
   lastList = data.conversations;
   fillList(list);

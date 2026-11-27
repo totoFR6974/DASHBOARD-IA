@@ -23,8 +23,10 @@
   --line: rgba(255, 255, 255, 0.08);
   --text: #ececee;
   --muted: #8d9199;
-  --accent: #f37a32;
-  --accent-soft: rgba(243, 122, 50, 0.16);
+  /* Accent : orange par défaut, remplacé par la couleur choisie sur le PC (mobile.ts → applyAccent). */
+  --accent-rgb: 243 122 50;
+  --accent: rgb(var(--accent-rgb));
+  --accent-soft: rgb(var(--accent-rgb) / 0.16);
   --danger: #e5484d;
   --ok: #3dd68c;
   --mono: 'Cascadia Code', Consolas, ui-monospace, 'SF Mono', Menlo, monospace;
@@ -188,7 +190,7 @@ body {
 .msg.me {
   align-self: flex-end;
   background: var(--accent-soft);
-  border-color: rgba(243, 122, 50, 0.3);
+  border-color: rgb(var(--accent-rgb) / 0.3);
 }
 .msg.ai {
   align-self: flex-start;
@@ -528,7 +530,7 @@ body {
   background: var(--bg);
 }
 .ai-row.on {
-  border-color: rgba(243, 122, 50, 0.6);
+  border-color: rgb(var(--accent-rgb) / 0.6);
   background: var(--accent-soft);
 }
 .ai-row.off {

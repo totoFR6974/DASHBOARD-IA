@@ -68,6 +68,8 @@ export interface MobileProvidersResponse {
 export interface MobileListResponse {
   conversations: MobileConvSummary[];
   providerNames: Record<string, string>;
+  /** Couleur d'accent choisie sur le PC (#rrggbb, Réglages › Apparence) ; absente = orange par défaut. */
+  accent?: string;
 }
 
 export interface MobileConversationResponse {

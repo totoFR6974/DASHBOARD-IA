@@ -9,8 +9,11 @@ import { app, Menu, type BrowserWindowConstructorOptions, type MenuItemConstruct
 /** Position des feux tricolores (macOS), alignée avec la marge haute de la barre latérale (theme.css). */
 export const MAC_TRAFFIC_LIGHTS = { x: 18, y: 20 };
 
+/** Hauteur de la barre du haut (theme.css .topbar) = zone des boutons natifs sous Windows, à 100 % de zoom. */
+export const TITLEBAR_HEIGHT = 64;
+
 export function titleBarOptions(platform: NodeJS.Platform = process.platform): Partial<BrowserWindowConstructorOptions> {
-  if (platform === 'win32') return { titleBarStyle: 'hidden', titleBarOverlay: { color: '#00000000', symbolColor: '#c9ccd2', height: 64 } };
+  if (platform === 'win32') return { titleBarStyle: 'hidden', titleBarOverlay: { color: '#00000000', symbolColor: '#c9ccd2', height: TITLEBAR_HEIGHT } };
   if (platform === 'darwin') return { titleBarStyle: 'hiddenInset', trafficLightPosition: MAC_TRAFFIC_LIGHTS };
   return {};
 }

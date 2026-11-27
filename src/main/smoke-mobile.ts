@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import type { Conversation, MobileState, Task } from '../shared/types';
 import type { Hub } from './hub';
 import type { MobileServer } from './mobile-server';
+import { accentVars } from '../shared/appearance';
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -135,6 +136,26 @@ export async function smokeMobile(win: BrowserWindow, outDir: string, shot: (nam
     // Même typo que le hub sur le PC : Inter, servie par le hub et réellement chargée par la page.
     const font = await pjs(`(async () => { await document.fonts.ready; await document.fonts.load('16px Inter'); return { ok: document.fonts.check('16px Inter'), family: getComputedStyle(document.body).fontFamily }; })()`);
     check(font?.ok === true && /^"?Inter/.test(font?.family ?? ''), `Police Inter chargée sur le téléphone (${font?.family})`);
+    // Couleur d'accent du PC (Réglages › Apparence) : seule information d'apparence envoyée, appliquée sur le téléphone.
+    let list = await (await fetch(`${base}/api/conversations`, { headers: { Authorization: `Bearer ${token}` } })).json();
+    check(list.accent === '#f37a32' && Object.keys(list).sort().join(',') === 'accent,conversations,providerNames', `Accent par défaut envoyé, rien d'autre des réglages (${Object.keys(list).join(', ')})`);
+    hub.setAppearance({ accent: '#8b5cf6', background: 'oled', density: 'compact' });
+    list = await (await fetch(`${base}/api/conversations`, { headers: { Authorization: `Bearer ${token}` } })).json();
+    check(list.accent === '#8b5cf6' && !('background' in list) && !('appearance' in list), 'Accent violet envoyé (sans le reste de l’apparence)');
+    await pjs('location.reload()');
+    const violetRgb = accentVars('#8b5cf6')['--accent-rgb'];
+    check(
+      await until(() => pjs(`getComputedStyle(document.documentElement).getPropertyValue('--accent-rgb').trim() === ${JSON.stringify(violetRgb)} && localStorage.getItem('hubia.mobile.accent') === '#8b5cf6'`)),
+      'Téléphone : accent violet appliqué et gardé pour le prochain lancement',
+    );
+    check(await until(() => pjs(`!!document.querySelector('.conv-title')`)), 'Téléphone : liste rechargée');
+    await pshot('mobile-liste-violet');
+    hub.setAppearance({ accent: '#f37a32', background: 'halos', density: 'normal' });
+    await pjs('location.reload()');
+    check(
+      await until(() => pjs(`getComputedStyle(document.documentElement).getPropertyValue('--accent-rgb').trim() === '243 122 50' && !localStorage.getItem('hubia.mobile.accent') && !!document.querySelector('.conv-title')`)),
+      'Téléphone : orange par défaut rétabli',
+    );
     await pshot('mobile-liste');
 
     await pjs(`location.hash = '#c/${conv.id}'`);
