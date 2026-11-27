@@ -413,6 +413,49 @@ export async function smokeFakeClaude(win: BrowserWindow, outDir: string, shot: 
     check('Q2 agents en cours : pastille masquée quand plus rien ne tourne', pillAfter === true || (await tasks()).some((t) => t.status === 'running'), pillAfter);
   }
 
+  // ---------- H. En-tête de discussion compact : une ligne, menu « ⋯ » ----------
+  {
+    const hc = await newConv('FC · en-tête compact avec un titre assez long pour être tronqué proprement à droite', { permission: 'bypassPermissions' });
+    await select('FC · en-tête compact avec un titre assez long pour être tronqué proprement à droite');
+    const hd = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const head = document.getElementById('chat-header');
+      const r = head.getBoundingClientRect();
+      const kids = [...head.children].filter((c) => getComputedStyle(c).display !== 'none');
+      const tops = new Set(kids.map((c) => Math.round(c.getBoundingClientRect().top / 8)));
+      const res = {
+        height: Math.round(r.height),
+        oneLine: r.height < 70,
+        perm: head.querySelector('.perm-wrap.perm-bypassPermissions .ico-warn') !== null,
+        folder: !!head.querySelector('.folder-select'),
+        base: !!head.querySelector('.conv-base-select'),
+        oldButtons: head.querySelectorAll(':scope > .icon-btn, :scope > button[title^="Supprimer"]').length,
+        agentHidden: getComputedStyle(head.querySelector('.agent-tag')).display === 'none',
+      };
+      head.querySelector('.conv-more-btn').click();
+      await sleep(250);
+      res.items = [...document.querySelectorAll('.conv-menu [data-conv-action]')].map((b) => b.dataset.convAction);
+      return res;
+    })()`);
+    await shot('fc-entete-menu');
+    const after = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      document.querySelector('.conv-menu [data-conv-action="rename"]').click();
+      await sleep(200);
+      const renaming = document.activeElement?.classList.contains('chat-title') && !document.querySelector('.conv-menu');
+      document.activeElement?.blur();
+      document.querySelector('#chat-header .conv-more-btn').click();
+      await sleep(150);
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      await sleep(150);
+      return { renaming, closedByEscape: !document.querySelector('.conv-menu') };
+    })()`);
+    check('H en-tête : une seule ligne, « Tout autorisé » avec l’icône attention, dossier et base visibles, anciens boutons retirés', hd?.oneLine === true && hd?.height < 80 && hd?.perm && hd?.folder && hd?.base && hd?.oldButtons === 0 && hd?.agentHidden, hd);
+    check('H menu « ⋯ » : ouvrir le dossier, renommer, renommer l’agent, supprimer', ['folder', 'rename', 'agent', 'delete'].every((a) => hd?.items?.includes(a)), hd?.items);
+    check('H « Renommer » met le titre en édition ; Échap ferme le menu', after?.renaming === true && after?.closedByEscape === true, after);
+    void hc;
+  }
+
   // ---------- I. Images citées dans une réponse de Claude : vignettes dans la discussion ----------
   {
     const png = fakeIllustration(2, 64);

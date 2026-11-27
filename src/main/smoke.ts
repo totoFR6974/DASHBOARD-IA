@@ -269,7 +269,10 @@ async function smokeObsidian(shot: (name: string) => Promise<void>, js: (code: s
     await sleep(500);
     const headerBase = document.querySelector('.conv-base-select')?.selectedOptions[0]?.textContent;
     // Connaissances : la base du dossier, sa note de discussion ouverte.
-    document.querySelector('.conv-base .icon-btn')?.click();
+    // La note s'ouvre depuis le menu « ⋯ » de l'en-tête.
+    document.querySelector('#chat-header .conv-more-btn')?.click();
+    await sleep(200);
+    document.querySelector('.conv-menu [data-conv-action="note"]')?.click();
     for (let i = 0; i < 40 && !document.getElementById('kn-open-discussion'); i++) await sleep(250);
     await sleep(500);
     return {

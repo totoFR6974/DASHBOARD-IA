@@ -860,7 +860,10 @@ function renderConvList(): void {
 }
 
 function selectConversation(id: string | null): void {
-  if (id !== state.activeConvId) closeAiMenu();
+  if (id !== state.activeConvId) {
+    closeAiMenu();
+    convMenu.open = false;
+  }
   state.activeConvId = id;
   renderConvList();
   renderChat();
@@ -949,30 +952,88 @@ function renderChatHeader(conv: Conversation | undefined): void {
     permWrap.classList.add('perm-wrap', `perm-${conv.permission}`);
     extra.push(permWrap);
   }
-  // Le dossier est affiché pour toutes les discussions (c'est lui qui les range), modifiable ici.
-  extra.push(
-    folderSelect(conv),
-    h('button', { class: 'icon-btn', title: `Ouvrir ${conv.cwd} dans l'Explorateur`, onclick: () => void hub.openPath(conv.cwd) }, icon('folder')),
-    convBaseSelect(conv),
-  );
+  // Le dossier est affiché pour toutes les discussions (c'est lui qui les range), modifiable ici ; puis la base.
+  // Le reste (ouvrir le dossier, la note, renommer, supprimer) est dans le menu « ⋯ » : l'en-tête tient sur UNE ligne.
+  extra.push(folderSelect(conv), convBaseSelect(conv, false));
 
+  // Nom de l'agent : affiché seulement s'il est personnalisé (sinon il répète l'IA) ; « Renommer l'agent » le montre.
+  const defaultAgent = conv.agent === 'Discussion' || conv.agent === 'Claude Code' || parts.some((p) => providerName(p.providerId).replace(/\s*\(.*\)$/, '') === conv.agent);
+  if (defaultAgent) agent.classList.add('is-default');
+
+  const more = h(
+    'button',
+    {
+      type: 'button',
+      class: `btn ghost conv-more-btn ${convMenu.open ? 'open' : ''}`,
+      title: 'Plus d’actions : ouvrir le dossier, la note, renommer, supprimer',
+      'aria-haspopup': 'menu',
+      onclick: (e: Event) => {
+        e.stopPropagation();
+        convMenu.open = !convMenu.open;
+        renderChatHeader(activeConv());
+      },
+    },
+    '⋯',
+  );
   header.replaceChildren(
     title,
     agent,
     ...parts.map((p) => providerTag(p.providerId)),
     h('span', { class: 'spacer' }),
     ...extra,
+    h('span', { class: 'conv-more' }, more, convMenu.open ? convHeaderMenu(conv, title, agent) : null),
+  );
+}
+
+/** Menu « ⋯ » de l'en-tête de discussion (ouvert / fermé, gardé quand l'en-tête est redessiné). */
+const convMenu = { open: false };
+
+function closeConvMenu(): void {
+  if (!convMenu.open) return;
+  convMenu.open = false;
+  renderChatHeader(activeConv());
+}
+
+function convHeaderMenu(conv: Conversation, title: HTMLElement, agent: HTMLElement): HTMLElement {
+  const item = (ico: IconName, label: string, action: string, run: () => void, cls = '') =>
     h(
       'button',
       {
-        class: 'btn ghost small',
-        title: 'Supprimer la discussion',
+        type: 'button',
+        role: 'menuitem',
+        class: cls,
+        'data-conv-action': action,
         onclick: () => {
-          if (confirm(`Supprimer la discussion « ${conv.title} » ?`)) void hub.deleteConversation(conv.id);
+          closeConvMenu();
+          run();
         },
       },
-      icon('trash'),
-    ),
+      icon(ico),
+      label,
+    );
+  // Met le texte en édition (titre ou agent) et le sélectionne.
+  const edit = (el: HTMLElement) => {
+    const live = document.querySelector<HTMLElement>(`#chat-header .${el.classList.contains('chat-title') ? 'chat-title' : 'agent-tag'}`) ?? el;
+    live.classList.add('editing');
+    live.addEventListener('blur', () => live.classList.remove('editing'), { once: true });
+    live.focus();
+    const range = document.createRange();
+    range.selectNodeContents(live);
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+  };
+  return h(
+    'div',
+    { class: 'conv-menu', role: 'menu' },
+    item('folder', 'Ouvrir le dossier', 'folder', () => void hub.openPath(conv.cwd)),
+    conv.knowledgeNote ? item('note', 'Ouvrir la note de la discussion', 'note', () => void openNoteIn(conv.knowledgeNoteBase ?? conv.knowledgeBaseId, conv.knowledgeNote!)) : null,
+    item('pencil', 'Renommer la discussion', 'rename', () => edit(title)),
+    item('robot', 'Renommer l’agent', 'agent', () => edit(agent)),
+    h('div', { class: 'conv-menu-sep' }),
+    item('trash', 'Supprimer la discussion', 'delete', () => {
+      if (confirm(`Supprimer la discussion « ${conv.title} » ?`)) void hub.deleteConversation(conv.id);
+    }, 'danger'),
   );
 }
 
@@ -3071,13 +3132,14 @@ function updateKnStatus(): void {
 // Liens [[Note]] / [[Note|libellé]] de l'aperçu : wikilinks.ts (balises retirées du texte placé dans l'attribut).
 
 /** En-tête de discussion : base de connaissances liée (sa note y est tenue à jour) + accès rapide à la note. */
-function convBaseSelect(conv: Conversation): HTMLElement {
+/** Base de la discussion ; withNote : bouton « note » à côté (l'en-tête le met dans son menu « ⋯ »). */
+function convBaseSelect(conv: Conversation, withNote = true): HTMLElement {
   const bases = state.kn.bases;
   const current = conv.knowledgeBaseId;
   const sel = h(
     'select',
     { class: 'conv-base-select', title: 'Base de connaissances liée à cette discussion (sa note y est créée et tenue à jour)' },
-    current ? null : h('option', { value: '', selected: true }, 'Base du dossier (auto)'),
+    current ? null : h('option', { value: '', selected: true }, 'Base du dossier'),
     ...bases.map((b) => h('option', { value: b.id, selected: b.id === current }, b.name)),
   );
   sel.addEventListener('change', async () => {
@@ -3089,7 +3151,7 @@ function convBaseSelect(conv: Conversation): HTMLElement {
     }
   });
   const wrap = h('span', { class: 'conv-base' }, iconSelect('books', sel));
-  if (conv.knowledgeNote) {
+  if (withNote && conv.knowledgeNote) {
     wrap.append(
       h(
         'button',
@@ -5121,6 +5183,13 @@ function bindShell(): void {
   $('usage-btn').addEventListener('click', (e) => {
     e.stopPropagation();
     toggleUsageMenu();
+  });
+  // Menu « ⋯ » de l'en-tête de discussion : fermé par un clic ailleurs ou Échap.
+  document.addEventListener('mousedown', (e) => {
+    if (convMenu.open && !(e.target as HTMLElement).closest('.conv-more')) closeConvMenu();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeConvMenu();
   });
   $('agents-btn').addEventListener('click', (e) => {
     e.stopPropagation();
