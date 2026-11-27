@@ -1923,7 +1923,7 @@ function renderMessages(conv: Conversation | undefined): void {
         'div',
         { class: 'empty' },
         h('h3', {}, 'Bienvenue dans le Hub IA'),
-        h('p', {}, 'Crée une discussion, puis choisis avec le bouton ', icon('robot'), ' (en bas à droite) les IA qui répondent : Claude Code, un modèle local Ollama, ou plusieurs à la fois. Chaque réponse devient une tâche que tu retrouves dans l’onglet Tâches.'),
+        h('p', {}, 'Crée une discussion, puis choisis sous la zone de saisie (nom de l’IA, en bas à droite) les IA qui répondent : Claude Code, un modèle local Ollama, ou plusieurs à la fois. Chaque réponse devient une tâche que tu retrouves dans l’onglet Tâches.'),
       ),
     );
     return;
@@ -1936,7 +1936,7 @@ function renderMessages(conv: Conversation | undefined): void {
         'div',
         { class: 'empty' },
         h('p', {}, `IA actives : ${names || 'aucune'}.`),
-        h('p', {}, 'Écris ton premier message ci-dessous. Le bouton ', icon('robot'), ' en bas à droite permet de changer les IA et leurs modèles ; si plusieurs sont cochées, elles répondent côte à côte et voient les réponses des autres.'),
+        h('p', {}, 'Écris ton premier message ci-dessous. Le nom de l’IA, en bas à droite sous la zone de saisie, permet de changer les IA et leurs modèles ; si plusieurs sont cochées, elles répondent côte à côte et voient les réponses des autres.'),
       ),
     );
     return;
@@ -1972,12 +1972,23 @@ function stickToBottom(): void {
 
 // ----- Menu de choix des IA -----
 
-/** Libellé du bouton IA (l'icône robot est ajoutée devant par renderComposer). */
+/** Modèle en court pour la ligne d'outils : « opus » → « Opus », « par défaut » → rien. */
+function shortModel(model?: string): string {
+  if (!model || model === 'default') return '';
+  const m = model.length > 18 ? `${model.slice(0, 17)}…` : model;
+  return /^[a-z]+$/.test(m) ? m[0].toUpperCase() + m.slice(1) : m;
+}
+
+/** Libellé du sélecteur d'IA (texte cliquable sous le champ) : « Claude · Opus » pour une IA, « Claude + Ollama » pour plusieurs. */
 function pickerLabel(conv: Conversation | undefined): string {
-  if (!conv) return '▾';
+  if (!conv) return 'IA';
   const parts = participantsOf(conv);
-  const names = parts.map((p) => shortName(p.providerId)).join(' · ');
-  return `${names.length > 22 ? `${parts.length} IA` : names || 'Aucune IA'} ▾`;
+  if (parts.length === 1) {
+    const model = shortModel(parts[0].model);
+    return model ? `${shortName(parts[0].providerId)} · ${model}` : shortName(parts[0].providerId);
+  }
+  const names = parts.map((p) => shortName(p.providerId)).join(' + ');
+  return names.length > 26 ? `${parts.length} IA` : names || 'Aucune IA';
 }
 
 async function setParticipants(conv: Conversation, next: Participant[]): Promise<void> {
@@ -2217,8 +2228,11 @@ function renderEffortPicker(conv: Conversation | undefined): void {
   }
   const current: ClaudeEffort = conv!.effort ?? 'default';
   const btn = $<HTMLButtonElement>('effort-btn');
-  btn.replaceChildren(iconText('bolt', `${EFFORT_INFO[current].short} ▾`));
+  // Texte seul dans la ligne d'outils (« Auto », « Élevé »…), comme le mode de Claude Desktop.
+  btn.textContent = EFFORT_INFO[current].short;
   btn.classList.toggle('active', current !== 'default');
+  btn.classList.toggle('open', effortUi.open);
+  btn.setAttribute('aria-expanded', String(effortUi.open));
   btn.title = `Effort de Claude : ${EFFORT_INFO[current].label} — ${EFFORT_INFO[current].desc}`;
   const menu = $('effort-menu');
   menu.classList.toggle('hidden', !effortUi.open);
@@ -2247,29 +2261,74 @@ function renderEffortPicker(conv: Conversation | undefined): void {
 function renderComposer(conv: Conversation | undefined): void {
   renderEffortPicker(conv);
   const running = conv ? runningTasksFor(conv.id).length > 0 : false;
+  // ■ dans le champ, à côté de la flèche : seulement pendant une réponse.
   $('stop-btn').classList.toggle('hidden', !running);
-  // Pendant une réponse, on peut quand même écrire : le message attend son tour (comme dans Claude Code).
+  // Pendant une réponse, on peut quand même écrire : la flèche met le message en attente (comme dans Claude Code).
   const send = $<HTMLButtonElement>('send-btn');
   send.disabled = !conv;
-  send.textContent = running ? 'Mettre en attente' : 'Envoyer';
-  send.title = running ? 'Une réponse est en cours : ce message sera envoyé automatiquement juste après' : '';
-  $<HTMLTextAreaElement>('prompt').disabled = !conv;
+  send.classList.toggle('queue', running);
+  send.setAttribute('aria-label', running ? 'Mettre en attente' : 'Envoyer');
+  send.title = running ? 'Mettre en attente (Entrée) : une réponse est en cours, ce message partira automatiquement juste après' : 'Envoyer (Entrée)';
+  const prompt = $<HTMLTextAreaElement>('prompt');
+  prompt.disabled = !conv;
+  prompt.placeholder = running
+    ? 'Réponse en cours… ton message sera mis en attente et partira juste après'
+    : 'Écris ton message… (Entrée pour envoyer, Maj+Entrée pour aller à la ligne)';
   renderQueueStrip(conv, running);
   renderBackgroundStrip(conv);
   renderPermissionStrip(conv);
   const picker = $<HTMLButtonElement>('ai-picker-btn');
-  picker.replaceChildren(iconText('robot', pickerLabel(conv)));
+  const label = pickerLabel(conv);
+  picker.textContent = label;
+  picker.title = conv ? `IA de cette discussion : ${label} — cliquer pour choisir` : 'Choisir les IA qui répondent dans cette discussion';
   picker.disabled = !conv;
+  // Base de connaissances : interrupteur du menu « + ».
   const kn = $<HTMLButtonElement>('kn-toggle');
   const on = !!conv?.useKnowledge;
   kn.disabled = !conv;
-  kn.classList.toggle('active', on);
+  setPlusSwitch(kn, on, on ? 'Activée : les IA consultent tes notes' : 'Désactivée');
   kn.title = on
     ? 'Base de connaissances ACTIVÉE : les IA de cette discussion consultent tes notes (cliquer pour désactiver)'
     : 'Base de connaissances désactivée : cliquer pour que les IA de cette discussion consultent tes notes';
   renderBgToggle(conv);
+  renderPlusButton(conv);
   renderAttachStrip();
   renderAiMenu();
+}
+
+/** Interrupteur d'une ligne du menu « + » (classe, aria-checked, petite ligne d'état). */
+function setPlusSwitch(btn: HTMLElement, on: boolean, stateText: string): void {
+  btn.classList.toggle('active', on);
+  btn.setAttribute('aria-checked', String(on));
+  const st = btn.querySelector('.pi-state');
+  if (st) st.textContent = stateText;
+}
+
+// ---------- Menu « + » de la zone de saisie (joindre, base de connaissances, fond transparent) ----------
+
+const plusUi = { open: false };
+
+/** Bouton « + » : pastille quand une option de la discussion est active, menu ouvert / fermé. */
+function renderPlusButton(conv: Conversation | undefined): void {
+  const btn = $<HTMLButtonElement>('plus-btn');
+  if (!conv) plusUi.open = false;
+  btn.disabled = !conv;
+  const kn = !!conv?.useKnowledge;
+  const bg = !!conv?.transparentBg && !$('bg-toggle').classList.contains('hidden');
+  btn.querySelector('.plus-dot')?.classList.toggle('hidden', !(kn || bg));
+  const actives = [kn ? 'base de connaissances activée' : '', bg ? 'fond transparent activé' : ''].filter(Boolean).join(', ');
+  const label = `Ajouter : fichiers, base de connaissances…${actives ? ` (${actives})` : ''}`;
+  btn.title = label;
+  btn.setAttribute('aria-label', label);
+  btn.classList.toggle('open', plusUi.open);
+  btn.setAttribute('aria-expanded', String(plusUi.open));
+  $('plus-menu').classList.toggle('hidden', !plusUi.open);
+}
+
+function setPlusMenu(open: boolean): void {
+  if (plusUi.open === open) return;
+  plusUi.open = open;
+  renderPlusButton(activeConv());
 }
 
 /** Demandes d'autorisation de Claude en attente (toutes discussions). */
@@ -2384,15 +2443,14 @@ function renderQueueStrip(conv: Conversation | undefined, running: boolean): voi
 /** IA qui produisent des images (le bouton ◩ et le détourage automatique les concernent). */
 const IMAGE_PROVIDER_IDS = ['comfyui'];
 
-/** Bouton ◩ du composer : fond transparent pour les images de cette discussion. */
+/** Interrupteur « Fond transparent » du menu « + » : images de cette discussion détourées (visible si ComfyUI participe). */
 function renderBgToggle(conv: Conversation | undefined): void {
   const btn = document.getElementById('bg-toggle') as HTMLButtonElement | null;
   if (!btn) return;
   const hasImages = !!conv && participantsOf(conv).some((p) => IMAGE_PROVIDER_IDS.includes(p.providerId));
   btn.classList.toggle('hidden', !hasImages);
   const on = !!conv?.transparentBg;
-  btn.classList.toggle('active', on);
-  btn.replaceChildren(icon('checker'), on ? ' Transparent' : '');
+  setPlusSwitch(btn, on, on ? 'Images générées détourées (PNG transparent)' : 'Images générées : désactivé');
   btn.title = on
     ? 'Fond transparent ACTIVÉ : chaque image générée est aussi détourée (PNG transparent, original conservé). Cliquer pour désactiver.'
     : 'Fond transparent : cliquer pour que les images générées soient aussi détourées (sujet isolé, PNG transparent)';
@@ -5979,15 +6037,29 @@ function bindUi(): void {
   initCutout({ hub, toast, getRoles: () => state.roles, imageProviders: () => IMAGE_PROVIDER_IDS });
   // Visionneuse d'images (clic sur une vignette) : bouton « Détourer » du module cutout repris dans sa barre.
   initImageViewer({ imgUrl, isCutout, cutoutButton, onHubEvent: (l) => hub.onEvent(l) });
-  // Bouton ◩ « Fond transparent » du composer (visible quand les images ComfyUI participent à la discussion).
-  const bgBtn = h('button', { type: 'button', id: 'bg-toggle', class: 'btn kn-toggle bg-toggle hidden' }, icon('checker'));
-  $('kn-toggle').after(bgBtn);
-  bgBtn.addEventListener('click', () => {
+  // « Fond transparent » du menu « + » (visible quand les images ComfyUI participent à la discussion).
+  $('bg-toggle').addEventListener('click', () => {
     const conv = activeConv();
     if (!conv) return;
     hub.updateConversation(conv.id, { transparentBg: !conv.transparentBg }).catch((err: any) => toast(err.message ?? String(err)));
   });
   attachMic($<HTMLButtonElement>('mic-btn'), () => ($<HTMLTextAreaElement>('prompt').disabled ? null : $<HTMLTextAreaElement>('prompt')));
+  // Chevron à côté du micro : réglages de la dictée (Réglages › Modules › Dictée vocale, options dépliées).
+  $('mic-opts-btn').addEventListener('click', () => openModuleCard('voice', true));
+  // Menu « + » : ouverture / fermeture (clic à l'extérieur, Échap) ; « Joindre » referme le menu (le sélecteur de
+  // fichiers est ouvert par attachments.ts), les interrupteurs le laissent ouvert pour voir le changement.
+  $('plus-btn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!activeConv()) return;
+    setPlusMenu(!plusUi.open);
+  });
+  $('attach-btn').addEventListener('click', () => setPlusMenu(false));
+  document.addEventListener('mousedown', (e) => {
+    if (plusUi.open && !(e.target as HTMLElement).closest('.plus-picker')) setPlusMenu(false);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && plusUi.open) setPlusMenu(false);
+  });
   document
     .querySelectorAll<HTMLButtonElement>('.tabs button[data-view]')
     .forEach((b) => b.addEventListener('click', () => setView(b.dataset.view as View)));

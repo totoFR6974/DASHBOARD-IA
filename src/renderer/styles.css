@@ -127,9 +127,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .reply-head { display: flex; gap: 6px; align-items: center; margin-bottom: 7px; font-size: 11px; }
 .reply-head .muted { font-size: 11px; }
 
-.composer { border-top: 1px solid var(--line); padding: 12px 18px; display: flex; gap: 10px; align-items: flex-end; }
-.composer textarea { flex: 1; resize: none; max-height: 240px; line-height: 1.45; }
-.composer-actions { display: flex; gap: 8px; align-items: center; }
+/* Zone de saisie : mise en page complète dans modules.css (« Zone de saisie façon Claude Desktop »). */
+.composer { padding: 12px 18px; }
 
 /* Menu de choix des IA */
 .ai-picker { position: relative; }
@@ -416,7 +415,6 @@ button.mic-btn .mic-ico, button.mic-btn.busy .mic-ico { display: inline-flex; }
 @keyframes indet { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
 
 /* ---------- Images jointes aux messages (📎, glisser-déposer, Ctrl+V) ---------- */
-.composer { flex-wrap: wrap; }
 .attach-strip { flex-basis: 100%; order: -1; display: flex; flex-direction: column; gap: 6px; }
 .attach-thumbs { display: flex; flex-wrap: wrap; gap: 8px; }
 .attach-item { position: relative; width: 72px; height: 72px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); overflow: hidden; }

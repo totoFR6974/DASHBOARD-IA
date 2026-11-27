@@ -30,8 +30,14 @@ export async function smokeAppearance(win: BrowserWindow, shot: (name: string) =
   const colors = () =>
     js(`(() => {
       const cs = (sel) => { const e = document.querySelector(sel); return e ? getComputedStyle(e) : null; };
+      // La flèche d'envoi est grisée tant que le champ est vide (comme Claude Desktop) : on mesure sa couleur avec du texte.
+      const p = document.getElementById('prompt');
+      const old = p ? p.value : '';
+      if (p) p.value = old || 'test';
+      const send = cs('#send-btn')?.backgroundImage;
+      if (p) p.value = old;
       return {
-        send: cs('#send-btn')?.backgroundImage,
+        send,
         newConv: cs('#new-conv-btn')?.backgroundImage,
         bubble: cs('.msg.user')?.backgroundImage,
         glow: cs('.glow.g1')?.backgroundImage,

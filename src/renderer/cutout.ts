@@ -248,7 +248,7 @@ export async function renderCutoutSettings(box: HTMLElement): Promise<void> {
     lab.append(cb, document.createTextNode(` ${role.name} : toujours détourer ses images (fond transparent, original conservé)`));
     lines.push(lab);
   }
-  lines.push(el('p', 'muted small', 'Dans une discussion avec les images (ComfyUI), le bouton « Transparent » (damier) du composer active le fond transparent ; sous chaque image, « Détourer » crée la version transparente.'));
+  lines.push(el('p', 'muted small', 'Dans une discussion avec les images (ComfyUI), « Fond transparent » dans le menu « + » de la zone de saisie active le fond transparent ; sous chaque image, « Détourer » crée la version transparente.'));
 
   box.replaceChildren(...lines);
 }

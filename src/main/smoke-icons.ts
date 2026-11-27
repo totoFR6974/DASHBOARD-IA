@@ -59,7 +59,7 @@ export async function smokeIcons(win: BrowserWindow, outDir: string, shot: (name
     writeFileSync(join(outDir, file), img.resize({ width: s.width * 2, height: s.height * 2, quality: 'good' }).toPNG());
   };
   await zoomShot('.topbar', 'icons-ui-barre-x2.png');
-  await zoomShot('.composer-actions', 'icons-ui-composer-x2.png');
+  await zoomShot('.composer-tools', 'icons-ui-composer-x2.png');
 
   await js(`(() => { const d = document.createElement('div'); d.innerHTML = ${JSON.stringify(html)}; document.body.append(d); })()`);
   await wait(600);

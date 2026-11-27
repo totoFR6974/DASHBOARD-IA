@@ -133,31 +133,59 @@
         <div class="chat">
           <div id="chat-header" class="chat-header"></div>
           <div id="messages" class="messages"></div>
+          <!-- Zone de saisie façon Claude Desktop : bandeaux au-dessus, un seul champ arrondi (envoi / arrêt intégrés à
+               droite), puis une ligne d'outils discrète (« + », dictée, avertissement, IA et effort). -->
           <form id="composer" class="composer">
-            <!-- Messages en attente (écrits pendant une réponse) : envoyés automatiquement, ou « Envoyer maintenant » -->
-            <!-- Claude demande l'autorisation d'une action (mode « Prudent » / « Modifs fichiers ») -->
-            <div id="perm-strip" class="perm-strip hidden"></div>
-            <div id="queue-strip" class="queue-strip hidden"></div>
-            <!-- Agents Claude lancés en arrière-plan (session persistante) : leur résultat arrivera dans la discussion -->
-            <div id="bg-agents-strip" class="bg-agents-strip hidden"></div>
-            <!-- Images jointes au prochain message (miniatures + avertissement si l'IA choisie ne voit pas les images) -->
-            <div id="attach-strip" class="attach-strip hidden"></div>
-            <input type="file" id="attach-input" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" multiple hidden />
-            <textarea id="prompt" rows="3" placeholder="Écris ton message… (Entrée pour envoyer, Maj+Entrée pour aller à la ligne)"></textarea>
-            <div class="composer-actions">
-              <button type="button" id="stop-btn" class="btn danger hidden">■ Arrêter</button>
-              <button type="button" id="attach-btn" class="btn attach-btn" title="Joindre une image (ou glisse-la ici, ou colle une capture avec Ctrl+V)"><span data-icon="clip"></span></button>
-              <button type="button" id="mic-btn" class="btn mic-btn" title="Dictée vocale (Ctrl+Maj+Espace)"><span data-icon="mic"></span></button>
-              <button type="button" id="kn-toggle" class="btn kn-toggle" title="Base de connaissances : désactivée"><span data-icon="books"></span></button>
-              <div class="effort-picker hidden" id="effort-picker">
-                <button type="button" id="effort-btn" class="btn" title="Niveau d'effort de Claude dans cette discussion"><span data-icon="bolt"></span> Auto ▾</button>
-                <div id="effort-menu" class="ai-menu effort-menu hidden"></div>
+            <div class="composer-inner">
+              <!-- Claude demande l'autorisation d'une action (mode « Prudent » / « Modifs fichiers ») -->
+              <div id="perm-strip" class="perm-strip hidden"></div>
+              <!-- Messages en attente (écrits pendant une réponse) : envoyés automatiquement, ou « Envoyer maintenant » -->
+              <div id="queue-strip" class="queue-strip hidden"></div>
+              <!-- Agents Claude lancés en arrière-plan (session persistante) : leur résultat arrivera dans la discussion -->
+              <div id="bg-agents-strip" class="bg-agents-strip hidden"></div>
+              <!-- Fichiers joints au prochain message (miniatures, puces + avertissement si l'IA choisie ne les lit pas) -->
+              <div id="attach-strip" class="attach-strip hidden"></div>
+              <input type="file" id="attach-input" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" multiple hidden />
+              <!-- Le champ : texte qui grandit avec le message ; à droite, ■ (pendant une réponse) et la flèche d'envoi -->
+              <div class="composer-field">
+                <textarea id="prompt" rows="2" aria-label="Message" placeholder="Écris ton message… (Entrée pour envoyer, Maj+Entrée pour aller à la ligne)"></textarea>
+                <div class="cf-actions">
+                  <button type="button" id="stop-btn" class="cf-btn cf-stop hidden" title="Arrêter la réponse en cours" aria-label="Arrêter la réponse en cours"><span data-icon="square" data-icon-size="12"></span></button>
+                  <button type="submit" id="send-btn" class="cf-btn cf-send" title="Envoyer (Entrée)" aria-label="Envoyer"><span data-icon="send" data-icon-size="17"></span><span class="cf-badge" aria-hidden="true"><span data-icon="hourglass" data-icon-size="10"></span></span></button>
+                </div>
               </div>
-              <div class="ai-picker">
-                <button type="button" id="ai-picker-btn" class="btn" title="Choisir les IA qui répondent dans cette discussion"><span data-icon="robot"></span> ▾</button>
-                <div id="ai-menu" class="ai-menu hidden"></div>
+              <!-- Ligne d'outils sous le champ -->
+              <div class="composer-tools">
+                <div class="ct-left">
+                  <!-- « + » : joindre des fichiers, base de connaissances, fond transparent (images) -->
+                  <div class="plus-picker">
+                    <button type="button" id="plus-btn" class="ct-btn ct-icon" title="Ajouter : fichiers, base de connaissances…" aria-label="Ajouter : fichiers, base de connaissances…" aria-haspopup="menu" aria-expanded="false"><span data-icon="plus" data-icon-size="16"></span><span class="plus-dot hidden" aria-hidden="true"></span></button>
+                    <div id="plus-menu" class="ai-menu plus-menu hidden" role="menu" aria-label="Ajouter">
+                      <button type="button" id="attach-btn" class="plus-item attach-btn" role="menuitem" title="Joindre des fichiers (ou glisse-les ici, ou colle-les avec Ctrl+V)"><span data-icon="clip" data-icon-size="17"></span><span class="pi-text"><b>Joindre des fichiers</b><small>Ou glisse-les ici, ou colle-les avec Ctrl+V</small></span></button>
+                      <button type="button" id="kn-toggle" class="plus-item" role="menuitemcheckbox" aria-checked="false" title="Base de connaissances : désactivée"><span data-icon="books" data-icon-size="17"></span><span class="pi-text"><b>Base de connaissances</b><small class="pi-state">Désactivée</small></span><span class="pi-switch" aria-hidden="true"></span></button>
+                      <button type="button" id="bg-toggle" class="plus-item bg-toggle hidden" role="menuitemcheckbox" aria-checked="false" title="Fond transparent pour les images générées"><span data-icon="checker" data-icon-size="17"></span><span class="pi-text"><b>Fond transparent</b><small class="pi-state">Images générées : désactivé</small></span><span class="pi-switch" aria-hidden="true"></span></button>
+                    </div>
+                  </div>
+                  <!-- Dictée vocale (Ctrl+Maj+Espace) + chevron vers ses réglages -->
+                  <div class="mic-group">
+                    <button type="button" id="mic-btn" class="ct-btn ct-icon mic-btn" aria-label="Dictée vocale" title="Dictée vocale (Ctrl+Maj+Espace)"><span data-icon="mic"></span></button>
+                    <button type="button" id="mic-opts-btn" class="ct-btn ct-chevron" title="Réglages de la dictée vocale" aria-label="Réglages de la dictée vocale"><span data-icon="chevron" data-icon-size="12"></span></button>
+                  </div>
+                </div>
+                <span class="ct-note" title="Les IA peuvent se tromper : vérifie les informations importantes.">Les IA peuvent se tromper : vérifie les infos importantes.</span>
+                <div class="ct-right">
+                  <!-- IA de la discussion (texte cliquable) -->
+                  <div class="ai-picker">
+                    <button type="button" id="ai-picker-btn" class="ct-btn ct-text" title="Choisir les IA qui répondent dans cette discussion" aria-haspopup="menu">Claude</button>
+                    <div id="ai-menu" class="ai-menu hidden"></div>
+                  </div>
+                  <!-- Effort de Claude (seulement quand Claude participe) -->
+                  <div class="effort-picker hidden" id="effort-picker">
+                    <button type="button" id="effort-btn" class="ct-btn ct-text" title="Niveau d'effort de Claude dans cette discussion" aria-haspopup="menu">Auto</button>
+                    <div id="effort-menu" class="ai-menu effort-menu hidden"></div>
+                  </div>
+                </div>
               </div>
-              <button type="submit" id="send-btn" class="btn primary">Envoyer</button>
             </div>
           </form>
         </div>

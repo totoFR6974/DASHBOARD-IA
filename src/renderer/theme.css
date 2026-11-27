@@ -282,8 +282,7 @@ input[type='checkbox'] { accent-color: var(--accent); }
 }
 .msg.assistant { background: rgba(255, 255, 255, 0.045); border-color: var(--line); border-radius: 16px 16px 16px 5px; box-shadow: var(--shadow); }
 .msg-body pre, .box { background: rgba(0, 0, 0, 0.32); border-color: var(--line); border-radius: 10px; }
-.composer { border-top: 1px solid var(--line); padding: 14px 18px; background: rgba(0, 0, 0, 0.12); }
-.composer textarea { background: rgba(0, 0, 0, 0.3); border-radius: 12px; padding: 11px 13px; }
+.composer { padding: 6px 18px 12px; }
 .ai-menu, .folder-menu {
   background: rgba(20, 22, 27, 0.92); border: 1px solid var(--line-strong); border-radius: 14px; backdrop-filter: blur(20px);
   box-shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.8); transform-origin: bottom right; animation: menuIn 0.22s var(--ease);
@@ -761,7 +760,8 @@ html[data-density='compact'] .messages { padding: 14px 16px; gap: 9px; }
 html[data-density='compact'] .turn, html[data-density='compact'] .replies { gap: 7px; }
 html[data-density='compact'] .msg.user { padding: 6px 11px; }
 html[data-density='compact'] .msg.assistant { padding: 7px 11px; }
-html[data-density='compact'] .composer { padding: 10px 14px; }
+html[data-density='compact'] .composer { padding: 4px 14px 8px; }
+html[data-density='compact'] .composer-field textarea { padding-top: 6px; padding-bottom: 6px; }
 html[data-density='compact'] .settings { gap: 10px; padding: 16px; }
 html[data-density='compact'] .settings fieldset { padding: 12px; gap: 9px; }
 html[data-density='compact'] .stat { padding: 8px 12px; }
@@ -777,7 +777,8 @@ html[data-density='airy'] .messages { padding: 30px 30px; gap: 22px; }
 html[data-density='airy'] .turn, html[data-density='airy'] .replies { gap: 14px; }
 html[data-density='airy'] .msg.user { padding: 12px 18px; }
 html[data-density='airy'] .msg.assistant { padding: 14px 18px; }
-html[data-density='airy'] .composer { padding: 18px 22px; }
+html[data-density='airy'] .composer { padding: 10px 22px 18px; }
+html[data-density='airy'] .composer-field textarea { padding-top: 11px; padding-bottom: 11px; }
 html[data-density='airy'] .settings { gap: 18px; }
 html[data-density='airy'] .settings fieldset { padding: 24px; gap: 16px; }
 html[data-density='airy'] .stat { padding: 15px 19px; }

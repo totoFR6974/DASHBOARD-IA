@@ -356,7 +356,7 @@ export async function smokeFakeClaude(win: BrowserWindow, outDir: string, shot: 
     const ui = await js(`(async () => {
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       await sleep(600);
-      const sendLabel = document.getElementById('send-btn')?.textContent;
+      const sendLabel = document.getElementById('send-btn')?.getAttribute('aria-label'); // flèche du champ : libellé accessible
       const strip = document.getElementById('queue-strip');
       const stripShown = !strip.classList.contains('hidden') && strip.textContent.includes('urgent');
       const pill = document.getElementById('agents-btn');
@@ -1107,6 +1107,186 @@ export async function smokeFakeClaude(win: BrowserWindow, outDir: string, shot: 
     const ui = await lastTurn('FC · annulation');
     check('G annulation : bulle « réponse annulée » avec le texte déjà reçu', /réponse annulée/.test(ui.text) && ui.text.includes(SIGNATURE), ui.text.slice(0, 200));
     await shot('fc-07-annulation');
+  }
+
+  // ---------- CP. Zone de saisie façon Claude Desktop ----------
+  // Champ unique (flèche d'envoi et ■ intégrés à droite), ligne d'outils dessous (« + », dictée, avertissement, IA, effort).
+  {
+    const c = await newConv('FC · zone de saisie');
+    await select('FC · zone de saisie');
+    await wait(300);
+    const crop = async (name: string) => {
+      const r = await js(`(() => { const b = document.getElementById('composer').getBoundingClientRect(); return { x: Math.max(0, Math.floor(b.x)), y: Math.max(0, Math.floor(b.y) - 340), width: Math.ceil(b.width), height: Math.ceil(b.height) + 340 }; })()`);
+      writeFileSync(join(outDir, `${name}-zoom.png`), (await win.webContents.capturePage(r)).toPNG());
+    };
+    /** Géométrie de la zone : tout doit tenir dans le champ / la ligne d'outils, sans chevauchement ni coupure. */
+    const layout = () =>
+      js(`(() => {
+        const $ = (id) => document.getElementById(id);
+        const r = (el) => { const b = el?.getBoundingClientRect(); return b && b.width ? { l: Math.round(b.left), r: Math.round(b.right), t: Math.round(b.top), b: Math.round(b.bottom), w: Math.round(b.width) } : null; };
+        const field = document.querySelector('.composer-field');
+        const tools = document.querySelector('.composer-tools');
+        const inner = document.querySelector('.composer-inner');
+        const left = document.querySelector('.ct-left'), note = document.querySelector('.ct-note'), right = document.querySelector('.ct-right');
+        const visible = (el) => !!el && el.getClientRects().length > 0;
+        // Texte coupé dans la ligne d'outils (le sélecteur d'IA est vérifié à part : il a le droit d'être tronqué « … » s'il est très long).
+        const clipped = [...document.querySelectorAll('.composer-tools button')].filter((b) => visible(b) && b.scrollWidth > b.clientWidth + 1 && b.id !== 'ai-picker-btn').map((b) => b.id || b.className);
+        const badgeEl = document.querySelector('#send-btn .cf-badge');
+        const pk = $('ai-picker-btn');
+        return {
+          vw: window.innerWidth, vh: window.innerHeight,
+          field: r(field), tools: r(tools), inner: r(inner), ta: r($('prompt')),
+          send: r($('send-btn')), stop: r($('stop-btn')), plus: r($('plus-btn')), mic: r($('mic-btn')), chevron: r($('mic-opts-btn')),
+          left: r(left), note: r(note), right: r(right), picker: r(pk), effort: r($('effort-btn')), badge: visible(badgeEl) ? r(badgeEl) : null,
+          sendInField: field.contains($('send-btn')), stopInField: field.contains($('stop-btn')),
+          plusInLeft: left.contains($('plus-btn')) && left.contains($('mic-btn')),
+          pickerInRight: right.contains(pk) && right.contains($('effort-btn')),
+          attachInMenu: $('plus-menu').contains($('attach-btn')) && $('plus-menu').contains($('kn-toggle')) && $('plus-menu').contains($('bg-toggle')),
+          noteText: note.textContent.trim(),
+          pickerText: pk.textContent.trim(), pickerFull: pk.scrollWidth <= pk.clientWidth + 1,
+          effortText: $('effort-btn').textContent.trim(), effortShown: visible($('effort-btn')),
+          stopShown: visible($('stop-btn')), sendLabel: $('send-btn').getAttribute('aria-label'), sendQueue: $('send-btn').classList.contains('queue'),
+          labels: ['send-btn', 'stop-btn', 'plus-btn', 'mic-btn', 'mic-opts-btn'].filter((id) => !$(id).getAttribute('aria-label') || !$(id).title),
+          clipped,
+        };
+      })()`);
+    /** Rien ne déborde ni ne se chevauche (ligne d'outils : gauche | texte | droite, tout dans la largeur du champ). */
+    const tidy = (g: any) =>
+      !!g.field && !!g.tools && g.field.r <= g.vw && g.tools.r <= g.inner.r + 1 && g.tools.l >= g.inner.l - 1 && g.tools.t >= g.field.b - 1 &&
+      g.left.r <= g.note.l + 1 && g.note.r <= g.right.l + 1 && g.right.r <= g.field.r + 1 && g.send.r <= g.field.r && g.send.l > g.ta.r - 2 &&
+      g.field.b <= g.vh && g.tools.b <= g.vh && g.clipped.length === 0 &&
+      (!g.stop || (g.stop.l >= g.ta.r - 2 && g.stop.r <= g.send.l)) && (!g.badge || (g.badge.r <= g.field.r && g.badge.t >= g.field.t));
+
+    const g0 = await layout();
+    check('CP repos : flèche d’envoi DANS le champ, à droite du texte', g0.sendInField && g0.send.l >= g0.ta.r - 2 && g0.send.r <= g0.field.r, { send: g0.send, ta: g0.ta, field: g0.field });
+    check('CP repos : ■ Arrêter dans le champ mais caché hors réponse', g0.stopInField && !g0.stopShown && g0.sendLabel === 'Envoyer', g0);
+    check('CP repos : champ plus haut qu’une ligne', g0.ta.b - g0.ta.t >= 44, g0.ta);
+    check('CP ligne d’outils sous le champ : « + » et micro à gauche, IA et effort à droite', g0.plusInLeft && g0.pickerInRight && g0.tools.t >= g0.field.b - 1 && g0.plus.l < g0.note.l && g0.picker.l > g0.note.r - 1, { plus: g0.plus, note: g0.note, picker: g0.picker });
+    check('CP texte central gris', /se tromper/.test(g0.noteText) && g0.note.l > g0.left.r - 1 && g0.note.r < g0.right.l + 1, g0.noteText);
+    check('CP sélecteur d’IA en texte (« Claude… ») et effort (« Auto ») visibles avec Claude', /^Claude/.test(g0.pickerText) && g0.pickerFull && g0.effortShown && g0.effortText === 'Auto', { picker: g0.pickerText, effort: g0.effortText });
+    check('CP boutons icônes : infobulle + aria-label', g0.labels.length === 0, g0.labels);
+    check('CP Joindre / Base de connaissances / Fond transparent rangés dans le menu « + »', g0.attachInMenu);
+    check('CP repos (1400 px) : rien ne déborde, ne se chevauche ni n’est coupé', tidy(g0), g0);
+    await shot('saisie-repos');
+    await crop('saisie-repos');
+
+    // Menu « + » : Joindre, Base de connaissances (l'activation se reflète dans le menu, la pastille et la base).
+    const plus = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const $ = (id) => document.getElementById(id);
+      $('plus-btn').click();
+      await sleep(300);
+      const menu = $('plus-menu');
+      const open = !menu.classList.contains('hidden') && $('plus-btn').getAttribute('aria-expanded') === 'true';
+      const items = [...menu.querySelectorAll('.plus-item')].filter((b) => b.getClientRects().length).map((b) => b.querySelector('b')?.textContent);
+      const mr = menu.getBoundingClientRect();
+      const inWindow = mr.left >= 0 && mr.top >= 0 && mr.right <= window.innerWidth && mr.bottom <= window.innerHeight;
+      $('kn-toggle').click();
+      await sleep(700);
+      const conv = (await window.hub.listConversations()).find((c) => c.id === ${JSON.stringify(c.id)});
+      return {
+        open, items, inWindow,
+        stillOpen: !menu.classList.contains('hidden'),
+        saved: conv?.useKnowledge === true,
+        active: $('kn-toggle').classList.contains('active') && $('kn-toggle').getAttribute('aria-checked') === 'true',
+        state: $('kn-toggle').querySelector('.pi-state')?.textContent,
+        dot: !$('plus-btn').querySelector('.plus-dot').classList.contains('hidden'),
+        plusTitle: $('plus-btn').title,
+      };
+    })()`);
+    check('CP menu « + » ouvert (dans la fenêtre) : Joindre des fichiers + Base de connaissances', plus.open && plus.inWindow && plus.items.some((t: string) => /Joindre/.test(t)) && plus.items.some((t: string) => /Base de connaissances/.test(t)), plus);
+    check('CP base de connaissances activée depuis le menu : enregistrée, interrupteur, pastille sur le « + »', plus.saved && plus.active && plus.dot && /Activée/.test(plus.state) && /activée/.test(plus.plusTitle) && plus.stillOpen, plus);
+    await shot('saisie-menu-plus');
+    await crop('saisie-menu-plus');
+    const plusOff = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const $ = (id) => document.getElementById(id);
+      $('kn-toggle').click();
+      await sleep(700);
+      const conv = (await window.hub.listConversations()).find((c) => c.id === ${JSON.stringify(c.id)});
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      await sleep(250);
+      return { off: conv?.useKnowledge === false && !$('kn-toggle').classList.contains('active'), dot: !$('plus-btn').querySelector('.plus-dot').classList.contains('hidden'), closed: $('plus-menu').classList.contains('hidden') };
+    })()`);
+    check('CP base de connaissances désactivée, pastille retirée, Échap referme le menu « + »', plusOff.off && !plusOff.dot && plusOff.closed, plusOff);
+
+    // Sélecteurs à droite : IA puis effort, chacun ouvre son menu existant.
+    const pick = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const $ = (id) => document.getElementById(id);
+      $('ai-picker-btn').click();
+      await sleep(300);
+      const ai = !$('ai-menu').classList.contains('hidden') && document.querySelectorAll('#ai-menu .ai-check').length > 0;
+      const am = $('ai-menu').getBoundingClientRect();
+      const aiIn = am.left >= 0 && am.top >= 0 && am.right <= window.innerWidth;
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      await sleep(250);
+      const aiClosed = $('ai-menu').classList.contains('hidden');
+      $('effort-btn').click();
+      await sleep(300);
+      const effort = !$('effort-menu').classList.contains('hidden') && document.querySelectorAll('#effort-menu .effort-row').length === 6;
+      const em = $('effort-menu').getBoundingClientRect();
+      const effortIn = em.left >= 0 && em.top >= 0 && em.right <= window.innerWidth;
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      await sleep(250);
+      return { ai, aiIn, aiClosed, effort, effortIn, effortClosed: $('effort-menu').classList.contains('hidden') };
+    })()`);
+    check('CP sélecteur d’IA (à droite) : ouvre le menu des IA, Échap le referme', pick.ai && pick.aiIn && pick.aiClosed, pick);
+    check('CP effort (à droite) : ouvre le menu d’effort (6 niveaux), Échap le referme', pick.effort && pick.effortIn && pick.effortClosed, pick);
+
+    // Maj+Entrée ne part pas ; Entrée envoie (vraie touche dans le champ) → réponse en cours : ■ visible + flèche « en attente ».
+    const keys = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const p = document.getElementById('prompt');
+      p.focus();
+      p.value = '[fake:long] zone de saisie : Entrée envoie';
+      p.dispatchEvent(new Event('input'));
+      p.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true, cancelable: true }));
+      await sleep(400);
+      const keptAfterShift = p.value.includes('Entrée envoie');
+      p.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      await sleep(900);
+      return { keptAfterShift, cleared: p.value === '' };
+    })()`);
+    let running: any;
+    for (let i = 0; i < 40; i++) {
+      await wait(250);
+      running = await layout();
+      if (running.stopShown) break;
+    }
+    const sentConv = await conv(c.id);
+    const userMsg = (sentConv?.messages ?? []).filter((m: any) => m.role === 'user').pop();
+    check('CP Maj+Entrée n’envoie pas, Entrée envoie (champ vidé, message dans la discussion)', keys.keptAfterShift && keys.cleared && /Entrée envoie/.test(userMsg?.text ?? userMsg?.content ?? ''), { keys, user: userMsg?.text ?? userMsg?.content });
+    check('CP réponse en cours : ■ visible dans le champ, à gauche de la flèche « Mettre en attente »', running.stopShown && running.stopInField && running.stop.r <= running.send.l && running.sendQueue && running.sendLabel === 'Mettre en attente', running);
+    check('CP réponse en cours : sablier « en attente » sur la flèche, dans le champ', !!running.badge && running.badge.r <= running.field.r && running.badge.t >= running.field.t, running.badge);
+    check('CP réponse en cours : rien ne déborde ni ne se chevauche', tidy(running), running);
+    await wait(500);
+    await shot('saisie-reponse');
+    await crop('saisie-reponse');
+
+    // Largeur 1280 px (réponse toujours en cours) : la ligne d'outils tient, rien n'est coupé.
+    const size = win.getSize();
+    win.setSize(1280, size[1]);
+    await wait(700);
+    const g1280 = await layout();
+    // (fenêtre sans cadre : innerWidth = largeur de la fenêtre + ~16 px, comme 1400 → 1416 plus haut)
+    check('CP 1280 px : champ et ligne d’outils sans débordement ni chevauchement', win.getSize()[0] === 1280 && g1280.vw < g0.vw && tidy(g1280) && g1280.pickerFull, { fenetre: win.getSize()[0], ...g1280 });
+    await shot('saisie-reponse-1280');
+    await js(`(async () => { document.getElementById('plus-btn').click(); await new Promise((r) => setTimeout(r, 300)); })()`);
+    const menu1280 = await js(`(() => { const m = document.getElementById('plus-menu').getBoundingClientRect(); return { l: m.left, t: m.top, r: m.right, vw: window.innerWidth, open: !document.getElementById('plus-menu').classList.contains('hidden') }; })()`);
+    check('CP 1280 px : menu « + » entièrement visible', menu1280.open && menu1280.l >= 0 && menu1280.t >= 0 && menu1280.r <= menu1280.vw, menu1280);
+    await shot('saisie-menu-plus-1280');
+    await js(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))`);
+
+    // ■ arrête vraiment la réponse ; il disparaît ensuite et la flèche redevient « Envoyer ».
+    const runningTask = (await tasks()).find((t) => t.conversationId === c.id && (t.status === 'running' || t.status === 'queued'));
+    await js(`document.getElementById('stop-btn').click()`);
+    const [stopped] = runningTask ? await waitDone([runningTask.id], 30) : [undefined];
+    await wait(500);
+    const after = await layout();
+    check('CP ■ arrête la réponse (tâche annulée), puis disparaît ; flèche « Envoyer »', stopped?.status === 'cancelled' && !after.stopShown && after.sendLabel === 'Envoyer' && !after.sendQueue, { status: stopped?.status, stopShown: after.stopShown, send: after.sendLabel });
+    win.setSize(size[0], size[1]);
+    await wait(500);
   }
 
   // ---------- Bilan : aucun faux Claude encore vivant ----------

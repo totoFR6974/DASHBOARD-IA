@@ -49,7 +49,11 @@ export type IconName =
   | 'eye'
   | 'palette'
   | 'terminal'
-  | 'pin';
+  | 'pin'
+  | 'plus'
+  | 'send'
+  | 'chevron'
+  | 'square';
 
 const FILL = 'var(--icon-fill, #4f5257)';
 const FILL_ROBOT = 'var(--icon-fill-robot, #5e6166)';
@@ -210,6 +214,14 @@ const SHAPES: Record<IconName, string> = {
     `<circle ${ink} cx="17.2" cy="9.6" r="1.35"/>`,
   ].join(''),
   cube: ['<path d="M12 2.8 20 7.2v9.6L12 21.2 4 16.8V7.2z"/>', `<path ${line} d="M4.2 7.3 12 11.6l7.8-4.3M12 11.6v9.4"/>`].join(''),
+  // Plus (menu « Ajouter » de la zone de saisie) : deux traits épais arrondis.
+  plus: `<path ${line} d="M12 4.6v14.8M4.6 12h14.8"/>`,
+  // Flèche vers le haut (bouton d'envoi intégré au champ de saisie).
+  send: `<path ${line} d="M12 19.4V5.2M5.8 11.2 12 5l6.2 6.2"/>`,
+  // Petit chevron vers le bas (ouvre des réglages ou un menu).
+  chevron: `<path ${line} d="M6.4 9.4 12 15l5.6-5.6"/>`,
+  // Carré plein arrondi (arrêter la réponse en cours).
+  square: '<rect x="5.4" y="5.4" width="13.2" height="13.2" rx="2.6"/>',
 };
 
 /** Épaisseur du contour (unités du viewBox 24) : ≈ 7 % de l'icône, au moins ~1,2 px à l'écran en petit. */
