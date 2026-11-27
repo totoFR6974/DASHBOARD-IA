@@ -315,6 +315,74 @@ export async function smokeFakeClaude(win: BrowserWindow, outDir: string, shot: 
     await js(`window.hub.setActiveFolder('')`);
   }
 
+  // ---------- Q. File d'attente des messages + panneau « Agents en cours » ----------
+  {
+    const qc = await newConv('FC · file d’attente');
+    const convTasks = async () => (await tasks()).filter((t) => t.conversationId === qc.id);
+    // Q1. Message écrit pendant une réponse : mis en attente, puis envoyé tout seul à la fin.
+    const first = await send(qc.id, '[fake:simple] premier message');
+    const queued = await send(qc.id, 'deuxième message, écrit pendant la réponse');
+    const q1 = await conv(qc.id);
+    check('Q1 file : message envoyé pendant une réponse = mis en attente', first.length === 1 && queued.length === 0 && q1?.queue?.length === 1, { first, queued, queue: q1?.queue });
+    await waitDone(first);
+    let all: any[] = [];
+    for (let i = 0; i < 60; i++) {
+      all = await convTasks();
+      if (all.length >= 2 && all.every((t) => t.status !== 'running' && t.status !== 'queued')) break;
+      await wait(500);
+    }
+    await wait(400);
+    const q1b = await conv(qc.id);
+    check(
+      'Q1 file : envoyé automatiquement à la fin de la réponse, file vide',
+      all.length === 2 && all.every((t) => t.status === 'done') && !q1b?.queue?.length && q1b?.messages?.some((m: any) => m.role === 'user' && m.content === 'deuxième message, écrit pendant la réponse'),
+      { tasks: all.map((t) => `${t.title}:${t.status}`), queue: q1b?.queue },
+    );
+
+    // Q2. Longue réponse : bouton « Mettre en attente », panneau des agents, puis « Envoyer maintenant » par l'interface.
+    const long = await send(qc.id, '[fake:long] réponse très longue');
+    await send(qc.id, '[fake:simple] urgent');
+    await select('FC · file d’attente');
+    const ui = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      await sleep(600);
+      const sendLabel = document.getElementById('send-btn')?.textContent;
+      const strip = document.getElementById('queue-strip');
+      const stripShown = !strip.classList.contains('hidden') && strip.textContent.includes('urgent');
+      const pill = document.getElementById('agents-btn');
+      const pillShown = !pill.classList.contains('hidden') && /en cours/.test(pill.textContent);
+      pill.click();
+      await sleep(300);
+      const rows = document.querySelectorAll('#agents-menu .agents-row').length;
+      const rowText = document.querySelector('#agents-menu .agents-row')?.textContent ?? '';
+      return { sendLabel, stripShown, pillShown, rows, rowText: rowText.slice(0, 160) };
+    })()`);
+    await shot('fc-q-agents-en-cours');
+    await js(`document.getElementById('agents-btn').click()`);
+    await wait(300);
+    await shot('fc-q-file-attente');
+    await js(`[...document.querySelectorAll('#queue-strip button')].find((b) => b.textContent.includes('Envoyer maintenant'))?.click()`);
+    check('Q2 interface : « Mettre en attente » pendant la réponse, file affichée au-dessus de la saisie', ui?.sendLabel === 'Mettre en attente' && ui?.stripShown === true, ui);
+    check('Q2 agents en cours : pastille dans la barre du haut, panneau qui liste l’agent et sa discussion', ui?.pillShown === true && ui?.rows >= 1 && /FC · file d’attente/.test(ui?.rowText ?? ''), ui);
+    let after: any[] = [];
+    for (let i = 0; i < 60; i++) {
+      after = await convTasks();
+      if (after.length >= 4 && after.every((t) => t.status !== 'running' && t.status !== 'queued')) break;
+      await wait(500);
+    }
+    await wait(400);
+    const longTask = after.find((t) => t.id === long[0]);
+    const urgent = after.find((t) => /urgent/.test(t.prompt ?? t.title));
+    const q2 = await conv(qc.id);
+    check(
+      'Q2 « Envoyer maintenant » : longue réponse arrêtée, message urgent envoyé et répondu, file vide',
+      longTask?.status === 'cancelled' && urgent?.status === 'done' && !q2?.queue?.length,
+      { long: longTask?.status, urgent: urgent?.status, queue: q2?.queue, tasks: after.map((t) => `${t.title}:${t.status}`) },
+    );
+    const pillAfter = await js(`document.getElementById('agents-btn').classList.contains('hidden')`);
+    check('Q2 agents en cours : pastille masquée quand plus rien ne tourne', pillAfter === true || (await tasks()).some((t) => t.status === 'running'), pillAfter);
+  }
+
   // ---------- C. chercher_notes appelé par Claude (MCP réel) ----------
   {
     await js(`window.hub.writeNote('Cuisine/tarte-aux-pommes.md', '# Tarte aux pommes\\n\\nPour la tarte, prendre des pommes Boskoop ou Reine des reinettes : elles tiennent à la cuisson.\\n')`);

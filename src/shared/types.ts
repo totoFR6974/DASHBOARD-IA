@@ -384,6 +384,17 @@ export interface Participant {
   model?: string;
 }
 
+/** Message en file d'attente d'une discussion (envoyé quand la réponse en cours se termine). */
+export interface QueuedMessage {
+  id: string;
+  text: string;
+  /** Pièces jointes (chemins des copies du hub). */
+  images: string[];
+  at: number;
+  /** Dernier envoi automatique raté (le message reste dans la file). */
+  error?: string;
+}
+
 export interface Conversation {
   id: string;
   title: string;
@@ -403,6 +414,8 @@ export interface Conversation {
   claudeForkPending?: boolean;
   /** Session Claude Code d'origine (« Récupérer ici » depuis l'onglet Claude Code) : relie la session à cette discussion. */
   claudeOrigin?: string;
+  /** Messages en attente (écrits pendant une réponse) : envoyés un par un dès que la discussion est libre. */
+  queue?: QueuedMessage[];
   messages: ChatMessage[];
   /** Les IA de la discussion peuvent consulter la base de connaissances. */
   useKnowledge?: boolean;
@@ -1081,6 +1094,10 @@ export interface HubApi {
   /** Crée une discussion du hub qui reprend cette session (claude --resume). */
   /** 'fork' (défaut) = copie indépendante (nouvelle session) ; 'resume' = même session (à ne plus utiliser ailleurs). */
   continueClaudeSession(id: string, mode?: 'resume' | 'fork'): Promise<Conversation>;
+  /** File d'attente : retire un message en attente (renvoie son texte et ses pièces jointes, pour le modifier). */
+  removeQueuedMessage(conversationId: string, id: string): Promise<QueuedMessage | null>;
+  /** File d'attente : arrête la réponse en cours et envoie CE message tout de suite. */
+  sendQueuedNow(conversationId: string, id: string): Promise<Task[]>;
   /** Copie les sessions dans les archives du hub et les masque de la liste (rien ne change dans ~/.claude). */
   archiveClaudeSessions(ids: string[]): Promise<ClaudeArchiveResult>;
   /** Remet les sessions dans la liste ; la copie archivée est conservée. */
@@ -1282,6 +1299,8 @@ export const HUB_METHODS = [
   'listClaudeSessions',
   'readClaudeSession',
   'continueClaudeSession',
+  'removeQueuedMessage',
+  'sendQueuedNow',
   'archiveClaudeSessions',
   'unarchiveClaudeSessions',
   'deleteClaudeArchive',

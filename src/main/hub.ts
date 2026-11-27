@@ -49,7 +49,7 @@ import { caseInsensitiveFs } from './platform';
 import { isRealPathInside } from './path-guard';
 import { isVoiceModel, isVoiceVariant, VoiceModels } from './voice';
 import { Cutout, isCutoutPath, isCutoutVariant, wantsTransparent } from './cutout';
-import type { CutoutStatus, CutoutVariant } from '../shared/types';
+import type { CutoutStatus, CutoutVariant, QueuedMessage } from '../shared/types';
 import { ClaudeLogs } from './claude-logs';
 import { checkClaudePath } from './claude-launch';
 import { Setup } from './setup';
@@ -154,6 +154,8 @@ const MAX_TASKS = 2000;
 /** Délégation entre agents (outil MCP demander_a). */
 const MAX_PARALLEL_DELEGATIONS = 3;
 const DELEGATION_TIMEOUT_MS = 15 * 60 * 1000;
+/** Messages en attente au plus par discussion. */
+const MAX_QUEUED_MESSAGES = 20;
 /** « Récupérer ici » : derniers messages d'une session Claude Code repris dans la discussion. */
 const IMPORTED_HISTORY_MAX = 200;
 /** Taille maximale d'un message repris (une réponse très longue est tronquée à l'affichage). */
@@ -1065,6 +1067,11 @@ export class Hub {
         this.countUsage(task, true);
         this.db.save();
         this.emit({ type: 'task', task });
+        // Message suivant de la file d'attente (après que la réponse a été enregistrée dans la discussion).
+        if (task.conversationId) {
+          const convId = task.conversationId;
+          setTimeout(() => this.drainQueue(convId, task), 0);
+        }
         return task;
       });
   }
@@ -1780,6 +1787,52 @@ export class Hub {
     return `Contexte — ta session précédente de cette discussion est introuvable ; voici les échanges déjà eus (tes réponses comprises) :\n\n${transcript}\n\n---\nNouveau message de l'utilisateur :\n${text}`;
   }
 
+  /** Une réponse (tâche d'une IA de la discussion) est en cours. */
+  private convBusy(conversationId: string): boolean {
+    return this.db.data.tasks.some((t) => t.conversationId === conversationId && this.running.has(t.id));
+  }
+
+  /**
+   * Après une réponse : envoie le 1er message en attente si la discussion est libre. File EN PAUSE si la réponse
+   * a été arrêtée (bouton Arrêter) : l'utilisateur reprend la main (« Envoyer maintenant » ou nouveau message).
+   */
+  private drainQueue(conversationId: string, finished: Task): void {
+    const conv = this.db.data.conversations.find((c) => c.id === conversationId);
+    if (!conv?.queue?.length || this.convBusy(conv.id)) return;
+    const turn = finished.turnId ? this.db.data.tasks.filter((t) => t.turnId === finished.turnId) : [finished];
+    if (turn.some((t) => t.status === 'cancelled')) return;
+    const next = conv.queue.shift()!;
+    this.sendMessage(conv.id, next.text, next.images).catch((err: Error) => {
+      // Échec (IA indisponible…) : le message reprend sa place en tête de file, avec la raison.
+      (conv.queue ??= []).unshift({ ...next, error: err.message });
+      this.db.save();
+      this.emit({ type: 'conversation', conversation: conv });
+    });
+  }
+
+  removeQueuedMessage(conversationId: string, id: string): QueuedMessage | null {
+    const conv = this.conversation(conversationId);
+    const i = conv.queue?.findIndex((q) => q.id === id) ?? -1;
+    if (i < 0) return null;
+    const [item] = conv.queue!.splice(i, 1);
+    this.db.save();
+    this.emit({ type: 'conversation', conversation: conv });
+    return item;
+  }
+
+  /** « Envoyer maintenant » : arrête la réponse en cours (et ses sous-tâches), puis envoie ce message. */
+  async sendQueuedNow(conversationId: string, id: string): Promise<Task[]> {
+    const conv = this.conversation(conversationId);
+    const item = conv.queue?.find((q) => q.id === id);
+    if (!item) throw new Error('Ce message n’est plus en attente');
+    const running = this.db.data.tasks.filter((t) => t.conversationId === conv.id && this.running.has(t.id));
+    for (const t of running) this.cancelTask(t.id);
+    for (let i = 0; i < 150 && this.convBusy(conv.id); i++) await new Promise((r) => setTimeout(r, 100));
+    if (this.convBusy(conv.id)) throw new Error('La réponse en cours ne s’arrête pas : réessaie dans un instant');
+    this.removeQueuedMessage(conv.id, id);
+    return this.sendMessage(conv.id, item.text, item.images);
+  }
+
   /** Envoie un message dans une discussion : une tâche par IA cochée, exécutées en parallèle. */
   async sendMessage(conversationId: string, text: string, images: string[] = []): Promise<Task[]> {
     // Pièces jointes : uniquement des fichiers enregistrés par saveAttachment (10 au plus, dont 6 images au plus).
@@ -1793,8 +1846,15 @@ export class Hub {
     // Pièce jointe seule : on demande une description / un résumé (le message affiché reste vide, seules les pièces jointes apparaissent).
     const prompt = typed || (attached.length && !files.length ? 'Décris cette image.' : all.length > 1 ? 'Résume ces fichiers joints.' : 'Résume ce fichier joint.');
     const conv = this.conversation(conversationId);
-    if (this.db.data.tasks.some((t) => t.conversationId === conv.id && this.running.has(t.id))) {
-      throw new Error('Une réponse est déjà en cours dans cette discussion');
+    if (this.convBusy(conv.id)) {
+      // Réponse en cours : le message attend son tour (envoyé automatiquement quand la discussion est libre).
+      const queue = (conv.queue ??= []);
+      if (queue.length >= MAX_QUEUED_MESSAGES) throw new Error(`${MAX_QUEUED_MESSAGES} messages en attente au maximum`);
+      queue.push({ id: randomUUID(), text: typed, images: all, at: Date.now() });
+      conv.updatedAt = Date.now();
+      this.db.save();
+      this.emit({ type: 'conversation', conversation: conv });
+      return [];
     }
     const infos = await this.listProviders();
     const plan = conv.participants.map((p) => ({ p, info: infos.find((i) => i.id === p.providerId) }));

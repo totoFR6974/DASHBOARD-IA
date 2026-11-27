@@ -104,3 +104,10 @@ Cas où l'installation automatique est refusée (bouton « Télécharger » manu
 - [ ] Un dossier précis choisi en haut : la discussion récupérée apparaît quand même dans la colonne de gauche (le hub passe sur son dossier ou « Tous les dossiers »)
 - [ ] Quitter la discussion puis revenir, et après redémarrage du hub : elle est toujours dans la liste
 - [ ] Retour dans l'onglet Claude Code : la session porte « 💬 dans le hub » et « Ouvrir la discussion » y ramène (pas de doublon)
+
+## 12. File d'attente, agents en cours, filtre de dossier (alpha.15)
+- [ ] Pendant une réponse : le bouton devient « Mettre en attente » ; le message apparaît au-dessus de la zone de saisie et part tout seul à la fin de la réponse
+- [ ] « ↑ Envoyer maintenant » : la réponse en cours s'arrête et le message part tout de suite ; « ✎ » le remet dans la zone de saisie ; « ✕ » le retire
+- [ ] « Arrêter » une réponse avec des messages en attente : la file se met en pause (rien ne part tout seul)
+- [ ] Barre du haut : « N agents en cours » dès qu'une tâche tourne ; le panneau liste chaque agent (discussion, délégation, workflow), « Ouvrir » et « Arrêter »
+- [ ] Un dossier choisi en haut : la liste des discussions affiche « 📁 <dossier> · N autres masquées » avec « Tout afficher »

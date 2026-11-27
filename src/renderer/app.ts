@@ -16,6 +16,7 @@ import { initMobileSettings, refreshMobileSettings } from './mobile-settings';
 import type {
   AgentRole,
   ChatMessage,
+  QueuedMessage,
   ClaudePermission,
   RunStatus,
   StepStatus,
@@ -403,6 +404,93 @@ function renderPills(): void {
   badge.textContent = String(running);
   badge.classList.toggle('hidden', running === 0);
   renderWfBadge();
+  renderAgentsPill();
+}
+
+// ---------- Agents en cours (barre du haut) ----------
+
+const agentsUi = { open: false };
+
+/** Tâches qui tournent (discussions, sous-tâches déléguées, étapes de workflow), les plus anciennes d'abord. */
+function runningAgents(): Task[] {
+  return [...state.tasks.values()].filter((t) => t.status === 'running' || t.status === 'queued').sort((a, b) => (a.startedAt ?? a.createdAt) - (b.startedAt ?? b.createdAt));
+}
+
+function renderAgentsPill(): void {
+  const list = runningAgents();
+  const btn = $('agents-btn');
+  btn.classList.toggle('hidden', list.length === 0);
+  btn.replaceChildren(h('span', { class: 'spinner' }), `${list.length} agent${list.length > 1 ? 's' : ''} en cours`);
+  if (agentsUi.open) {
+    if (list.length) renderAgentsMenu();
+    else toggleAgentsMenu(false);
+  }
+}
+
+/** Où tourne la tâche : discussion, délégation (par quel agent) ou workflow. */
+function agentWhere(t: Task): string {
+  const parent = t.parentTaskId ? state.tasks.get(t.parentTaskId) : undefined;
+  if (parent) return `délégué par ${parent.agent}`;
+  if (t.workflowRunId) return `workflow « ${state.workflows.find((r) => r.id === t.workflowRunId)?.title ?? '…'} »`;
+  const conv = t.conversationId ? state.conversations.find((c) => c.id === t.conversationId) : undefined;
+  return conv ? `discussion « ${conv.title} »` : '';
+}
+
+function renderAgentsMenu(): void {
+  const list = runningAgents();
+  const open = (t: Task) => {
+    toggleAgentsMenu(false);
+    const conv = t.conversationId ? state.conversations.find((c) => c.id === t.conversationId) : undefined;
+    if (conv && !t.parentTaskId) return void showConversation(conv);
+    setView('tasks');
+    selectTask(t.id);
+  };
+  $('agents-menu').replaceChildren(
+    h('div', { class: 'usage-title' }, `Agents en cours (${list.length})`),
+    h(
+      'div',
+      { class: 'agents-rows' },
+      ...list.map((t) => {
+        const last = t.activity[t.activity.length - 1]?.text;
+        return h(
+          'div',
+          { class: `agents-row ${t.parentTaskId ? 'child' : ''}` },
+          h(
+            'div',
+            { class: 'agents-row-top' },
+            h('span', { class: 'spinner' }),
+            h('b', {}, t.agent),
+            providerTag(t.providerId),
+            h('span', { class: 'agents-time' }, fmtDuration(Date.now() - (t.startedAt ?? t.createdAt))),
+          ),
+          h('div', { class: 'agents-title', title: t.title }, t.title),
+          h('div', { class: 'agents-where muted small' }, agentWhere(t)),
+          last ? h('div', { class: 'agents-last muted small', title: last }, last) : null,
+          h(
+            'div',
+            { class: 'agents-actions' },
+            h('button', { type: 'button', class: 'btn small', onclick: () => open(t) }, 'Ouvrir'),
+            h('button', { type: 'button', class: 'btn small danger', title: 'Arrêter cet agent (et ses sous-tâches)', onclick: () => void hub.cancelTask(t.id) }, '■ Arrêter'),
+          ),
+        );
+      }),
+    ),
+    h(
+      'div',
+      { class: 'agents-foot muted small' },
+      'Pour lancer un agent, demande-le simplement à Claude dans une discussion (« demande à l’Illustrateur… ») : il le délègue avec l’outil du hub.',
+    ),
+  );
+}
+
+function toggleAgentsMenu(force?: boolean): void {
+  agentsUi.open = force ?? !agentsUi.open;
+  $('agents-menu').classList.toggle('hidden', !agentsUi.open);
+  $('agents-btn').classList.toggle('open', agentsUi.open);
+  if (agentsUi.open) {
+    webPanels.layout([]); // les sites web (vues natives) masqueraient le panneau
+    renderAgentsMenu();
+  } else sendWebLayout();
 }
 
 function setView(view: View): void {
@@ -729,14 +817,27 @@ function fillModelSelect(select: HTMLSelectElement, providerId: string, current?
 function renderConvList(): void {
   const list = $('conv-list');
   const convs = visibleConversations();
+  // Filtre de dossier actif : on le DIT (sinon des discussions semblent avoir disparu), avec « Tout afficher ».
+  const f = activeFolder();
+  const hidden = state.conversations.length - convs.length;
+  const filterBar =
+    f && hidden > 0
+      ? h(
+          'div',
+          { class: 'conv-filter-bar', title: `Seules les discussions du dossier « ${f.path} » sont affichées` },
+          h('span', {}, `📁 ${f.name} · ${hidden} autre${hidden > 1 ? 's' : ''} masquée${hidden > 1 ? 's' : ''}`),
+          h('button', { type: 'button', class: 'link-btn', onclick: () => void hub.setActiveFolder('') }, 'Tout afficher'),
+        )
+      : null;
   if (convs.length === 0) {
-    const f = activeFolder();
     list.replaceChildren(
+      ...(filterBar ? [filterBar] : []),
       h('div', { class: 'muted', style: 'padding:10px;font-size:13px' }, f ? `Aucune discussion dans « ${f.name} ».` : 'Aucune discussion pour le moment.'),
     );
     return;
   }
   list.replaceChildren(
+    ...(filterBar ? [filterBar] : []),
     ...convs.map((c) =>
       h(
         'div',
@@ -1431,8 +1532,13 @@ function renderComposer(conv: Conversation | undefined): void {
   renderEffortPicker(conv);
   const running = conv ? runningTasksFor(conv.id).length > 0 : false;
   $('stop-btn').classList.toggle('hidden', !running);
-  $<HTMLButtonElement>('send-btn').disabled = !conv || running;
+  // Pendant une réponse, on peut quand même écrire : le message attend son tour (comme dans Claude Code).
+  const send = $<HTMLButtonElement>('send-btn');
+  send.disabled = !conv;
+  send.textContent = running ? 'Mettre en attente' : 'Envoyer';
+  send.title = running ? 'Une réponse est en cours : ce message sera envoyé automatiquement juste après' : '';
   $<HTMLTextAreaElement>('prompt').disabled = !conv;
+  renderQueueStrip(conv, running);
   const picker = $<HTMLButtonElement>('ai-picker-btn');
   picker.replaceChildren(iconText('robot', pickerLabel(conv)));
   picker.disabled = !conv;
@@ -1446,6 +1552,66 @@ function renderComposer(conv: Conversation | undefined): void {
   renderBgToggle(conv);
   renderAttachStrip();
   renderAiMenu();
+}
+
+/** Messages en attente au-dessus de la zone de saisie : « Envoyer maintenant », modifier, retirer. */
+function renderQueueStrip(conv: Conversation | undefined, running: boolean): void {
+  const strip = $('queue-strip');
+  const queue = conv?.queue ?? [];
+  strip.classList.toggle('hidden', !queue.length);
+  if (!conv || !queue.length) return strip.replaceChildren();
+  const fail = (err: any) => toast(err?.message ?? String(err));
+  const preview = (q: QueuedMessage) => {
+    const t = q.text.replace(/\s+/g, ' ').trim();
+    const att = q.images.length ? ` 📎${q.images.length}` : '';
+    return (t.length > 140 ? `${t.slice(0, 140)}…` : t || '(pièce jointe)') + att;
+  };
+  strip.replaceChildren(
+    h(
+      'div',
+      { class: 'queue-head' },
+      running
+        ? `⏳ ${queue.length} message${queue.length > 1 ? 's' : ''} en attente : envoi automatique à la fin de la réponse`
+        : `⏸ ${queue.length} message${queue.length > 1 ? 's' : ''} en attente (file en pause : réponse arrêtée ou envoi raté)`,
+    ),
+    ...queue.map((q, i) =>
+      h(
+        'div',
+        { class: `queue-item ${q.error ? 'error' : ''}`, title: q.error ? `Envoi raté : ${q.error}` : q.text },
+        h('span', { class: 'queue-n' }, String(i + 1)),
+        h('span', { class: 'queue-text' }, preview(q)),
+        q.error ? h('span', { class: 'queue-err' }, '⚠') : null,
+        h(
+          'button',
+          {
+            type: 'button',
+            class: 'btn small primary',
+            title: running ? 'Arrête la réponse en cours et envoie ce message tout de suite' : 'Envoie ce message tout de suite',
+            onclick: () => void hub.sendQueuedNow(conv.id, q.id).catch(fail),
+          },
+          '↑ Envoyer maintenant',
+        ),
+        h(
+          'button',
+          {
+            type: 'button',
+            class: 'btn small ghost',
+            title: 'Remettre ce message dans la zone de saisie pour le modifier',
+            onclick: async () => {
+              const item = await hub.removeQueuedMessage(conv.id, q.id).catch(fail);
+              if (!item) return;
+              const input = $<HTMLTextAreaElement>('prompt');
+              input.value = input.value.trim() ? `${item.text}\n${input.value}` : item.text;
+              if (item.images.length) restorePending(conv.id, item.images);
+              input.focus();
+            },
+          },
+          '✎',
+        ),
+        h('button', { type: 'button', class: 'btn small ghost', title: 'Retirer de la file', onclick: () => void hub.removeQueuedMessage(conv.id, q.id).catch(fail) }, '✕'),
+      ),
+    ),
+  );
 }
 
 /** IA qui produisent des images (le bouton ◩ et le détourage automatique les concernent). */
@@ -1494,7 +1660,8 @@ async function sendPrompt(): Promise<void> {
   const conv = activeConv();
   const input = $<HTMLTextAreaElement>('prompt');
   const text = input.value.trim();
-  if (!conv || runningTasksFor(conv.id).length) return;
+  // Réponse en cours : le message part dans la file d'attente (le hub l'enverra dès que la discussion est libre).
+  if (!conv) return;
   if (attachBusy()) return toast('Pièce jointe en cours de préparation : un instant…');
   const images = pendingImages(conv.id);
   if (!text && !images.length) return;
@@ -4894,6 +5061,16 @@ function bindShell(): void {
     e.stopPropagation();
     toggleUsageMenu();
   });
+  $('agents-btn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleAgentsMenu();
+  });
+  document.addEventListener('mousedown', (e) => {
+    if (agentsUi.open && !(e.target as HTMLElement).closest('.agents-picker')) toggleAgentsMenu(false);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && agentsUi.open) toggleAgentsMenu(false);
+  });
   document.addEventListener('mousedown', (e) => {
     if (usageUi.open && !(e.target as HTMLElement).closest('.usage-picker')) toggleUsageMenu(false);
   });
@@ -5143,6 +5320,8 @@ function bindUi(): void {
     // Durées des étapes en cours (cartes seulement : le détail n'est pas reconstruit).
     const run = activeRun();
     if (state.view === 'workflows' && run && run.steps.some((s) => s.status === 'running')) fillColumns(run);
+    // Panneau « Agents en cours » ouvert : durées à jour.
+    if (agentsUi.open) renderAgentsMenu();
   }, 1000);
 }
 
