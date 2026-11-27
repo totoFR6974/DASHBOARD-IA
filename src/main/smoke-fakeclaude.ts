@@ -236,6 +236,12 @@ export async function smokeFakeClaude(win: BrowserWindow, outDir: string, shot: 
       f1?.status === 'done' && e1?.args?.resume === known && e1?.args?.fork === true && cf?.providerSessions?.claude === e1?.sessionOut && e1?.sessionOut !== known && !cf?.claudeForkPending,
       { status: f1?.status, error: f1?.error, args: { resume: e1?.args?.resume, fork: e1?.args?.fork }, stored: cf?.providerSessions, pending: cf?.claudeForkPending },
     );
+    check(
+      'E2 fork : historique de la session affiché dans la discussion, mais pas renvoyé à Claude (il l’a déjà)',
+      !!cf?.messages?.some((m: any) => m.imported && m.role === 'user' && m.content === 'Session existante du faux Claude') &&
+        /^\[fake:session\] première question dans la copie$/.test(String(e1?.promptTail ?? '').trim()),
+      { messages: cf?.messages?.map((m: any) => `${m.role}${m.imported ? '*' : ''}`), prompt: e1?.promptTail },
+    );
     const [f2] = await waitDone(await send(forked.id, '[fake:session] deuxième question'));
     const e2 = lastStart();
     check('E2 fork : envoi suivant = --resume <copie> sans --fork-session', f2?.status === 'done' && e2?.args?.resume === e1?.sessionOut && !e2?.args?.fork, { resume: e2?.args?.resume, fork: e2?.args?.fork });
@@ -266,6 +272,47 @@ export async function smokeFakeClaude(win: BrowserWindow, outDir: string, shot: 
       l3?.status === 'done' && !retry?.args?.resume && /session précédente de cette discussion est introuvable/.test(retry?.prompt ?? '') && /Bonjour faux Claude/.test(retry?.prompt ?? '') && /Bonjour ! Réponse simulée/.test(retry?.prompt ?? ''),
       { status: l3?.status, error: l3?.error, resume: retry?.args?.resume, head: String(retry?.prompt ?? '').slice(0, 300) },
     );
+
+    // E5. « Récupérer ici » par l'interface alors qu'un AUTRE dossier est choisi en haut : la discussion doit rester
+    // visible dans la colonne de gauche (avant : ouverte mais absente de la liste), et l'onglet Claude Code la relie.
+    const otherDir = join(stateDir, 'autre-dossier');
+    mkdirSync(otherDir, { recursive: true });
+    const other = await js(`window.hub.addFolder(${JSON.stringify(otherDir)})`);
+    await js(`window.hub.setActiveFolder(${JSON.stringify(other.id)})`);
+    const viaUi = randomUUID();
+    writeSession(viaUi, 'Session récupérée par l’interface');
+    writeFileSync(join(stateDir, 'sessions.json'), JSON.stringify([...JSON.parse(readFileSync(join(stateDir, 'sessions.json'), 'utf8')), viaUi]), 'utf8');
+    const ui = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const title = 'Session récupérée par l’interface';
+      document.querySelector('[data-view="claude"]').click();
+      document.getElementById('cc-refresh')?.click();
+      let item;
+      for (let i = 0; i < 80 && !item; i++) { await sleep(250); item = [...document.querySelectorAll('#cc-list .cc-item')].find((e) => e.textContent.includes(title)); }
+      if (!item) return { error: 'session absente de l’onglet Claude Code' };
+      item.click();
+      let btn;
+      for (let i = 0; i < 40 && !btn; i++) { await sleep(250); btn = [...document.querySelectorAll('#cc-main .cc-head button')].find((b) => b.textContent.includes('Copie indépendante')); }
+      if (!btn) return { error: 'bouton Copie indépendante absent' };
+      btn.click();
+      let listed = false;
+      for (let i = 0; i < 40 && !listed; i++) { await sleep(250); listed = [...document.querySelectorAll('#conv-list .conv-title')].some((e) => e.textContent === '⑂ ' + title); }
+      const imported = [...document.querySelectorAll('#messages .msg.user')].some((e) => e.textContent.includes(title));
+      const folder = document.getElementById('folder-btn')?.textContent;
+      // Retour dans l'onglet Claude Code : la session est reliée à sa discussion.
+      document.querySelector('[data-view="claude"]').click();
+      [...document.querySelectorAll('#cc-list .cc-item')].find((e) => e.textContent.includes(title))?.click();
+      await sleep(800);
+      const tag = [...document.querySelectorAll('#cc-list .cc-item')].find((e) => e.textContent.includes(title))?.textContent.includes('dans le hub');
+      const openBtn = [...document.querySelectorAll('#cc-main .cc-head button')].find((b) => b.textContent.includes('Ouvrir la discussion'));
+      openBtn?.click();
+      await sleep(400);
+      const reopened = document.querySelector('#view-chat.active') !== null && document.querySelector('#conv-list .conv-item.active .conv-title')?.textContent === '⑂ ' + title;
+      return { listed, imported, folder, tag, openBtn: !!openBtn, reopened };
+    })()`);
+    check('E5 récupérer ici : discussion visible dans la liste malgré un autre dossier choisi, historique affiché', ui?.listed === true && ui?.imported === true && !/autre-dossier/.test(ui?.folder ?? ''), ui);
+    check('E5 onglet Claude Code : « 💬 dans le hub » + « Ouvrir la discussion » rouvre la même discussion', ui?.tag === true && ui?.openBtn === true && ui?.reopened === true, ui);
+    await js(`window.hub.setActiveFolder('')`);
   }
 
   // ---------- C. chercher_notes appelé par Claude (MCP réel) ----------

@@ -154,6 +154,31 @@ const MAX_TASKS = 2000;
 /** Délégation entre agents (outil MCP demander_a). */
 const MAX_PARALLEL_DELEGATIONS = 3;
 const DELEGATION_TIMEOUT_MS = 15 * 60 * 1000;
+/** « Récupérer ici » : derniers messages d'une session Claude Code repris dans la discussion. */
+const IMPORTED_HISTORY_MAX = 200;
+/** Taille maximale d'un message repris (une réponse très longue est tronquée à l'affichage). */
+const IMPORTED_MESSAGE_MAX_CHARS = 20_000;
+
+/** Message d'une session Claude Code → message de discussion (affichage seulement). */
+export function importedMessage(m: ClaudeSessionMessage): ChatMessage {
+  let content = m.text.length > IMPORTED_MESSAGE_MAX_CHARS ? `${m.text.slice(0, IMPORTED_MESSAGE_MAX_CHARS)}\n\n_… (suite tronquée)_` : m.text;
+  if (m.role === 'assistant' && m.tools.length) {
+    const shown = m.tools.slice(0, 8).join(' · ');
+    content = `${content}${content ? '\n\n' : ''}_🔧 ${shown}${m.tools.length > 8 ? ` · +${m.tools.length - 8}` : ''}_`;
+  }
+  return { role: m.role, content, ...(m.role === 'assistant' ? { providerId: 'claude' } : {}), imported: true, at: m.at || Date.now() };
+}
+
+/** Tours de parole des messages repris : chaque question et sa réponse partagent un turnId (réponse sans question = tour à part). */
+export function withImportedTurns(messages: ChatMessage[]): ChatMessage[] {
+  let current = '';
+  return messages.map((m) => {
+    if (m.role === 'user' || !current) current = `imp-${randomUUID()}`;
+    const out = { ...m, turnId: current };
+    if (m.role === 'assistant') current = ''; // une 2e réponse d'affilée aurait son propre bloc
+    return out;
+  });
+}
 const PERMISSION_TEXT: Record<ClaudePermission, string> = {
   default: 'mode « Prudent » : lecture seule — tu ne peux ni modifier de fichiers ni lancer de commandes (sauf les outils explicitement autorisés)',
   acceptEdits: 'mode « Modifs fichiers » : tu peux créer et modifier des fichiers, pas lancer de commandes',
@@ -1341,9 +1366,25 @@ export class Hub {
     const fork = mode !== 'resume';
     conv.title = `${fork ? '⑂ ' : ''}${s.title}`.slice(0, 80);
     conv.providerSessions = { claude: s.id };
+    conv.claudeOrigin = s.id;
     if (fork) conv.claudeForkPending = true;
+    // Historique de la session affiché dans la discussion (les plus récents), marqué « importé » : il n'est pas
+    // renvoyé à Claude, qui l'a déjà dans sa session.
+    const history = await logs.readSession(s.id, IMPORTED_HISTORY_MAX).catch(() => ({ messages: [] as ClaudeSessionMessage[], total: 0 }));
+    if (history.total > history.messages.length) {
+      conv.messages.push({
+        role: 'assistant',
+        content: `_… ${history.total - history.messages.length} message(s) plus ancien(s) de cette session non repris ici (lisibles dans l'onglet Claude Code)._`,
+        providerId: 'claude',
+        imported: true,
+        turnId: `note-${randomUUID()}`,
+        at: history.messages[0]?.at || Date.now(),
+      });
+    }
+    conv.messages.push(...withImportedTurns(history.messages.map((m) => importedMessage(m))));
     const where = `${s.prompts} message(s) · projet ${s.project}${s.cwd ? ` (\`${s.cwd}\`)` : ''}`;
     conv.messages.push({
+      turnId: `note-${randomUUID()}`,
       role: 'assistant',
       content: fork
         ? `**Copie indépendante** de la session Claude Code : **${s.title}**\n\n${where}. Ta prochaine question part de tout son historique, mais dans une **nouvelle session** : l'originale (terminal, appli Claude) n'est pas modifiée, et ce que tu écris ici n'y apparaîtra pas.`
@@ -1710,7 +1751,8 @@ export class Hub {
         }
       }
     }
-    const unseen = previous.slice(start).filter((m) => m.providerId !== providerId && !(m.role === 'assistant' && isFailedReply(m.content)));
+    // Historique repris d'une session Claude Code : déjà dans la session, jamais renvoyé.
+    const unseen = previous.slice(start).filter((m) => !m.imported && m.providerId !== providerId && !(m.role === 'assistant' && isFailedReply(m.content)));
     // Messages utilisateur seuls déjà vus (même session) : inutile de les répéter s'il n'y a aucune réponse d'une autre IA.
     if (unseen.length === 0 || (hasSession && !unseen.some((m) => m.role === 'assistant'))) return text;
     // Images citées par leur chemin (Claude peut les ouvrir avec Read : le dossier des pièces jointes lui est ouvert).
@@ -1728,7 +1770,8 @@ export class Hub {
    */
   private freshClaudePrompt(previous: ChatMessage[], text: string): string {
     const imgs = (m: ChatMessage) => `${m.images?.length ? `\n(images : ${m.images.join(' ; ')})` : ''}${m.files?.length ? `\n(fichiers joints : ${m.files.join(' ; ')})` : ''}`;
-    const kept = previous.filter((m) => (m.role === 'user' ? !!(m.content || m.images?.length || m.files?.length) : !!m.taskId && !isFailedReply(m.content)));
+    // Réponses du hub (taskId) et historique repris d'une session Claude Code (imported) : la session étant perdue, on le renvoie.
+    const kept = previous.filter((m) => (m.role === 'user' ? !!(m.content || m.images?.length || m.files?.length) : (!!m.taskId || !!m.imported) && !isFailedReply(m.content)));
     if (!kept.length) return text;
     let transcript = kept
       .map((m) => (m.role === 'user' ? `### Utilisateur\n${m.content}${imgs(m)}` : `### ${this.providerLabel(m.providerId ?? '?', m.model)}\n${m.content}${imgs(m)}`))

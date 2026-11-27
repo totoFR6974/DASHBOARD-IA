@@ -359,6 +359,8 @@ export interface ChatMessage {
   images?: string[];
   /** Autres fichiers joints par l'utilisateur (texte, code, PDF, DOCX, binaires) : chemins absolus des copies du hub. */
   files?: string[];
+  /** Message repris de l'historique d'une session Claude Code (affiché seulement : Claude l'a déjà dans sa session). */
+  imported?: boolean;
   at: number;
 }
 
@@ -399,6 +401,8 @@ export interface Conversation {
   effort?: ClaudeEffort;
   /** Copie indépendante d'une session Claude Code pas encore créée : le prochain envoi fera --fork-session. */
   claudeForkPending?: boolean;
+  /** Session Claude Code d'origine (« Récupérer ici » depuis l'onglet Claude Code) : relie la session à cette discussion. */
+  claudeOrigin?: string;
   messages: ChatMessage[];
   /** Les IA de la discussion peuvent consulter la base de connaissances. */
   useKnowledge?: boolean;

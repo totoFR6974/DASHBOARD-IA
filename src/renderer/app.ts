@@ -763,6 +763,28 @@ function selectConversation(id: string | null): void {
   $<HTMLTextAreaElement>('prompt').focus();
 }
 
+/**
+ * Ouvre une discussion venue d'ailleurs (session Claude Code récupérée) en la gardant VISIBLE dans la liste :
+ * si le dossier choisi en haut la cache, on passe sur son dossier (s'il est dans la liste) ou sur « Tous les dossiers ».
+ */
+async function showConversation(conv: Conversation): Promise<void> {
+  if (!state.conversations.some((c) => c.id === conv.id)) state.conversations.unshift(conv);
+  const f = activeFolder();
+  if (f && normPath(conv.cwd) !== normPath(f.path)) {
+    const own = state.folders.find((x) => normPath(x.path) === normPath(conv.cwd));
+    state.activeFolderId = own?.id ?? '';
+    renderFolderButton();
+    await hub.setActiveFolder(own?.id ?? '').catch(() => undefined);
+  }
+  setView('chat');
+  selectConversation(conv.id);
+}
+
+/** Discussion du hub reliée à une session Claude Code (récupérée ici, ou lancée par le hub), la plus récente. */
+function convForClaudeSession(sessionId: string): Conversation | undefined {
+  return state.conversations.find((c) => c.claudeOrigin === sessionId || c.providerSessions?.claude === sessionId);
+}
+
 function activeConv(): Conversation | undefined {
   return state.conversations.find((c) => c.id === state.activeConvId);
 }
@@ -941,6 +963,13 @@ function buildTurns(conv: Conversation): Turn[] {
       return;
     }
     let turn = m.turnId ? byId.get(m.turnId) : undefined;
+    // Message seul avec son propre tour (ex. note « Session Claude Code reprise ici » après l'historique repris) :
+    // bloc à part, pas une 2e colonne à côté de la dernière réponse.
+    if (!turn && m.turnId) {
+      turn = { id: m.turnId, replies: [], running: [] };
+      turns.push(turn);
+      byId.set(turn.id, turn);
+    }
     turn ??= turns[turns.length - 1];
     if (!turn) {
       turn = { id: `orphan-${i}`, replies: [], running: [] };
@@ -4557,6 +4586,7 @@ function renderClaudeList(): void {
           h('span', {}, `· ${s.prompts} msg`),
           s.models[0] ? h('span', { class: 'tag' }, s.models[0]) : null,
           s.origin ? h('span', { class: 'tag' }, s.origin) : null,
+          convForClaudeSession(s.id) ? h('span', { class: 'tag cc-in-hub', title: 'Déjà dans les discussions du hub' }, '💬 dans le hub') : null,
           h('span', { class: 'muted' }, fmtUsd(s.costUsd)),
         ),
       );
@@ -4605,20 +4635,27 @@ function renderClaudeReader(): void {
       const go = async (mode: 'resume' | 'fork') => {
         try {
           const conv = await hub.continueClaudeSession(s.id, mode);
-          if (!state.conversations.some((c) => c.id === conv.id)) state.conversations.unshift(conv);
-          setView('chat');
-          selectConversation(conv.id);
+          await showConversation(conv);
         } catch (err: any) {
           toast(err.message ?? String(err));
         }
       };
       const missing = 'Impossible : Claude Code a supprimé l’original de cette session, `claude --resume` ne la retrouve plus. Elle reste lisible ici.';
+      // Déjà récupérée (ou lancée par le hub) : on y retourne au lieu d'en créer une de plus.
+      const linked = convForClaudeSession(s.id);
       return [
+        linked
+          ? h(
+              'button',
+              { type: 'button', class: 'btn primary small', title: `Discussion du hub : « ${linked.title} »`, onclick: () => void showConversation(linked) },
+              '💬 Ouvrir la discussion',
+            )
+          : null,
         h(
           'button',
           {
             type: 'button',
-            class: 'btn primary small',
+            class: linked ? 'btn small' : 'btn primary small',
             disabled: !!s.originalMissing,
             title: s.originalMissing
               ? missing

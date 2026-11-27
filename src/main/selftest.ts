@@ -770,6 +770,16 @@ async function testClaudeLogs(): Promise<void> {
   const listed = await h2.listClaudeSessions();
   const conv = await h2.continueClaudeSession('s2', 'resume'); // « fork » (défaut) préfixe le titre de « ⑂ »
   check(listed.length === 2 && conv.providerSessions.claude === 's2' && conv.title === 'Question B longue' && conv.participants[0]?.providerId === 'claude', 'reprise dans le hub : discussion liée à la session (claude --resume)');
+  // « Récupérer ici » : l'historique de la session est repris dans la discussion (question + réponse groupées), puis la note.
+  const c1 = await h2.continueClaudeSession('s1', 'fork');
+  const [q1, r1, note] = c1.messages;
+  check(
+    c1.claudeOrigin === 's1' && c1.messages.length === 3 &&
+      !!q1?.imported && q1.role === 'user' && q1.content === 'Bonjour' &&
+      !!r1?.imported && r1.role === 'assistant' && r1.content.startsWith('Salut') && /🔧 Read/.test(r1.content) && r1.turnId === q1.turnId &&
+      !note?.imported && /Copie indépendante/.test(note?.content ?? '') && !!note?.turnId && note.turnId !== q1.turnId,
+    `historique repris dans la discussion (${c1.messages.map((m) => `${m.role}${m.imported ? '*' : ''}`).join(', ')})`,
+  );
   let refused = false;
   try {
     await h2.readClaudeSession('../s1');

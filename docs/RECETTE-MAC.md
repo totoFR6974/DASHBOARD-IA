@@ -98,3 +98,9 @@ Cas où l'installation automatique est refusée (bouton « Télécharger » manu
 - [ ] Hub ouvert sur Discussions, rien en cours : Moniteur d'activité › GPU → Hub IA et WindowServer proches de 0 % (avant : ~35 % chacun)
 - [ ] Z-Image Turbo installé sur un Mac 16 Go : une génération utilise SDXL à la place (note « Z-Image Turbo a besoin d'environ 20 Go… ») ; sans SDXL, message clair au lieu d'attendre 10 min
 - [ ] 10 min après la dernière image : la mémoire de ComfyUI Desktop redescend (Moniteur d'activité › Mémoire)
+
+## 11. Sessions Claude Code récupérées (alpha.14)
+- [ ] Onglet Claude Code › une session › « ⑂ Copie indépendante » : la discussion s'ouvre avec les derniers messages de la session (questions, réponses, outils 🔧), puis la note « Copie indépendante »
+- [ ] Un dossier précis choisi en haut : la discussion récupérée apparaît quand même dans la colonne de gauche (le hub passe sur son dossier ou « Tous les dossiers »)
+- [ ] Quitter la discussion puis revenir, et après redémarrage du hub : elle est toujours dans la liste
+- [ ] Retour dans l'onglet Claude Code : la session porte « 💬 dans le hub » et « Ouvrir la discussion » y ramène (pas de doublon)
