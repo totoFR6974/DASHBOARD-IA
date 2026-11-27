@@ -434,6 +434,12 @@ export interface Conversation {
   claudeForkPending?: boolean;
   /** Session Claude Code d'origine (« Récupérer ici » depuis l'onglet Claude Code) : relie la session à cette discussion. */
   claudeOrigin?: string;
+  /** Épinglée : en haut de la liste, dans la section « Épinglées ». */
+  pinned?: boolean;
+  /** Archivée : retirée de la liste (visible dans « Archivées »), rien n'est supprimé. */
+  archived?: boolean;
+  /** Position dans la liste (ordre choisi par glisser-déposer ; plus petit = plus haut). */
+  order?: number;
   /** Messages en attente (écrits pendant une réponse) : envoyés un par un dès que la discussion est libre. */
   queue?: QueuedMessage[];
   messages: ChatMessage[];
@@ -895,13 +901,15 @@ export interface NewConversationInput {
   permission?: ClaudePermission;
 }
 
-export type ConversationPatch = Partial<Pick<Conversation, 'title' | 'agent' | 'participants' | 'cwd' | 'permission' | 'useKnowledge' | 'effort' | 'transparentBg'>>;
+export type ConversationPatch = Partial<Pick<Conversation, 'title' | 'agent' | 'participants' | 'cwd' | 'permission' | 'useKnowledge' | 'effort' | 'transparentBg' | 'pinned' | 'archived'>>;
 
 export type HubEvent =
   | { type: 'task'; task: Task }
   | { type: 'delta'; taskId: string; conversationId: string | null; text: string }
   | { type: 'conversation'; conversation: Conversation }
   | { type: 'conversationDeleted'; id: string }
+  /** Ordre / épinglage de la liste changés (glisser-déposer) : nouvelle position de chaque discussion. */
+  | { type: 'conversationOrder'; order: { id: string; order: number; pinned: boolean }[] }
   | { type: 'providers'; providers: ProviderInfo[] }
   | ({ type: 'folders' } & FoldersState)
   | { type: 'workflow'; run: WorkflowRun }
@@ -978,6 +986,12 @@ export interface HubApi {
   /** Changer participants enregistre aussi la sélection dans settings.defaultParticipants. */
   updateConversation(id: string, patch: ConversationPatch): Promise<Conversation>;
   deleteConversation(id: string): Promise<void>;
+  /** Plusieurs discussions d'un coup (sélection multiple) : épingler / archiver. */
+  updateConversations(ids: string[], patch: Pick<ConversationPatch, 'pinned' | 'archived'>): Promise<void>;
+  /** Supprime plusieurs discussions. */
+  deleteConversations(ids: string[]): Promise<void>;
+  /** Déplace des discussions dans la liste : avant beforeId (null = fin de la section), épinglées ou non. */
+  moveConversations(ids: string[], beforeId: string | null, pinned: boolean): Promise<void>;
   /** Une tâche par IA participante (même turnId). */
   /** images : chemins renvoyés par saveAttachment (pièces jointes de ce message : images ET autres fichiers). */
   sendMessage(conversationId: string, text: string, images?: string[]): Promise<Task[]>;
@@ -1260,6 +1274,9 @@ export const HUB_METHODS = [
   'createConversation',
   'updateConversation',
   'deleteConversation',
+  'updateConversations',
+  'deleteConversations',
+  'moveConversations',
   'sendMessage',
   'saveAttachment',
   'deleteAttachment',

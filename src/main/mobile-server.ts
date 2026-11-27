@@ -506,7 +506,8 @@ export class MobileServer {
 
   private async list(): Promise<MobileListResponse> {
     const running = new Set(this.runningTasks().map((t) => t.conversationId));
-    const conversations = this.opts.hub.listConversations().map((c) => {
+    // Discussions archivées : pas sur le téléphone (comme dans la liste du hub). Même ordre que le hub (épinglées d'abord).
+    const conversations = this.opts.hub.listConversations().filter((c) => !c.archived).map((c) => {
       const last = c.messages[c.messages.length - 1];
       const preview = last ? (last.content || (last.images?.length ? '🖼 Image' : last.files?.length ? '📎 Fichier' : '')).replace(/\s+/g, ' ').slice(0, 120) : '';
       return { id: c.id, title: c.title, updatedAt: c.updatedAt, providers: c.participants.map((p) => p.providerId), running: running.has(c.id), preview };
@@ -601,6 +602,9 @@ export class MobileServer {
       out = { type: 'conversation', id: ev.conversation.id, updatedAt: ev.conversation.updatedAt };
     } else if (ev.type === 'conversationDeleted') {
       out = { type: 'conversationDeleted', id: ev.id };
+    } else if (ev.type === 'conversationOrder') {
+      // Liste réordonnée dans le hub : le téléphone recharge sa liste.
+      out = { type: 'conversation', id: ev.order[0]?.id ?? '', updatedAt: Date.now() };
     } else if (ev.type === 'permission' || ev.type === 'permissionDone') {
       // Demande d'autorisation posée ou réglée : le téléphone recharge la discussion concernée.
       out = { type: 'conversation', id: ev.type === 'permission' ? ev.request.conversationId : ev.conversationId, updatedAt: Date.now() };

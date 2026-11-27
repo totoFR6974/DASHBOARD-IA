@@ -222,6 +222,11 @@ export function mergeClaudeDuplicates(conversations: Conversation[], tasks: Task
   return { conversations: drop.size ? conversations.filter((c) => !drop.has(c.id)) : conversations, removed: drop.size };
 }
 
+/** Ordre de la liste des discussions : épinglées d'abord, puis la position choisie, puis la plus récente. */
+export function compareConversations(a: Conversation, b: Conversation): number {
+  return Number(!!b.pinned) - Number(!!a.pinned) || (a.order ?? 0) - (b.order ?? 0) || b.updatedAt - a.updatedAt;
+}
+
 /** Tours de parole des messages repris : chaque question et sa réponse partagent un turnId (réponse sans question = tour à part). */
 export function withImportedTurns(messages: ChatMessage[]): ChatMessage[] {
   let current = '';
@@ -443,6 +448,11 @@ export class Hub {
     const merged = mergeClaudeDuplicates(this.db.data.conversations, this.db.data.tasks);
     if (merged.removed) {
       this.db.data.conversations = merged.conversations;
+      this.db.save();
+    }
+    // Ordre de la liste (glisser-déposer) : les discussions d'avant reçoivent une position d'après leur activité.
+    if (this.db.data.conversations.some((c) => typeof c.order !== 'number')) {
+      [...this.db.data.conversations].sort((a, b) => b.updatedAt - a.updatedAt).forEach((c, i) => (c.order = i));
       this.db.save();
     }
 
@@ -835,8 +845,9 @@ export class Hub {
 
   // ---------- Discussions ----------
 
+  /** Ordre de la liste : épinglées d'abord, puis l'ordre choisi (glisser-déposer), puis la plus récente. */
   listConversations(): Conversation[] {
-    return [...this.db.data.conversations].sort((a, b) => b.updatedAt - a.updatedAt);
+    return [...this.db.data.conversations].sort(compareConversations);
   }
 
   private conversation(id: string): Conversation {
@@ -861,6 +872,8 @@ export class Hub {
       cwd: input.cwd?.trim() || this.activeFolder()?.path || this.workspaceDir,
       permission: input.permission ?? this.settings.claudePermission,
       messages: [],
+      // Nouvelle discussion : tout en haut (sous les épinglées).
+      order: Math.min(0, ...this.db.data.conversations.map((c) => c.order ?? 0)) - 1,
     };
     this.db.data.conversations.push(conv);
     this.db.save();
@@ -876,6 +889,18 @@ export class Hub {
       conv.permission = patch.permission;
     }
     if (typeof patch.useKnowledge === 'boolean') conv.useKnowledge = patch.useKnowledge;
+    if (typeof patch.pinned === 'boolean') {
+      if (patch.pinned) conv.pinned = true;
+      else delete conv.pinned;
+    }
+    if (typeof patch.archived === 'boolean') {
+      if (patch.archived) {
+        conv.archived = true;
+        delete conv.pinned; // une discussion archivée sort aussi des épinglées
+        // Sa session Claude n'a plus besoin de rester ouverte (sauf réponse en cours : on ne la coupe pas).
+        if (!this.convBusy(conv.id)) this.closeClaudeSession(conv.id);
+      } else delete conv.archived;
+    }
     if (typeof patch.transparentBg === 'boolean') {
       if (patch.transparentBg) conv.transparentBg = true;
       else delete conv.transparentBg;
@@ -968,6 +993,51 @@ export class Hub {
       /* identifiant inattendu ou dossier verrouillé : on laisse le dossier */
     }
     this.emit({ type: 'conversationDeleted', id });
+  }
+
+  /** Sélection multiple : épingler / désépingler, archiver / désarchiver plusieurs discussions. */
+  async updateConversations(ids: string[], patch: Pick<ConversationPatch, 'pinned' | 'archived'>): Promise<void> {
+    const clean: Pick<ConversationPatch, 'pinned' | 'archived'> = {};
+    if (typeof patch?.pinned === 'boolean') clean.pinned = patch.pinned;
+    if (typeof patch?.archived === 'boolean') clean.archived = patch.archived;
+    if (!Object.keys(clean).length) throw new Error('Rien à modifier');
+    for (const id of new Set(Array.isArray(ids) ? ids : [])) {
+      if (this.db.data.conversations.some((c) => c.id === id)) await this.updateConversation(id, clean);
+    }
+  }
+
+  deleteConversations(ids: string[]): void {
+    for (const id of new Set(Array.isArray(ids) ? ids : [])) {
+      if (this.db.data.conversations.some((c) => c.id === id)) this.deleteConversation(id);
+    }
+  }
+
+  /**
+   * Glisser-déposer dans la liste : les discussions `ids` (dans leur ordre actuel) sont placées juste avant `beforeId`
+   * (null = à la fin de la section visée), épinglées ou non selon la section où on les dépose. Toutes les positions
+   * sont renumérotées ; un seul événement pour toute la liste.
+   */
+  moveConversations(ids: string[], beforeId: string | null, pinned: boolean): void {
+    const moving = new Set(Array.isArray(ids) ? ids : []);
+    const list = this.listConversations();
+    const moved = list.filter((c) => moving.has(c.id));
+    if (!moved.length) return;
+    for (const c of moved) {
+      if (pinned) c.pinned = true;
+      else delete c.pinned;
+    }
+    const rest = list.filter((c) => !moving.has(c.id));
+    let at = beforeId ? rest.findIndex((c) => c.id === beforeId) : -1;
+    if (at < 0) {
+      // Fin de la section : après la dernière épinglée (section du haut), sinon tout en bas.
+      at = pinned ? rest.findIndex((c) => !c.pinned) : rest.length;
+      if (at < 0) at = rest.length;
+    }
+    rest.splice(at, 0, ...moved);
+    rest.sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned)); // tri stable : épinglées d'abord, ordre gardé
+    rest.forEach((c, i) => (c.order = i));
+    this.db.save();
+    this.emit({ type: 'conversationOrder', order: rest.map((c) => ({ id: c.id, order: c.order!, pinned: !!c.pinned })) });
   }
 
   // ---------- Tâches ----------

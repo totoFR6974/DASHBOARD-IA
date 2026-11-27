@@ -237,3 +237,24 @@ legend .ico { vertical-align: -0.2em; margin-right: 2px; }
 .perm-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
 .perm-dot { display: inline-flex; align-items: center; }
 .perm-dot .ico { --icon-fill: #b37712; }
+
+/* ---------- Liste des discussions : sections, sélection multiple, glisser-déposer, clic droit ---------- */
+#conv-list:focus { outline: none; }
+.conv-section-title { display: flex; align-items: center; gap: 5px; padding: 8px 8px 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); border-radius: 8px; }
+.conv-item.selected { background: rgb(var(--accent-rgb) / 0.1); box-shadow: inset 0 0 0 1px rgb(var(--accent-rgb) / 0.55); }
+.conv-item.selected.active { box-shadow: inset 0 0 0 1px rgb(var(--accent-rgb) / 0.8); }
+.conv-item .conv-title .ico-pin { margin-right: 4px; vertical-align: -0.15em; }
+.conv-item[draggable="true"] { cursor: default; }
+.conv-item.dragging { opacity: 0.4; }
+.conv-item.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.conv-item.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+.conv-section-title.drop-over, .conv-pin-zone.drop-over { background: rgb(var(--accent-rgb) / 0.12); color: var(--text); }
+.conv-pin-zone { display: flex; align-items: center; justify-content: center; gap: 6px; margin-bottom: 6px; padding: 10px; border: 1px dashed var(--line-strong); border-radius: 10px; font-size: 12.5px; color: var(--muted); }
+.conv-rename { width: 100%; padding: 3px 6px; border-radius: 6px; font: inherit; font-weight: 600; font-size: 14px; }
+.conv-archive-link { display: flex; align-items: center; gap: 6px; width: 100%; margin-top: 8px; padding: 8px 10px; border: 1px dashed var(--line); border-radius: 9px; background: transparent; color: var(--muted); font-size: 12.5px; cursor: pointer; text-align: left; }
+.conv-archive-link:hover { color: var(--text); border-color: var(--line-strong); }
+.conv-archive-head { display: flex; align-items: center; justify-content: space-between; padding: 2px 6px 8px; }
+.ctx-menu { position: fixed; z-index: 300; right: auto; bottom: auto; width: max-content; min-width: 230px; max-width: 320px; }
+.ctx-menu .ctx-label { flex: 1; }
+.ctx-menu .ctx-kbd { margin-left: auto; }
+.ctx-menu .ctx-head { padding: 6px 10px 4px; font-size: 12px; color: var(--muted); }

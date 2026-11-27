@@ -422,6 +422,117 @@ export async function smokeFakeClaude(win: BrowserWindow, outDir: string, shot: 
     check('Q2 agents en cours : pastille masquée quand plus rien ne tourne', pillAfter === true || (await tasks()).some((t) => t.status === 'running'), pillAfter);
   }
 
+  // ---------- CL. Liste des discussions : clic droit, Ctrl / Maj, épingler, glisser-déposer, archiver ----------
+  {
+    const ids: Record<string, string> = {};
+    for (const n of ['A', 'B', 'C', 'D']) ids[n] = (await newConv(`CL · ${n}`)).id;
+    await js(`document.querySelector('.tabs button[data-view="chat"]').click()`);
+    await wait(400);
+    const order = async () => (await js('window.hub.listConversations()')).filter((c: any) => /^CL · /.test(c.title) && !c.archived).map((c: any) => `${c.title.slice(5)}${c.pinned ? '*' : ''}`);
+    const item = (n: string) => `document.querySelector('#conv-list .conv-item[data-id="${ids[n]}"]')`;
+    const click = (n: string, mods: { ctrlKey?: boolean; shiftKey?: boolean } = {}) => js(`${item(n)}.dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: ${!!mods.ctrlKey}, shiftKey: ${!!mods.shiftKey} }))`);
+    const rightClick = (n: string) => js(`(() => { const el = ${item(n)}; const r = el.getBoundingClientRect(); el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 40, clientY: r.top + 10 })); return [...document.querySelectorAll('.ctx-menu [data-ctx-action]')].map((b) => b.dataset.ctxAction); })()`);
+    const ctx = (action: string) => js(`document.querySelector('.ctx-menu [data-ctx-action="${action}"]')?.click()`);
+    const selected = () => js(`[...document.querySelectorAll('#conv-list .conv-item.selected')].map((e) => e.querySelector('.conv-title')?.textContent?.replace(/^CL · /, ''))`);
+    const start = await order();
+
+    // 1. Clic droit → Renommer (sur place, Entrée).
+    const menu1 = await rightClick('B');
+    await wait(400);
+    await shot('fc-liste-clic-droit');
+    await ctx('rename');
+    await wait(200);
+    const renamed = await js(`(async () => { const i = document.querySelector('#conv-list input.conv-rename'); if (!i) return false; i.value = 'CL · B renommée'; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await new Promise((r) => setTimeout(r, 600)); return true; })()`);
+    const titleB = (await conv(ids.B))?.title;
+    check('CL clic droit : menu (renommer, épingler, archiver, dossier, supprimer) ; « Renommer » sur place', ['rename', 'pin', 'archive', 'folder', 'delete'].every((a) => menu1.includes(a)) && renamed && titleB === 'CL · B renommée', { menu1, titleB, start });
+
+    // 2. Ctrl+clic : sélection multiple ; clic droit → « 2 discussions » → Épingler les 2.
+    await click('A');
+    await click('C', { ctrlKey: true });
+    const sel2 = await selected();
+    const menu2 = await rightClick('C');
+    const head2 = await js(`document.querySelector('.ctx-menu .ctx-head')?.textContent ?? ''`);
+    await ctx('pin');
+    await wait(700);
+    const afterPin = await order();
+    const pinSection = await js(`!!document.querySelector('#conv-list .conv-section-title') && [...document.querySelectorAll('#conv-list .conv-item.pinned')].length`);
+    await shot('fc-liste-epinglees');
+    check('CL Ctrl+clic : 2 discussions sélectionnées, menu groupé, « Épingler les 2 » → section « Épinglées » en haut', sel2.length === 2 && /2 discussions/.test(head2) && menu2.includes('pin') && afterPin.slice(0, 2).every((x: string) => x.endsWith('*')) && pinSection === 2, { sel2, head2, afterPin, pinSection });
+
+    // 3. Maj+clic : plage, comme dans l'Explorateur.
+    const visible = await js(`[...document.querySelectorAll('#conv-list .conv-item')].map((e) => e.dataset.id)`);
+    const unpinned = visible.filter((id: string) => id === ids.B || id === ids.D);
+    await click(unpinned[0] === ids.B ? 'B' : 'D');
+    await click(unpinned[0] === ids.B ? 'D' : 'B', { shiftKey: true });
+    const range = await selected();
+    const iB = visible.indexOf(ids.B);
+    const iD = visible.indexOf(ids.D);
+    check('CL Maj+clic : toute la plage entre les deux est sélectionnée', range.length === Math.abs(iB - iD) + 1 && range.length >= 2, { range, iB, iD });
+
+    // 4. Glisser-déposer : D (non épinglée) déposée en haut des épinglées → épinglée, en 1re position.
+    const firstPinned = afterPin[0].replace('*', '');
+    await click('D');
+    await js(`(() => {
+      const src = ${item('D')};
+      const tgt = ${item(firstPinned === 'A' ? 'A' : 'C')};
+      const dt = new DataTransfer();
+      src.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: dt }));
+      const r = tgt.getBoundingClientRect();
+      tgt.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt, clientY: r.top + 2 }));
+      tgt.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt, clientY: r.top + 2 }));
+      src.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: dt }));
+    })()`);
+    await wait(700);
+    const afterDrag = await order();
+    // Et une épinglée glissée sur le titre « Discussions » → désépinglée.
+    await js(`(() => {
+      const src = ${item('C')};
+      const tgt = [...document.querySelectorAll('#conv-list .conv-section-title')].find((e) => /Discussions/.test(e.textContent));
+      const dt = new DataTransfer();
+      src.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: dt }));
+      tgt.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt }));
+      tgt.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
+      src.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: dt }));
+    })()`);
+    await wait(700);
+    const afterUnpin = await order();
+    check('CL glisser-déposer : déposée en haut des épinglées → épinglée en 1re position ; sur « Discussions » → désépinglée', afterDrag[0] === 'D*' && afterDrag.filter((x: string) => x.endsWith('*')).length === 3 && afterUnpin.includes('C') && !afterUnpin.includes('C*'), { afterDrag, afterUnpin });
+
+    // 5. Archiver → hors de la liste, lien « Archivées (1) » ; vue des archives → Désarchiver.
+    await rightClick('B');
+    await ctx('archive');
+    await wait(600);
+    const goneB = await js(`!${item('B')}`);
+    const link = await js(`document.querySelector('#conv-list .conv-archive-link')?.textContent ?? ''`);
+    await js(`document.querySelector('#conv-list .conv-archive-link')?.click()`);
+    await wait(300);
+    const inArchive = await js(`!!${item('B')}`);
+    await rightClick('B');
+    await ctx('archive'); // « Désarchiver » dans la vue des archives
+    await wait(600);
+    await js(`[...document.querySelectorAll('#conv-list .conv-archive-head button')][0]?.click()`);
+    await wait(300);
+    const backB = await js(`!!${item('B')}`);
+    check('CL archiver : retirée de la liste, « Archivées (N) », visible dans les archives, « Désarchiver » la remet', goneB && /Archivées \(\d+\)/.test(link) && inArchive && backB && !(await conv(ids.B))?.archived, { goneB, link, inArchive, backB });
+
+    // 6. Clavier : F2 renomme, Suppr supprime la sélection (confirmation).
+    await click('A');
+    await click('D', { ctrlKey: true });
+    await js(`window.confirm = () => true; document.getElementById('conv-list').dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true }))`);
+    await wait(800);
+    const leftAfterDelete = await order();
+    await click('C', { ctrlKey: true });
+    await js(`(async () => { const l = document.getElementById('conv-list'); l.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); })()`);
+    await click('C');
+    await click('C', { ctrlKey: true }); // C seule sélectionnée… puis retirée
+    await click('C', { ctrlKey: true });
+    await js(`document.getElementById('conv-list').dispatchEvent(new KeyboardEvent('keydown', { key: 'F2', bubbles: true }))`);
+    await wait(200);
+    const f2 = await js(`!!document.querySelector('#conv-list input.conv-rename')`);
+    await js(`document.querySelector('#conv-list input.conv-rename')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+    check('CL clavier : Suppr supprime les discussions sélectionnées (après confirmation), F2 lance le renommage', !leftAfterDelete.some((x: string) => /^[AD]\*?$/.test(x)) && f2, { leftAfterDelete, f2 });
+  }
+
   // ---------- P. Demandes d'autorisation de Claude (mode « Prudent ») : Autoriser / Toujours / Refuser ----------
   {
     const title = 'FC · autorisations';

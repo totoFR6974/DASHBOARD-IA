@@ -48,7 +48,8 @@ export type IconName =
   | 'cube'
   | 'eye'
   | 'palette'
-  | 'terminal';
+  | 'terminal'
+  | 'pin';
 
 const FILL = 'var(--icon-fill, #4f5257)';
 const FILL_ROBOT = 'var(--icon-fill-robot, #5e6166)';
@@ -194,6 +195,8 @@ const SHAPES: Record<IconName, string> = {
   // Pellicule.
   film: ['<rect x="3" y="4.4" width="18" height="15.2" rx="2.2"/>', `<path ${line} d="M7.2 4.6v14.8M16.8 4.6v14.8M3.2 9.6h4M3.2 14.4h4M16.8 9.6h4M16.8 14.4h4"/>`].join(''),
   // Cube (fichiers Roblox, modèles 3D).
+  // Punaise : tête évasée et pointe.
+  pin: ['<path d="M8.6 3.2h6.8l-1.2 5.6 3.4 3.2v2H6.4v-2l3.4-3.2z"/>', `<path ${line} d="M12 14v6.8"/>`].join(''),
   // Fenêtre de terminal avec invite « >_ ».
   terminal: ['<rect x="2.6" y="4" width="18.8" height="16" rx="2.6"/>', `<path ${line} d="M6.8 9.4l3.2 2.6-3.2 2.6M12 15.6h5"/>`].join(''),
   // Œil (reconnaissance d'images) : amande et iris.

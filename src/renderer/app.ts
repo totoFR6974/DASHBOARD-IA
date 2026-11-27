@@ -729,9 +729,11 @@ function activeFolder(): WorkFolder | undefined {
   return state.folders.find((f) => f.id === state.activeFolderId);
 }
 
+/** Discussions de la liste : dossier choisi en haut, et archivées seulement dans la vue « Archivées ». */
 function visibleConversations(): Conversation[] {
   const f = activeFolder();
-  return f ? state.conversations.filter((c) => normPath(c.cwd) === normPath(f.path)) : state.conversations;
+  const archived = convUi.archived;
+  return state.conversations.filter((c) => !!c.archived === archived && (!f || normPath(c.cwd) === normPath(f.path)));
 }
 
 /**
@@ -1059,33 +1061,360 @@ function fillModelSelect(select: HTMLSelectElement, providerId: string, current?
 function renderConvList(): void {
   const list = $('conv-list');
   const convs = visibleConversations();
-  // Filtre de dossier actif : on le DIT sous le filtre (sinon des discussions semblent avoir disparu).
   const f = activeFolder();
-  renderFolderHint('conv-folder-hint', state.conversations.length - convs.length, 'discussion');
-  if (convs.length === 0) {
-    list.replaceChildren(
-      h('div', { class: 'muted', style: 'padding:10px;font-size:13px' }, f ? `Aucune discussion dans « ${f.name} ».` : 'Aucune discussion pour le moment.'),
-    );
-    return;
-  }
-  list.replaceChildren(
-    ...convs.map((c) =>
+  // Filtre de dossier actif : on le DIT sous le filtre (sinon des discussions semblent avoir disparu).
+  renderFolderHint('conv-folder-hint', state.conversations.filter((c) => !!c.archived === convUi.archived).length - convs.length, 'discussion');
+  for (const id of [...convUi.sel]) if (!convs.some((c) => c.id === id)) convUi.sel.delete(id);
+  const nodes: Node[] = [];
+  if (convUi.archived) {
+    nodes.push(
       h(
         'div',
-        { class: `conv-item ${c.id === state.activeConvId ? 'active' : ''}`, onclick: () => selectConversation(c.id) },
-        h('div', { class: 'conv-title' }, c.title),
-        h('div', { class: 'conv-folder', title: c.cwd }, iconText('folder', folderLabel(c.cwd), 13)),
-        h(
-          'div',
-          { class: 'conv-meta' },
-          ...participantsOf(c).map((p) => providerTag(p.providerId)),
-          h('span', {}, c.agent),
-          runningTasksFor(c.id).length ? h('span', { class: 'spinner', title: 'Réponse en cours' }) : null,
-          [...claudePermissions.values()].some((p) => p.conversationId === c.id) ? h('span', { class: 'perm-dot', title: 'Claude attend ton autorisation' }, icon('shield', 13)) : null,
-        ),
+        { class: 'conv-archive-head' },
+        h('button', { type: 'button', class: 'link-btn', onclick: () => setArchivedView(false) }, '← Discussions'),
+        h('span', { class: 'muted small' }, `Archivées (${convs.length})`),
       ),
+    );
+  }
+  if (!convs.length) {
+    nodes.push(
+      h(
+        'div',
+        { class: 'muted', style: 'padding:10px;font-size:13px' },
+        convUi.archived ? 'Aucune discussion archivée.' : f ? `Aucune discussion dans « ${f.name} ».` : 'Aucune discussion pour le moment.',
+      ),
+    );
+  }
+  const pinned = convUi.archived ? [] : convs.filter((c) => c.pinned);
+  const others = convUi.archived ? convs : convs.filter((c) => !c.pinned);
+  if (pinned.length) nodes.push(sectionDropTarget(h('div', { class: 'conv-section-title' }, icon('pin', 12), ' Épinglées'), true, 'start'));
+  nodes.push(...pinned.map(convItem));
+  if (pinned.length && others.length) nodes.push(sectionDropTarget(h('div', { class: 'conv-section-title' }, 'Discussions'), false, 'start'));
+  nodes.push(...others.map(convItem));
+  const archivedCount = state.conversations.filter((c) => c.archived && (!f || normPath(c.cwd) === normPath(f.path))).length;
+  if (!convUi.archived && archivedCount) {
+    nodes.push(h('button', { type: 'button', class: 'conv-archive-link', onclick: () => setArchivedView(true) }, icon('archive', 13), ` Archivées (${archivedCount})`));
+  }
+  list.replaceChildren(...nodes);
+}
+
+/** Une discussion de la liste : clic (Ctrl / Maj), clic droit, glisser-déposer, renommage sur place. */
+function convItem(c: Conversation): HTMLElement {
+  const el = h(
+    'div',
+    {
+      class: `conv-item ${c.id === state.activeConvId ? 'active' : ''} ${convUi.sel.has(c.id) ? 'selected' : ''} ${c.pinned ? 'pinned' : ''}`,
+      'data-id': c.id,
+      draggable: !convUi.archived && convUi.renaming !== c.id,
+      onclick: (e: MouseEvent) => onConvClick(e, c.id),
+      oncontextmenu: (e: MouseEvent) => openConvMenu(e, c.id),
+    },
+    convUi.renaming === c.id ? renameInput(c) : h('div', { class: 'conv-title' }, c.pinned && !convUi.archived ? icon('pin', 12) : null, c.title),
+    h('div', { class: 'conv-folder', title: c.cwd }, iconText('folder', folderLabel(c.cwd), 13)),
+    h(
+      'div',
+      { class: 'conv-meta' },
+      ...participantsOf(c).map((p) => providerTag(p.providerId)),
+      h('span', {}, c.agent),
+      runningTasksFor(c.id).length ? h('span', { class: 'spinner', title: 'Réponse en cours' }) : null,
+      [...claudePermissions.values()].some((p) => p.conversationId === c.id) ? h('span', { class: 'perm-dot', title: 'Claude attend ton autorisation' }, icon('shield', 13)) : null,
     ),
   );
+  convDragHandlers(el, c);
+  return el;
+}
+
+// ---------- Liste des discussions : clic droit, sélection multiple, épingler, archiver, glisser-déposer ----------
+
+/**
+ * État de la liste : vue des archives, sélection (Ctrl / Maj + clic, comme l'Explorateur), discussion en cours de
+ * renommage, discussions en cours de glisser-déposer.
+ */
+const convUi = { archived: false, sel: new Set<string>(), anchor: null as string | null, renaming: null as string | null, drag: null as string[] | null };
+
+/** Même ordre que le hub : épinglées d'abord, puis la position choisie (glisser-déposer), puis la plus récente. */
+function sortConversations(): void {
+  state.conversations.sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || (a.order ?? 0) - (b.order ?? 0) || b.updatedAt - a.updatedAt);
+}
+
+/** Identifiants affichés, dans l'ordre de la liste (épinglées puis les autres). */
+function listedIds(): string[] {
+  return visibleConversations().map((c) => c.id);
+}
+
+/** Sélection dans l'ordre de la liste ; sans sélection, la discussion ouverte. */
+function selectedOrActive(): string[] {
+  const ids = listedIds();
+  if (convUi.sel.size) return ids.filter((id) => convUi.sel.has(id));
+  return state.activeConvId && ids.includes(state.activeConvId) ? [state.activeConvId] : [];
+}
+
+function setArchivedView(on: boolean): void {
+  convUi.archived = on;
+  convUi.sel.clear();
+  convUi.anchor = null;
+  renderConvList();
+}
+
+/** Clic sur une discussion : simple = ouvrir ; Ctrl = ajouter / retirer ; Maj = plage (comme dans l'Explorateur). */
+function onConvClick(e: MouseEvent, id: string): void {
+  if (convUi.renaming) return;
+  const ids = listedIds();
+  if (e.shiftKey) {
+    const from = convUi.anchor ?? state.activeConvId ?? id;
+    const a = ids.indexOf(from);
+    const b = ids.indexOf(id);
+    const range = a < 0 ? [id] : ids.slice(Math.min(a, b), Math.max(a, b) + 1);
+    if (e.ctrlKey || e.metaKey) range.forEach((x) => convUi.sel.add(x));
+    else convUi.sel = new Set(range);
+    renderConvList();
+    $('conv-list').focus();
+    return;
+  }
+  if (e.ctrlKey || e.metaKey) {
+    // 1er Ctrl+clic : la discussion ouverte fait partie de la sélection (comme l'élément sélectionné de l'Explorateur).
+    if (!convUi.sel.size && state.activeConvId && state.activeConvId !== id && ids.includes(state.activeConvId)) convUi.sel.add(state.activeConvId);
+    if (convUi.sel.has(id)) convUi.sel.delete(id);
+    else convUi.sel.add(id);
+    convUi.anchor = id;
+    renderConvList();
+    $('conv-list').focus();
+    return;
+  }
+  convUi.sel.clear();
+  convUi.anchor = id;
+  selectConversation(id);
+}
+
+// --- Menu contextuel (clic droit) ---
+
+let ctxMenuEl: HTMLElement | null = null;
+
+function closeCtxMenu(): void {
+  ctxMenuEl?.remove();
+  ctxMenuEl = null;
+}
+
+function ctxItem(ico: IconName, label: string, run: () => void, opts: { danger?: boolean; kbd?: string; action?: string } = {}): HTMLElement {
+  return h(
+    'button',
+    {
+      type: 'button',
+      role: 'menuitem',
+      class: opts.danger ? 'danger' : '',
+      'data-ctx-action': opts.action ?? '',
+      onclick: () => {
+        closeCtxMenu();
+        run();
+      },
+    },
+    icon(ico),
+    h('span', { class: 'ctx-label' }, label),
+    opts.kbd ? h('kbd', { class: 'ctx-kbd' }, opts.kbd) : null,
+  );
+}
+
+/** Menu flottant à la position de la souris, gardé dans la fenêtre. */
+function showCtxMenu(x: number, y: number, children: (Node | null)[]): void {
+  closeCtxMenu();
+  const menu = h('div', { class: 'conv-menu ctx-menu', role: 'menu' }, ...children);
+  menu.style.left = '0px';
+  menu.style.top = '0px';
+  document.body.append(menu);
+  const w = menu.offsetWidth;
+  const hgt = menu.offsetHeight;
+  menu.style.left = `${Math.max(6, Math.min(x, innerWidth - w - 6))}px`;
+  menu.style.top = `${Math.max(6, Math.min(y, innerHeight - hgt - 6))}px`;
+  ctxMenuEl = menu;
+}
+
+/** Clic droit sur une discussion : actions sur elle, ou sur toute la sélection si elle en fait partie. */
+function openConvMenu(e: MouseEvent, id: string): void {
+  e.preventDefault();
+  if (convUi.renaming) return;
+  if (!convUi.sel.has(id)) {
+    convUi.sel = new Set([id]);
+    convUi.anchor = id;
+  }
+  renderConvList();
+  $('conv-list').focus();
+  const ids = listedIds().filter((x) => convUi.sel.has(x));
+  const convs = ids.map((x) => state.conversations.find((c) => c.id === x)).filter((c): c is Conversation => !!c);
+  if (!convs.length) return;
+  const n = convs.length;
+  const allPinned = convs.every((c) => c.pinned);
+  const archiveView = convUi.archived;
+  const pin = () => void hub.updateConversations(ids, { pinned: !allPinned }).catch((err: any) => toast(err.message ?? String(err)));
+  const archive = () => void hub.updateConversations(ids, { archived: !archiveView }).catch((err: any) => toast(err.message ?? String(err)));
+  const items: (Node | null)[] =
+    n === 1
+      ? [
+          convs[0].id !== state.activeConvId ? ctxItem('chat', 'Ouvrir', () => (convUi.sel.clear(), selectConversation(convs[0].id)), { action: 'open' }) : null,
+          ctxItem('pencil', 'Renommer', () => startRename(convs[0].id), { kbd: 'F2', action: 'rename' }),
+          archiveView ? null : ctxItem('pin', allPinned ? 'Désépingler' : 'Épingler', pin, { action: 'pin' }),
+          ctxItem('archive', archiveView ? 'Désarchiver' : 'Archiver', archive, { action: 'archive' }),
+          ctxItem('folder', 'Ouvrir le dossier', () => void hub.openPath(convs[0].cwd), { action: 'folder' }),
+          h('div', { class: 'conv-menu-sep' }),
+          ctxItem('trash', 'Supprimer', () => deleteConvs(ids), { danger: true, kbd: 'Suppr', action: 'delete' }),
+        ]
+      : [
+          h('div', { class: 'ctx-head' }, `${n} discussions sélectionnées`),
+          archiveView ? null : ctxItem('pin', allPinned ? `Désépingler les ${n}` : `Épingler les ${n}`, pin, { action: 'pin' }),
+          ctxItem('archive', archiveView ? `Désarchiver les ${n}` : `Archiver les ${n}`, archive, { action: 'archive' }),
+          h('div', { class: 'conv-menu-sep' }),
+          ctxItem('trash', `Supprimer les ${n}`, () => deleteConvs(ids), { danger: true, kbd: 'Suppr', action: 'delete' }),
+        ];
+  showCtxMenu(e.clientX, e.clientY, items);
+}
+
+function deleteConvs(ids: string[]): void {
+  if (!ids.length) return;
+  const one = ids.length === 1 ? state.conversations.find((c) => c.id === ids[0]) : undefined;
+  if (!confirm(one ? `Supprimer la discussion « ${one.title} » ?` : `Supprimer ces ${ids.length} discussions ? (définitif)`)) return;
+  convUi.sel.clear();
+  void hub.deleteConversations(ids).catch((err: any) => toast(err.message ?? String(err)));
+}
+
+// --- Renommer dans la liste ---
+
+function startRename(id: string): void {
+  convUi.renaming = id;
+  renderConvList();
+  const input = $('conv-list').querySelector<HTMLInputElement>('input.conv-rename');
+  input?.focus();
+  input?.select();
+}
+
+function renameInput(c: Conversation): HTMLInputElement {
+  const input = h('input', { class: 'conv-rename', value: c.title, maxlength: '200', 'aria-label': 'Nouveau nom de la discussion' }) as HTMLInputElement;
+  const finish = (save: boolean) => {
+    if (convUi.renaming !== c.id) return;
+    convUi.renaming = null;
+    const next = input.value.trim();
+    if (save && next && next !== c.title) void hub.updateConversation(c.id, { title: next }).catch((err: any) => toast(err.message ?? String(err)));
+    renderConvList();
+  };
+  input.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter') finish(true);
+    else if (e.key === 'Escape') finish(false);
+  });
+  input.addEventListener('blur', () => finish(true));
+  input.addEventListener('click', (e) => e.stopPropagation());
+  input.addEventListener('mousedown', (e) => e.stopPropagation());
+  return input;
+}
+
+// --- Glisser-déposer ---
+
+function clearDropMarks(): void {
+  document.querySelectorAll('#conv-list .drop-before, #conv-list .drop-after, #conv-list .drop-over').forEach((el) => el.classList.remove('drop-before', 'drop-after', 'drop-over'));
+}
+
+function endConvDrag(): void {
+  convUi.drag = null;
+  clearDropMarks();
+  document.querySelectorAll('#conv-list .dragging').forEach((el) => el.classList.remove('dragging'));
+  document.querySelector('#conv-list .conv-pin-zone.temp')?.remove();
+}
+
+/** Dépôt : les discussions glissées vont avant beforeId (null = fin de la section), épinglées ou non. */
+function dropConvs(beforeId: string | null, pinned: boolean): void {
+  const ids = convUi.drag;
+  endConvDrag();
+  if (!ids?.length || (beforeId && ids.includes(beforeId))) return;
+  void hub.moveConversations(ids, beforeId, pinned).catch((err: any) => toast(err.message ?? String(err)));
+}
+
+/** Rend un élément de la liste « cible de dépôt » d'une section (titre ou zone vide) : dépôt en tête ou en fin. */
+function sectionDropTarget(el: HTMLElement, pinned: boolean, where: 'start' | 'end'): HTMLElement {
+  el.addEventListener('dragover', (e) => {
+    if (!convUi.drag) return;
+    e.preventDefault();
+    clearDropMarks();
+    el.classList.add('drop-over');
+  });
+  el.addEventListener('dragleave', () => el.classList.remove('drop-over'));
+  el.addEventListener('drop', (e) => {
+    e.preventDefault();
+    const section = visibleConversations().filter((c) => !!c.pinned === pinned && !convUi.drag?.includes(c.id));
+    dropConvs(where === 'start' ? (section[0]?.id ?? null) : null, pinned);
+  });
+  return el;
+}
+
+function convDragHandlers(el: HTMLElement, c: Conversation): void {
+  el.addEventListener('dragstart', (e) => {
+    if (convUi.archived || convUi.renaming) return void e.preventDefault();
+    closeCtxMenu();
+    convUi.drag = convUi.sel.has(c.id) && convUi.sel.size > 1 ? listedIds().filter((x) => convUi.sel.has(x)) : [c.id];
+    e.dataTransfer?.setData('text/plain', convUi.drag.join(','));
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+    for (const id of convUi.drag) document.querySelector(`#conv-list .conv-item[data-id="${id}"]`)?.classList.add('dragging');
+    // Pas encore d'épinglée : zone « glisse ici pour épingler » en haut (ajoutée sans redessiner, sinon le glisser s'annule).
+    if (!visibleConversations().some((x) => x.pinned)) {
+      const zone = sectionDropTarget(h('div', { class: 'conv-pin-zone temp' }, icon('pin', 13), ' Glisse ici pour épingler'), true, 'end');
+      $('conv-list').prepend(zone);
+    }
+  });
+  el.addEventListener('dragover', (e) => {
+    if (!convUi.drag) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    const r = el.getBoundingClientRect();
+    const after = e.clientY > r.top + r.height / 2;
+    clearDropMarks();
+    el.classList.add(after ? 'drop-after' : 'drop-before');
+  });
+  el.addEventListener('drop', (e) => {
+    e.preventDefault();
+    if (!convUi.drag) return;
+    const after = el.classList.contains('drop-after');
+    const pinned = !!c.pinned;
+    let beforeId: string | null = c.id;
+    if (after) {
+      // Avant l'élément suivant de la MÊME section (hors éléments glissés), sinon fin de la section.
+      const section = visibleConversations().filter((x) => !!x.pinned === pinned && !convUi.drag!.includes(x.id));
+      const i = section.findIndex((x) => x.id === c.id);
+      beforeId = i >= 0 ? (section[i + 1]?.id ?? null) : null;
+    }
+    dropConvs(beforeId, pinned);
+  });
+  el.addEventListener('dragend', () => endConvDrag());
+}
+
+/** Raccourcis de la liste (quand elle a le focus) : F2 renommer, Suppr supprimer, Échap désélectionner, Ctrl+A tout. */
+function bindConvListKeys(): void {
+  const list = $('conv-list');
+  list.tabIndex = 0;
+  list.addEventListener('keydown', (e) => {
+    if (convUi.renaming || (e.target as HTMLElement).tagName === 'INPUT') return;
+    const ids = selectedOrActive();
+    if (e.key === 'F2' && ids.length === 1) {
+      e.preventDefault();
+      startRename(ids[0]);
+    } else if (e.key === 'Delete' && ids.length) {
+      e.preventDefault();
+      deleteConvs(ids);
+    } else if (e.key === 'Escape' && convUi.sel.size) {
+      convUi.sel.clear();
+      renderConvList();
+    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+      e.preventDefault();
+      convUi.sel = new Set(listedIds());
+      renderConvList();
+    }
+  });
+  // Menu contextuel : fermé par un clic ailleurs, Échap, la molette ou un redimensionnement.
+  document.addEventListener('mousedown', (e) => {
+    if (ctxMenuEl && !ctxMenuEl.contains(e.target as Node)) closeCtxMenu();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeCtxMenu();
+  });
+  list.addEventListener('scroll', closeCtxMenu);
+  window.addEventListener('resize', closeCtxMenu);
+  window.addEventListener('blur', closeCtxMenu);
 }
 
 function selectConversation(id: string | null): void {
@@ -4250,9 +4579,27 @@ function onHubEvent(ev: HubEvent): void {
       const i = state.conversations.findIndex((c) => c.id === ev.conversation.id);
       if (i >= 0) state.conversations[i] = ev.conversation;
       else state.conversations.unshift(ev.conversation);
-      state.conversations.sort((a, b) => b.updatedAt - a.updatedAt);
+      sortConversations();
+      // Discussion ouverte archivée : on ouvre la suivante de la liste.
+      if (ev.conversation.id === state.activeConvId && !!ev.conversation.archived !== convUi.archived) {
+        state.activeConvId = visibleConversations()[0]?.id ?? null;
+        renderChat();
+      }
       renderConvList();
       if (ev.conversation.id === state.activeConvId && state.view === 'chat') renderChat();
+      break;
+    }
+    case 'conversationOrder': {
+      const pos = new Map(ev.order.map((o) => [o.id, o]));
+      for (const c of state.conversations) {
+        const o = pos.get(c.id);
+        if (!o) continue;
+        c.order = o.order;
+        if (o.pinned) c.pinned = true;
+        else delete c.pinned;
+      }
+      sortConversations();
+      renderConvList();
       break;
     }
     case 'conversationDeleted': {
@@ -5713,6 +6060,7 @@ function bindUi(): void {
   });
   // Une vignette qui finit de charger agrandit la discussion : on reste en bas si on y était.
   msgBox.addEventListener('load', () => stickToBottom(), true);
+  bindConvListKeys();
   $('stop-btn').addEventListener('click', () => {
     const conv = activeConv();
     if (conv) for (const t of runningTasksFor(conv.id)) void hub.cancelTask(t.id);
