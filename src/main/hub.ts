@@ -297,6 +297,8 @@ export class Hub {
   private pendingLiveTags = new Set<string>();
   /** Discussions dont une session Claude est en cours de reprise : leurs messages attendent dans la file. */
   private pendingLiveKeys = new Set<string>();
+  /** Hub arrêté (shutdown) : plus aucune reprise ni écriture différée. */
+  private stopped = false;
   /** Demandes d'autorisation de Claude en attente de réponse. */
   private permissions = new Map<string, { request: PermissionRequest; resolve: (d: PermissionDecision) => void }>();
   readonly knowledge: Knowledge;
@@ -1912,12 +1914,17 @@ export class Hub {
    * rattrapé ; celles qui travaillent encore sont suivies jusqu'à leur arrêt (les messages attendent dans la file).
    */
   private async recoverLiveSessions(): Promise<void> {
+    // Rien laissé à la fermeture précédente (cas courant) : rien à faire, et surtout aucune écriture différée de
+    // la base (un hub créé puis aussitôt jeté — tests — ne doit rien écrire après coup).
+    if (this.stopped || (!this.pendingLiveKeys.size && !this.pendingLiveTags.size)) return;
     const claude = this.providers.get('claude') as ClaudeProvider | undefined;
     try {
       if (claude) await claude.live.recover((key) => this.db.data.conversations.some((c) => c.id === key));
     } catch (err) {
       console.error('Reprise des sessions Claude impossible', err);
     }
+    // Hub arrêté pendant la reprise : les sessions reprises sont de nouveau laissées seules.
+    if (this.stopped) return claude?.live.detachAll();
     // Réponses notées en cours mais impossibles à reprendre (discussion supprimée, fichier perdu…) : interrompues.
     for (const id of this.pendingLiveTags) {
       const t = this.db.data.tasks.find((x) => x.id === id);
@@ -2965,6 +2972,7 @@ export class Hub {
   }
 
   shutdown(): void {
+    this.stopped = true;
     // Sessions Claude persistantes : jamais coupées à l'arrêt du hub.
     // Elles continuent SEULES (fin du tour en cours, agents d'arrière-plan) et sont reprises au prochain démarrage.
     (this.providers.get('claude') as ClaudeProvider | undefined)?.live.detachAll();
