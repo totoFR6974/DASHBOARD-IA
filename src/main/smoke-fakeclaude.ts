@@ -800,6 +800,44 @@ export async function smokeFakeClaude(win: BrowserWindow, outDir: string, shot: 
     check('T barre du haut à 1280 px : une seule ligne, rien ne déborde ni ne se chevauche (agents en cours, limites, IA)', Math.abs((bar?.width ?? 0) - 1280) <= 24 && bar?.oneLine === true && bar?.inside === true && bar?.overlaps === false && bar?.agentsShown === true && bar?.right?.length === 3, bar);
     check('T panneau « IA » : fermé par Échap et par un clic ailleurs ; « Réglages des IA… » ouvre la section des IA', esc?.closedByEscape === true && esc?.reopened === true && esc?.closedByClick === true && esc?.settings === true, esc);
 
+    // En-tête de discussion à 1280 px, cas le plus chargé (plusieurs IA, agent renommé, long titre, base) : « ⋯ » entier et cliquable.
+    const hdr = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const provs = (await window.hub.listProviders()).map((p) => p.id).slice(0, 4);
+      const c = await window.hub.createConversation({ participants: provs.map((providerId) => ({ providerId })) });
+      await window.hub.updateConversation(c.id, { title: 'FC · un titre de discussion vraiment très long pour remplir tout l’en-tête', agent: 'Agent renommé assez long' });
+      await sleep(600);
+      const item = [...document.querySelectorAll('#conv-list [data-id]')].find((e) => e.dataset.id === c.id);
+      item?.click();
+      await sleep(600);
+      const head = document.getElementById('chat-header');
+      const hb = head.getBoundingClientRect();
+      const btn = head.querySelector('.conv-more-btn');
+      const b = btn.getBoundingClientRect();
+      const kids = [...head.children].filter((k) => getComputedStyle(k).display !== 'none' && k.getBoundingClientRect().width > 0);
+      const rects = kids.map((k) => k.getBoundingClientRect());
+      const overlaps = rects.some((a, i) => rects.some((r, j) => j > i && a.right > r.left + 1 && r.right > a.left + 1));
+      const mids = rects.map((r) => r.top + r.height / 2);
+      const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+      btn.click();
+      await sleep(300);
+      const menu = head.querySelector('.conv-menu')?.getBoundingClientRect();
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      await sleep(200);
+      return {
+        provs: provs.length, vw: innerWidth, btnW: Math.round(b.width), btnRight: Math.round(b.right), headRight: Math.round(hb.right - parseFloat(getComputedStyle(head).paddingRight)),
+        full: b.width >= 30 && b.right <= hb.right - 4 && b.left >= hb.left, clickable: hit === btn || btn.contains(hit),
+        overlaps, oneLine: Math.max(...mids) - Math.min(...mids) <= 4, noScroll: head.scrollWidth <= head.clientWidth + 1,
+        menuInside: !!menu && menu.right <= innerWidth && menu.left >= 0,
+        selW: [...head.querySelectorAll('.sel-ico')].map((e) => Math.round(e.getBoundingClientRect().width)),
+        tagsCut: [...head.querySelectorAll('.tag')].filter((t) => getComputedStyle(t).display !== 'none' && !t.classList.contains('agent-tag') && t.scrollWidth > t.clientWidth + 1).map((t) => t.textContent),
+        listNoHScroll: (() => { const l = document.getElementById('conv-list'); return l.scrollWidth <= l.clientWidth + 1; })(),
+        sum: [...head.querySelectorAll('.ptag-sum')].filter((t) => getComputedStyle(t).display !== 'none').map((t) => t.textContent + ' / ' + t.title),
+      };
+    })()`);
+    await shot('fc-entete-1280');
+    check('T en-tête de discussion à 1280 px (4 IA, agent renommé, long titre) : « ⋯ » entier, cliquable, rien ne déborde ni ne se chevauche ; liste sans barre horizontale', hdr?.full === true && hdr?.clickable === true && hdr?.overlaps === false && hdr?.oneLine === true && hdr?.noScroll === true && hdr?.menuInside === true && hdr?.selW?.every((w: number) => w >= 90) && hdr?.tagsCut?.length === 0 && hdr?.listNoHScroll === true, hdr);
+
     // Filtre de dossier en tête de la liste des discussions (et des workflows), fonctionnel.
     const dirT = join(outDir, 'dossier-barre-haut');
     mkdirSync(dirT, { recursive: true });

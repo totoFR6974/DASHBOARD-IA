@@ -217,7 +217,25 @@ legend .ico { vertical-align: -0.2em; margin-right: 2px; }
 #chat-header .perm-wrap { flex: 0 0 auto; min-width: 0; max-width: none; }
 #chat-header .perm-wrap > select { width: auto; }
 #chat-header .chat-title { flex: 0 1000 auto; }
-#chat-header .chat-title { min-width: 150px; }
+#chat-header .chat-title { min-width: 110px; }
+/* Fenêtre étroite (1280 px et moins) : tout rétrécit (texte coupé par « … ») et le bouton « ⋯ » reste entier, collé à droite. */
+#chat-header { container: convhead / inline-size; }
+#chat-header .tag { flex: 0 1 auto; min-width: 0; max-width: 130px; overflow: hidden; text-overflow: ellipsis; }
+#chat-header .ptag-sum { display: none; flex-shrink: 0; cursor: default; }
+#chat-header .perm-wrap { flex: 0 1 auto; max-width: 190px; }
+#chat-header .perm-wrap > select { width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#chat-header .sel-ico, #chat-header .conv-base { min-width: 104px; }
+#chat-header .spacer { min-width: 0; }
+#chat-header .conv-more { flex: 0 0 auto; margin-left: 2px; }
+@container convhead (max-width: 980px) {
+  #chat-header .ptag-full { display: none; }
+  #chat-header .ptag-sum { display: inline-flex; }
+  #chat-header .chat-title { min-width: 90px; }
+  #chat-header .agent-tag { max-width: 110px; }
+}
+@container convhead (max-width: 620px) {
+  #chat-header .sel-ico, #chat-header .conv-base { min-width: 70px; }
+}
 
 /* Statistiques mises à jour en place : les barres changent de taille en douceur (pas de redessin). */
 #stats-root [style*="width"], #stats-root [style*="height"] { transition: width 0.5s var(--ease), height 0.5s var(--ease); }
@@ -348,3 +366,7 @@ legend .ico { vertical-align: -0.2em; margin-right: 2px; }
 .pi-switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; border-radius: 50%; background: #fff; transition: left 0.2s var(--ease); }
 .plus-item.active .pi-switch { background: var(--accent); }
 .plus-item.active .pi-switch::after { left: 15px; }
+
+/* Carte d'une discussion à plusieurs IA : les pastilles passent à la ligne au lieu de déborder (plus de barre horizontale). */
+.conv-item .conv-meta { flex-wrap: wrap; row-gap: 4px; min-width: 0; }
+.conv-item .conv-meta > * { white-space: nowrap; }

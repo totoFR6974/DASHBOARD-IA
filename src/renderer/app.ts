@@ -1533,10 +1533,17 @@ function renderChatHeader(conv: Conversation | undefined): void {
     },
     '⋯',
   );
+  // Plusieurs IA : leurs noms quand il y a la place, sinon une seule pastille « N IA » (noms au survol) — bascule en CSS
+  // selon la largeur de l'en-tête (requête de conteneur), pour que tout tienne sur une ligne et reste lisible.
+  const tags = parts.map((p) => providerTag(p.providerId));
+  if (parts.length > 1) {
+    tags.forEach((t) => t.classList.add('ptag-full'));
+    tags.push(h('span', { class: 'tag ptag-sum', title: parts.map((p) => providerName(p.providerId)).join(', ') }, `${parts.length} IA`));
+  }
   header.replaceChildren(
     title,
     agent,
-    ...parts.map((p) => providerTag(p.providerId)),
+    ...tags,
     h('span', { class: 'spacer' }),
     ...extra,
     h('span', { class: 'conv-more' }, more, convMenu.open ? convHeaderMenu(conv, title, agent) : null),
