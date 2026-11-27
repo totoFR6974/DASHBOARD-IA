@@ -361,6 +361,35 @@ export async function smokeFakeClaude(win: BrowserWindow, outDir: string, shot: 
     await js(`document.getElementById('agents-btn').click()`);
     await wait(300);
     await shot('fc-q-file-attente');
+    // Q3. Pendant la longue réponse : activité en UNE ligne (dépliable), et défilement qui ne force pas le bas.
+    const sc = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const box = document.getElementById('messages');
+      const atBottom = () => box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+      // Ajoute de la hauteur pour pouvoir défiler même si la discussion est courte.
+      const live = [...document.querySelectorAll('#messages .msg.assistant')].pop();
+      const heads = live?.querySelectorAll('.act-head').length ?? 0;
+      const listBefore = live?.querySelectorAll('.act-list').length ?? 0;
+      live?.querySelector('.act-head')?.click();
+      await sleep(200);
+      const live2 = [...document.querySelectorAll('#messages .msg.assistant')].pop();
+      const listAfter = live2?.querySelectorAll('.act-list .act').length ?? 0;
+      // En bas au départ : on doit y rester pendant que la réponse s'écrit.
+      box.scrollTop = box.scrollHeight;
+      await sleep(1500);
+      const followed = atBottom();
+      // Remonte en haut : on ne doit PAS être redescendu malgré les nouveaux mots.
+      box.scrollTop = 0;
+      await sleep(1500);
+      const stayedUp = box.scrollTop < 40;
+      // Redescend : le suivi reprend.
+      box.scrollTop = box.scrollHeight;
+      await sleep(1500);
+      const followedAgain = atBottom();
+      return { heads, listBefore, listAfter, followed, stayedUp, followedAgain, scrollable: box.scrollHeight > box.clientHeight };
+    })()`);
+    check('Q3 activité : une seule ligne par réponse, la liste se déplie au clic', sc?.heads === 1 && sc?.listBefore === 0 && sc?.listAfter >= 1, sc);
+    check('Q3 défilement : suit la réponse en bas, ne redescend pas si on a remonté, reprend en revenant en bas', sc?.scrollable === true && sc?.followed === true && sc?.stayedUp === true && sc?.followedAgain === true, sc);
     await js(`[...document.querySelectorAll('#queue-strip button')].find((b) => b.textContent.includes('Envoyer maintenant'))?.click()`);
     check('Q2 interface : « Mettre en attente » pendant la réponse, file affichée au-dessus de la saisie', ui?.sendLabel === 'Mettre en attente' && ui?.stripShown === true, ui);
     check('Q2 agents en cours : pastille dans la barre du haut, panneau qui liste l’agent et sa discussion', ui?.pillShown === true && ui?.rows >= 1 && /FC · file d’attente/.test(ui?.rowText ?? ''), ui);

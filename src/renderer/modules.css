@@ -132,3 +132,13 @@
 /* Zone de saisie jamais écrasée par les boutons (« Arrêter » + « Mettre en attente » pendant une réponse) : les boutons passent à la ligne. */
 .composer textarea { min-width: 320px; flex: 1 1 320px; }
 .composer-actions { margin-left: auto; }
+
+/* ---------- Activité d'une réponse : une ligne qui se met à jour, dépliable ---------- */
+.act-head { display: flex; align-items: center; gap: 7px; width: 100%; max-width: 100%; padding: 4px 8px; margin: 0; border: 1px solid var(--line); border-radius: 8px; background: rgba(255, 255, 255, 0.03); text-align: left; cursor: pointer; }
+.act-head:hover { background: rgba(255, 255, 255, 0.06); border-color: var(--line-strong); }
+.act-head::before { content: none !important; }
+.act-head .spinner { width: 9px; height: 9px; flex-shrink: 0; }
+.act-chev { flex-shrink: 0; width: 10px; color: var(--muted); }
+.act-last { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.act-count { flex-shrink: 0; padding: 0 7px; border-radius: 99px; background: rgba(255, 255, 255, 0.08); font-variant-numeric: tabular-nums; }
+.act-list { display: flex; flex-direction: column; gap: 3px; margin-top: 4px; padding: 6px 8px 6px 22px; max-height: 320px; overflow-y: auto; border-left: 2px solid var(--line); }

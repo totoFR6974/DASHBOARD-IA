@@ -968,9 +968,40 @@ function renderChatHeader(conv: Conversation | undefined): void {
   );
 }
 
+/** Tâches dont la liste d'activité est dépliée (gardé entre deux rafraîchissements de la discussion). */
+const expandedActivity = new Set<string>();
+
+/**
+ * Activité d'une réponse (commandes, outils, infos) : UNE ligne qui montre la dernière action et se met à jour,
+ * avec le nombre d'actions ; un clic déplie la liste complète (et la replie).
+ */
 function activityEl(t: Task | undefined): HTMLElement | null {
   if (!t || t.activity.length === 0) return null;
-  return h('div', { class: 'activity' }, ...t.activity.map((a) => h('div', { class: `act ${a.kind}`, title: a.text }, a.text)));
+  const items = t.activity;
+  const last = items[items.length - 1];
+  const open = expandedActivity.has(t.id);
+  const errors = items.filter((a) => a.kind === 'error').length;
+  const box = h('div', { class: `activity ${open ? 'open' : ''}` });
+  const head = h(
+    'button',
+    {
+      type: 'button',
+      class: `act-head act ${last.kind}`,
+      title: open ? 'Replier la liste des actions' : `Déplier les ${items.length} actions`,
+      onclick: () => {
+        if (expandedActivity.has(t.id)) expandedActivity.delete(t.id);
+        else expandedActivity.add(t.id);
+        box.replaceWith(activityEl(t) ?? h('span'));
+      },
+    },
+    h('span', { class: 'act-chev' }, open ? '▾' : '▸'),
+    t.status === 'running' ? h('span', { class: 'spinner' }) : null,
+    h('span', { class: 'act-last' }, last.text),
+    items.length > 1 ? h('span', { class: 'act-count' }, `${items.length}${errors ? ` · ⚠ ${errors}` : ''}`) : null,
+  );
+  box.append(head);
+  if (open) box.append(h('div', { class: 'act-list' }, ...items.map((a) => h('div', { class: `act ${a.kind}`, title: a.text }, a.text))));
+  return box;
 }
 
 function footEl(t: Task | undefined): HTMLElement | null {
@@ -1214,7 +1245,6 @@ function turnEl(conv: Conversation, turn: Turn): HTMLElement {
 
 function renderMessages(conv: Conversation | undefined): void {
   const box = $('messages');
-  const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
   if (!conv) {
     box.replaceChildren(
       h(
@@ -1248,11 +1278,25 @@ function renderMessages(conv: Conversation | undefined): void {
     const fresh = nodes.flatMap((n) => [...(n.matches('.msg') ? [n] : []), ...n.querySelectorAll<HTMLElement>('.msg')]);
     fresh.slice(0, before).forEach((m) => m.classList.add('seen'));
   }
+  // Autre discussion ouverte : on part du bas.
+  if (lastMessagesConvId !== conv.id) pinnedBottom = true;
   lastMessagesConvId = conv.id;
   box.replaceChildren(...nodes);
-  if (stick || runningTasksFor(conv.id).length) box.scrollTop = box.scrollHeight;
+  stickToBottom();
 }
 let lastMessagesConvId: string | null = null;
+
+/**
+ * Suivi du bas de la discussion : vrai tant que l'utilisateur est en bas (mis à jour quand IL fait défiler).
+ * Tant qu'il est en bas, chaque nouveau texte, activité ou image le garde en bas ; s'il remonte lire plus haut,
+ * on ne le redescend plus jusqu'à ce qu'il revienne lui-même en bas (ou envoie un message).
+ */
+let pinnedBottom = true;
+function stickToBottom(): void {
+  if (!pinnedBottom) return;
+  const box = $('messages');
+  box.scrollTop = box.scrollHeight;
+}
 
 // ----- Menu de choix des IA -----
 
@@ -1646,13 +1690,11 @@ function scheduleLiveUpdate(): void {
     liveFrame = 0;
     const conv = activeConv();
     if (!conv) return;
-    const box = $('messages');
-    const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
     for (const t of runningTasksFor(conv.id)) {
       const body = document.getElementById(`live-body-${t.id}`);
       if (body) body.innerHTML = md(t.output);
     }
-    if (stick) box.scrollTop = box.scrollHeight;
+    stickToBottom();
   });
 }
 
@@ -1669,6 +1711,7 @@ async function sendPrompt(): Promise<void> {
   input.style.height = 'auto';
   closeAiMenu();
   clearPending(conv.id);
+  pinnedBottom = true;
   try {
     const tasks = await hub.sendMessage(conv.id, text, images);
     let added = false;
@@ -5211,6 +5254,12 @@ function bindUi(): void {
     e.preventDefault();
     void sendPrompt();
   });
+  const msgBox = $('messages');
+  msgBox.addEventListener('scroll', () => {
+    pinnedBottom = msgBox.scrollHeight - msgBox.scrollTop - msgBox.clientHeight < 60;
+  });
+  // Une vignette qui finit de charger agrandit la discussion : on reste en bas si on y était.
+  msgBox.addEventListener('load', () => stickToBottom(), true);
   $('stop-btn').addEventListener('click', () => {
     const conv = activeConv();
     if (conv) for (const t of runningTasksFor(conv.id)) void hub.cancelTask(t.id);
