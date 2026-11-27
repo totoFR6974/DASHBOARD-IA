@@ -1,7 +1,7 @@
 // Cœur du hub : discussions, tâches, exécution sur les connecteurs. Ne dépend pas d'Electron
 // (testable seul avec `npm run selftest`).
-import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, isAbsolute, join, resolve, sep } from 'node:path';
 import type {
@@ -47,6 +47,7 @@ import { CLAUDE_EFFORTS } from '../shared/types';
 import { COMFY_DIR_HINT, detectExistingComfy, findComfyRoot, ImageEngine } from './image-engine';
 import { caseInsensitiveFs } from './platform';
 import { isRealPathInside } from './path-guard';
+import { findCitedImagePaths, isCitableImage, MAX_CITED_IMAGES } from './cited-images';
 import { isVoiceModel, isVoiceVariant, VoiceModels } from './voice';
 import { Cutout, isCutoutPath, isCutoutVariant, wantsTransparent } from './cutout';
 import type { CutoutStatus, CutoutVariant, QueuedMessage } from '../shared/types';
@@ -154,6 +155,8 @@ const MAX_TASKS = 2000;
 /** Délégation entre agents (outil MCP demander_a). */
 const MAX_PARALLEL_DELEGATIONS = 3;
 const DELEGATION_TIMEOUT_MS = 15 * 60 * 1000;
+/** Taille maximale d'une image citée dans une réponse (affichée en vignette). */
+const MAX_CITED_IMAGE_BYTES = 25 * 1024 * 1024;
 /** Messages en attente au plus par discussion. */
 const MAX_QUEUED_MESSAGES = 20;
 /** « Récupérer ici » : derniers messages d'une session Claude Code repris dans la discussion. */
@@ -1236,6 +1239,7 @@ export class Hub {
       "Notes de l'utilisateur : l'outil mcp__hub__chercher_notes (paramètres : question, base facultative, nombre facultatif) retrouve PAR LE SENS les passages de ses bases de connaissances (notes Markdown/Obsidian du hub), même sans les mots exacts. Utilise-le dès que la demande peut s'appuyer sur ce qu'il a déjà noté (projets, décisions, préférences, comptes rendus).",
       '',
       'Règles :',
+      "- MONTRER UNE IMAGE : pour montrer une image du PC (capture d'écran, maquette, rendu), écris son CHEMIN ABSOLU dans ta réponse (ex. C:\\dossier\\capture.png) : le hub l'affiche en vignette dans la discussion. Un lien Markdown vers un chemin relatif au dossier de la discussion marche aussi.",
     );
     if (!delegation) {
       // Délégation désactivée dans les réglages : pas d'agent ni d'image.
@@ -2130,7 +2134,8 @@ export class Hub {
         if (this.db.data.conversations.includes(conv)) {
           // Images de la réponse + celles de ses sous-tâches déléguées (ex. Illustrateur appelé par Claude) : gardées
           // dans le message pour les retrouver en rouvrant la discussion, même après « Vider l'historique » des tâches.
-          const replyImages = uniquePaths([...(task.images ?? []), ...this.delegatedImages(task.id)]);
+          // + images citées dans le texte de la réponse (ex. « voici la capture : C:…maquette.png ») : vignettes aussi.
+          const replyImages = uniquePaths([...(task.images ?? []), ...this.delegatedImages(task.id), ...(isImage || !task.output ? [] : this.citedImages(conv, task.output))]);
           conv.messages.push({
             role: 'assistant',
             content,
@@ -2146,6 +2151,39 @@ export class Hub {
         }
       },
     ));
+  }
+
+  /**
+   * Images citées par une IA dans sa réponse, affichables en vignettes. Une image déjà dans les dossiers du hub
+   * (dossiers de travail ajoutés, espace de travail, base…) est montrée telle quelle ; une image du dossier de la
+   * discussion hors de ces dossiers est copiée dans les pièces jointes de la discussion. Rien d'autre n'est lu :
+   * un chemin cité hors du dossier de la discussion et des dossiers du hub est ignoré.
+   */
+  private citedImages(conv: Conversation, text: string): string[] {
+    const roots = this.imageRoots();
+    const out: string[] = [];
+    for (const p of findCitedImagePaths(text, conv.cwd)) {
+      if (out.length >= MAX_CITED_IMAGES) break;
+      try {
+        const st = statSync(p);
+        if (!st.isFile() || st.size > MAX_CITED_IMAGE_BYTES) continue;
+        if (isCitableImage(p, roots) && isRealPathInside(p, roots)) {
+          out.push(p);
+          continue;
+        }
+        if (conv.cwd && isCitableImage(p, [conv.cwd]) && isRealPathInside(p, [conv.cwd])) {
+          const dir = this.attachmentsDir(conv.id);
+          mkdirSync(dir, { recursive: true });
+          const tag = createHash('sha256').update(`${p}|${st.size}|${st.mtimeMs}`).digest('hex').slice(0, 10);
+          const copy = join(dir, `cite-${tag}-${basename(p).replace(/[^\w.-]+/g, '_').slice(-80)}`);
+          if (!existsSync(copy)) copyFileSync(p, copy);
+          out.push(copy);
+        }
+      } catch {
+        /* fichier introuvable ou illisible : ignoré */
+      }
+    }
+    return out;
   }
 
   // ---------- Workflows (délégués au moteur) ----------

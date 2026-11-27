@@ -8,6 +8,7 @@
 import { nativeImage, type BrowserWindow } from 'electron';
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { fakeIllustration } from './fake-image';
 
@@ -410,6 +411,38 @@ export async function smokeFakeClaude(win: BrowserWindow, outDir: string, shot: 
     );
     const pillAfter = await js(`document.getElementById('agents-btn').classList.contains('hidden')`);
     check('Q2 agents en cours : pastille masquée quand plus rien ne tourne', pillAfter === true || (await tasks()).some((t) => t.status === 'running'), pillAfter);
+  }
+
+  // ---------- I. Images citées dans une réponse de Claude : vignettes dans la discussion ----------
+  {
+    const png = fakeIllustration(2, 64);
+    // I1. Image dans un dossier du hub (espace de travail) : affichée telle quelle.
+    const capDir = join(workspace, 'captures');
+    mkdirSync(capDir, { recursive: true });
+    const inHub = join(capDir, 'maquette A.png');
+    writeFileSync(inHub, png);
+    const ci = await newConv('FC · images citées');
+    const [t1] = await waitDone(await send(ci.id, `[fake:echo] Voici la maquette : ${inHub}`));
+    const m1 = (await conv(ci.id))?.messages?.filter((m: any) => m.role === 'assistant').pop();
+    check('I1 image citée (dossier du hub) : jointe au message de réponse', t1?.status === 'done' && (m1?.images ?? []).some((p: string) => p.toLowerCase() === inHub.toLowerCase()), { status: t1?.status, images: m1?.images });
+    const ui = await lastTurn('FC · images citées');
+    const thumbs = await js(`[...document.querySelectorAll('#messages .msg.assistant')].pop()?.querySelectorAll('.thumbs img').length ?? 0`);
+    check('I1 vignette affichée sous la réponse', thumbs >= 1, { thumbs, ui });
+    // I2. Lien Markdown relatif au dossier de la discussion, hors des dossiers du hub : copie dans les pièces jointes.
+    const proj = join(tmpdir(), `hub-cite-proj-${Date.now()}`);
+    mkdirSync(join(proj, 'captures'), { recursive: true });
+    writeFileSync(join(proj, 'captures', 'maq b.png'), png);
+    const outside = join(tmpdir(), `hub-cite-hors-${Date.now()}.png`);
+    writeFileSync(outside, png);
+    await js(`window.hub.updateConversation(${JSON.stringify(ci.id)}, { cwd: ${JSON.stringify(proj)} })`);
+    const [t2] = await waitDone(await send(ci.id, `[fake:echo] Capture : ![maquette](<captures/maq b.png>) et une autre hors du projet : ${outside}`));
+    const m2 = (await conv(ci.id))?.messages?.filter((m: any) => m.role === 'assistant').pop();
+    const imgs: string[] = m2?.images ?? [];
+    check(
+      'I2 lien relatif au dossier de la discussion → copie affichable ; chemin hors projet et hors hub ignoré',
+      t2?.status === 'done' && imgs.length === 1 && /cite-[0-9a-f]{10}-maq_b\.png$/.test(imgs[0]) && existsSync(imgs[0]),
+      { status: t2?.status, images: imgs },
+    );
   }
 
   // ---------- C. chercher_notes appelé par Claude (MCP réel) ----------

@@ -7,6 +7,7 @@ import type { Conversation, Task, WorkflowRun } from '../shared/types';
 import { Hub, mergeClaudeDuplicates, samePath } from './hub';
 import { imagePreset } from './image-models';
 import { macModelChoice } from './providers/comfyui';
+import { findCitedImagePaths } from './cited-images';
 import { detectExistingComfy, findComfyRoot, unpackedPath } from './image-engine';
 import { isAllowedExternalUrl, recommendModel } from './setup';
 import { compareSemver, fetchReleases, isPrereleaseVersion, pickLatestRelease, readableUpdateError } from './update-check';
@@ -779,6 +780,16 @@ async function testClaudeLogs(): Promise<void> {
       !!r1?.imported && r1.role === 'assistant' && r1.content.startsWith('Salut') && /🔧 Read/.test(r1.content) && r1.turnId === q1.turnId &&
       !note?.imported && /Copie indépendante/.test(note?.content ?? '') && !!note?.turnId && note.turnId !== q1.turnId,
     `historique repris dans la discussion (${c1.messages.map((m) => `${m.role}${m.imported ? '*' : ''}`).join(', ')})`,
+  );
+  // Images citées dans une réponse : chemins absolus (espaces compris), liens Markdown relatifs, sans doublon ni URL web.
+  const cited = findCitedImagePaths(
+    'Voir C:\\Projet X\\captures\\maquette A.png, puis [B](docs/captures/b.png) et ![c](<img/c d.jpg>). ' +
+      'Encore C:\\Projet X\\captures\\maquette A.png, https://exemple.com/x.png et [doc](notes.md).',
+    'C:\\Projet X',
+  );
+  check(
+    cited.length === 3 && cited[0] === 'C:\\Projet X\\captures\\maquette A.png' && cited[1] === 'C:\\Projet X\\docs\\captures\\b.png' && cited[2] === 'C:\\Projet X\\img\\c d.jpg',
+    `images citées dans une réponse reconnues (${cited.join(' | ')})`,
   );
   // Récupérer à nouveau la même session (copie ou reprise) : la discussion existante est rouverte, pas de doublon.
   const nBefore = h2.listConversations().length;

@@ -475,6 +475,14 @@ switch (scenario) {
   case 'notes':
     await notes();
     break;
+  case 'echo': {
+    // Répète le texte qui suit le mot-clé (ex. citer un chemin d'image dans la réponse).
+    rateLimit();
+    const said = prompt.slice(prompt.lastIndexOf('[fake:echo]') + '[fake:echo]'.length).trim();
+    await assistantMessage(`${SIGNATURE} ${said}`);
+    finish();
+    break;
+  }
   case 'attachments':
     await attachments();
     break;
