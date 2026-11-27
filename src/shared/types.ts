@@ -904,7 +904,9 @@ export type HubEvent =
   /** Nouveau calcul de conso Claude Code prêt. */
   | { type: 'claudeLogUsage' }
   /** Progression du calcul (fichiers relus). */
-  | { type: 'claudeLogProgress'; done: number; total: number };
+  | { type: 'claudeLogProgress'; done: number; total: number }
+  /** Agents Claude d'arrière-plan en cours dans la session persistante d'une discussion. */
+  | { type: 'claudeBackground'; conversationId: string; count: number };
 
 /**
  * État des mises à jour. mode : installed = version installée (téléchargement + installation automatiques),
@@ -1098,6 +1100,10 @@ export interface HubApi {
   removeQueuedMessage(conversationId: string, id: string): Promise<QueuedMessage | null>;
   /** File d'attente : arrête la réponse en cours et envoie CE message tout de suite. */
   sendQueuedNow(conversationId: string, id: string): Promise<Task[]>;
+  /** Ferme la session Claude de la discussion et la rouvre dans un terminal (`claude --resume`), dans son dossier. */
+  continueClaudeInTerminal(conversationId: string, force?: boolean): Promise<void>;
+  /** Redémarre la session Claude de la discussion (fermée maintenant, rouverte avec tout l'historique au prochain message). */
+  closeClaudeSession(conversationId: string): void;
   /** Copie les sessions dans les archives du hub et les masque de la liste (rien ne change dans ~/.claude). */
   archiveClaudeSessions(ids: string[]): Promise<ClaudeArchiveResult>;
   /** Remet les sessions dans la liste ; la copie archivée est conservée. */
@@ -1301,6 +1307,8 @@ export const HUB_METHODS = [
   'continueClaudeSession',
   'removeQueuedMessage',
   'sendQueuedNow',
+  'continueClaudeInTerminal',
+  'closeClaudeSession',
   'archiveClaudeSessions',
   'unarchiveClaudeSessions',
   'deleteClaudeArchive',

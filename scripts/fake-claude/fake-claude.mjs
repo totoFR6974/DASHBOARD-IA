@@ -5,6 +5,9 @@
 //   claude -p --output-format stream-json --verbose --include-partial-messages --permission-mode <m>
 //          [--model m] [--resume id [--fork-session]] [--append-system-prompt t] [--effort e]
 //          [--mcp-config fichier…] [--allowedTools outil…] [--add-dir dossier…]   (prompt sur l'entrée standard)
+//          [--input-format stream-json]  → session PERSISTANTE : une ligne {"type":"user",…} par message, un tour
+//          (init … result) par message, process gardé jusqu'à la fin de l'entrée standard.
+//   claude agents --json   → sessions ouvertes ailleurs : contenu de <HUB_FAKE_CLAUDE_STATE>/agents.json (sinon [])
 // Sortie : lignes JSON « stream-json » (system/init, stream_event partiels, assistant, user = résultats d'outils,
 // rate_limit_event, result avec usage et total_cost_usd).
 //
@@ -22,6 +25,9 @@
 //   usage-limit       limite d'abonnement atteinte (rate_limit_event rejeté + erreur)
 //   crash             sortie non nulle sans ligne « result » (message sur stderr)
 //   long              longue réponse lente + sous-process (simule un serveur MCP) : le hub doit tout arrêter
+//   bg-agent          lance un agent en arrière-plan (task_started), répond, puis (session persistante) le résultat
+//                     de l'agent revient seul ~1,5 s plus tard (task_notification + nouveau tour « spontané »)
+//   echo              répète le texte qui suit le mot-clé
 // Autres variables :
 //   HUB_FAKE_CLAUDE_AUTH=loggedout|old   état renvoyé par « auth status » (défaut : connecté)
 //   HUB_FAKE_CLAUDE_LOG=<fichier>        journal JSONL de chaque appel (arguments, session, pid, résultats)
@@ -82,9 +88,20 @@ if (argv[0] === 'auth') {
   die(`error: unknown command 'auth ${argv[1] ?? ''}'`);
 }
 
+if (argv[0] === 'agents') {
+  let list = [];
+  try {
+    if (env.HUB_FAKE_CLAUDE_STATE) list = JSON.parse(readFileSync(join(env.HUB_FAKE_CLAUDE_STATE, 'agents.json'), 'utf8'));
+  } catch {
+    /* aucune session ouverte ailleurs */
+  }
+  process.stdout.write(`${JSON.stringify(list)}\n`);
+  process.exit(0);
+}
+
 // ---------- Arguments du mode -p ----------
 
-const VALUE = new Set(['--output-format', '--permission-mode', '--model', '--resume', '--append-system-prompt', '--effort']);
+const VALUE = new Set(['--output-format', '--input-format', '--permission-mode', '--model', '--resume', '--append-system-prompt', '--effort', '--session-id']);
 const MULTI = new Set(['--mcp-config', '--allowedTools', '--add-dir']);
 const FLAGS = new Set(['-p', '--print', '--verbose', '--include-partial-messages', '--fork-session']);
 const opts = { print: false, verbose: false, partial: false, fork: false, mcpConfig: [], allowedTools: [], addDir: [] };
@@ -113,6 +130,8 @@ for (let i = 0; i < argv.length; i++) {
 }
 if (!opts.print) die('Faux Claude : seul le mode -p (sans interface) est simulé.');
 if (opts['output-format'] !== 'stream-json') die('Faux Claude : seul --output-format stream-json est simulé.');
+if (opts['input-format'] && !['text', 'stream-json'].includes(opts['input-format'])) die(`error: option '--input-format <format>' argument '${opts['input-format']}' is invalid.`);
+if (opts['input-format'] === 'stream-json' && opts['output-format'] !== 'stream-json') die('Error: --input-format=stream-json requires output-format=stream-json');
 if (!opts.verbose) die('Error: When using --print, --output-format=stream-json requires --verbose');
 if (opts.fork && !opts.resume) die('Error: --fork-session requires --resume or --continue');
 const PERMISSIONS = ['default', 'acceptEdits', 'plan', 'bypassPermissions', 'dontAsk', 'auto'];
@@ -140,17 +159,24 @@ function rememberSession(id) {
 
 // ---------- Lecture du prompt ----------
 
-const prompt = await new Promise((res) => {
-  let data = '';
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('data', (c) => (data += c));
-  process.stdin.on('end', () => res(data));
-  process.stdin.on('error', () => res(data));
-});
-if (!prompt.trim()) die('Error: Input must be provided either through stdin or as a prompt argument when using --print');
-
-const keywords = [...prompt.matchAll(/\[fake:([a-z-]+)\]/g)].map((m) => m[1]);
-const scenario = env.HUB_FAKE_CLAUDE_SCENARIO || keywords[keywords.length - 1] || 'simple';
+const LIVE = opts['input-format'] === 'stream-json';
+const pickScenario = (text) => {
+  const keywords = [...text.matchAll(/\[fake:([a-z-]+)\]/g)].map((m) => m[1]);
+  return env.HUB_FAKE_CLAUDE_SCENARIO || keywords[keywords.length - 1] || 'simple';
+};
+let prompt = '';
+let scenario = 'simple';
+if (!LIVE) {
+  prompt = await new Promise((res) => {
+    let data = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (c) => (data += c));
+    process.stdin.on('end', () => res(data));
+    process.stdin.on('error', () => res(data));
+  });
+  if (!prompt.trim()) die('Error: Input must be provided either through stdin or as a prompt argument when using --print');
+  scenario = pickScenario(prompt);
+}
 
 if (opts.resume) {
   const known = knownSessions();
@@ -159,21 +185,27 @@ if (opts.resume) {
     die(`No conversation found with session ID: ${opts.resume}`);
   }
 }
-const sessionId = opts.resume && !opts.fork ? opts.resume : randomUUID();
+const sessionId = opts.resume && !opts.fork ? opts.resume : opts['session-id'] || randomUUID();
 rememberSession(sessionId);
-log({
-  event: 'start',
-  scenario,
-  args: opts,
-  cwd: process.cwd(),
-  sessionIn: opts.resume ?? null,
-  sessionOut: sessionId,
-  promptChars: prompt.length,
-  promptTail: prompt.slice(-400),
-  prompt: prompt.slice(0, 20000),
-  mcpToolTimeout: env.MCP_TOOL_TIMEOUT ?? null,
-  electronRunAsNode: env.ELECTRON_RUN_AS_NODE ?? null,
-});
+/** Journal d'un message traité (un par process en mode classique, un par message en mode persistant). */
+function logStart(turn = 1) {
+  log({
+    event: 'start',
+    scenario,
+    args: opts,
+    live: LIVE,
+    turn,
+    cwd: process.cwd(),
+    sessionIn: opts.resume ?? null,
+    sessionOut: sessionId,
+    promptChars: prompt.length,
+    promptTail: prompt.slice(-400),
+    prompt: prompt.slice(0, 20000),
+    mcpToolTimeout: env.MCP_TOOL_TIMEOUT ?? null,
+    electronRunAsNode: env.ELECTRON_RUN_AS_NODE ?? null,
+  });
+}
+if (!LIVE) logStart();
 
 // ---------- Client MCP (HTTP « streamable », réponses JSON ou SSE) ----------
 
@@ -260,10 +292,11 @@ function allowed(tool) {
 let usageIn = 0;
 let usageOut = 0;
 let lastText = '';
-const started = Date.now();
+let started = Date.now();
 const words = (t) => t.match(/\S+\s*/g) ?? [t];
 
-out({
+function systemInit() {
+  out({
   type: 'system',
   subtype: 'init',
   cwd: process.cwd(),
@@ -274,7 +307,8 @@ out({
   permissionMode: opts['permission-mode'] ?? 'default',
   apiKeySource: 'none',
   claude_code_version: '9.9.9',
-});
+  });
+}
 
 function rateLimit(kind = 'unified', status = 'allowed') {
   const now = Math.floor(Date.now() / 1000);
@@ -451,6 +485,48 @@ async function long() {
   finish();
 }
 
+/** Résultat d'un agent d'arrière-plan qui revient seul (mode persistant) : file des tours, comme le vrai. */
+let chain = Promise.resolve();
+let pendingBg = 0;
+let inputEnded = false;
+const maybeExit = () => {
+  if (inputEnded && pendingBg === 0) chain = chain.then(() => process.exit(0));
+};
+function later(fn, ms) {
+  pendingBg++;
+  setTimeout(() => {
+    chain = chain.then(fn).finally(() => {
+      pendingBg--;
+      maybeExit();
+    });
+  }, ms);
+}
+
+async function bgAgent() {
+  rateLimit();
+  const block = await assistantMessage('Je lance un agent en arrière-plan.', { name: 'Agent', input: { description: 'Agent de test', prompt: 'travaille', run_in_background: true } });
+  const taskId = `bgtask_${randomUUID().slice(0, 8)}`;
+  out({ type: 'system', subtype: 'task_started', task_id: taskId, tool_use_id: block.id, description: 'Agent de test', session_id: sessionId });
+  out({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: block.id, content: [{ type: 'text', text: 'Async agent launched successfully.' }] }] }, session_id: sessionId });
+  // Message interne du sous-agent : il ne doit PAS apparaître dans la réponse affichée.
+  out({ type: 'assistant', parent_tool_use_id: block.id, message: { id: 'msg_sub', role: 'assistant', model: MODEL, content: [{ type: 'text', text: 'TEXTE INTERNE DU SOUS-AGENT' }, { type: 'tool_use', id: 'toolu_sub', name: 'Bash', input: { command: 'sleep 1' } }] }, session_id: sessionId });
+  await assistantMessage(`${SIGNATURE} Agent lancé en arrière-plan.`);
+  finish();
+  if (!LIVE) return;
+  const delay = Number(/délai\s*:\s*(\d+)/.exec(prompt)?.[1] ?? 1500);
+  later(async () => {
+    out({ type: 'system', subtype: 'task_notification', task_id: taskId, tool_use_id: block.id, status: 'completed', session_id: sessionId });
+    started = Date.now();
+    usageIn = 0;
+    usageOut = 0;
+    systemInit();
+    await assistantMessage(`${SIGNATURE} Résultat de l'agent d'arrière-plan reçu.`);
+    log({ event: 'spontaneous', taskId });
+    finish();
+  }, delay);
+}
+
+async function runScenario() {
 switch (scenario) {
   case 'simple':
   case 'limits-legacy':
@@ -488,17 +564,17 @@ switch (scenario) {
     break;
   case 'notloggedin':
     finish(true, 'Not logged in · Please run /login');
-    process.exitCode = 1;
+    if (!LIVE) process.exitCode = 1;
     break;
   case 'oauth':
     finish(true, 'OAuth session expired and could not be refreshed. Please run /login.');
-    process.exitCode = 1;
+    if (!LIVE) process.exitCode = 1;
     break;
   case 'usage-limit': {
     rateLimit('unified', 'rejected');
     const reset = Math.floor(Date.now() / 1000) + 2 * 3600;
     finish(true, `Claude AI usage limit reached|${reset}`);
-    process.exitCode = 1;
+    if (!LIVE) process.exitCode = 1;
     break;
   }
   case 'crash':
@@ -509,6 +585,55 @@ switch (scenario) {
   case 'long':
     await long();
     break;
+  case 'bg-agent':
+    await bgAgent();
+    break;
   default:
     die(`Faux Claude : scénario inconnu « ${scenario} »`, 2);
+}
+}
+
+if (!LIVE) {
+  systemInit();
+  await runScenario();
+} else {
+  // Session persistante : un message par ligne, traités dans l'ordre ; fin quand l'entrée standard se ferme
+  // (après les résultats d'agents d'arrière-plan encore attendus).
+  let turn = 0;
+  let pending = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (chunk) => {
+    pending += chunk;
+    let i;
+    while ((i = pending.indexOf('\n')) >= 0) {
+      const line = pending.slice(0, i).trim();
+      pending = pending.slice(i + 1);
+      if (!line) continue;
+      let msg;
+      try {
+        msg = JSON.parse(line);
+      } catch {
+        die(`Error: invalid stream-json input line: ${line.slice(0, 80)}`);
+      }
+      if (msg.type !== 'user') continue;
+      const c = msg.message?.content;
+      const text = typeof c === 'string' ? c : Array.isArray(c) ? c.filter((b) => b?.type === 'text').map((b) => b.text).join('\n') : '';
+      chain = chain.then(async () => {
+        turn++;
+        prompt = text;
+        scenario = pickScenario(text);
+        started = Date.now();
+        usageIn = 0;
+        usageOut = 0;
+        lastText = '';
+        logStart(turn);
+        systemInit();
+        await runScenario();
+      });
+    }
+  });
+  process.stdin.on('end', () => {
+    inputEnded = true;
+    maybeExit();
+  });
 }

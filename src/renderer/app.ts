@@ -595,11 +595,13 @@ function runningAgents(): Task[] {
 
 function renderAgentsPill(): void {
   const list = runningAgents();
+  const bg = [...claudeBackground.values()].reduce((a, b) => a + b, 0);
   const btn = $('agents-btn');
-  btn.classList.toggle('hidden', list.length === 0);
-  btn.replaceChildren(h('span', { class: 'spinner' }), `${list.length} agent${list.length > 1 ? 's' : ''} en cours`);
+  const total = list.length + bg;
+  btn.classList.toggle('hidden', total === 0);
+  btn.replaceChildren(h('span', { class: 'spinner' }), `${total} agent${total > 1 ? 's' : ''} en cours`);
   if (agentsUi.open) {
-    if (list.length) renderAgentsMenu();
+    if (total) renderAgentsMenu();
     else toggleAgentsMenu(false);
   }
 }
@@ -623,7 +625,7 @@ function renderAgentsMenu(): void {
     selectTask(t.id);
   };
   $('agents-menu').replaceChildren(
-    h('div', { class: 'usage-title' }, `Agents en cours (${list.length})`),
+    h('div', { class: 'usage-title' }, `Agents en cours (${list.length + [...claudeBackground.values()].reduce((a, b) => a + b, 0)})`),
     h(
       'div',
       { class: 'agents-rows' },
@@ -649,6 +651,24 @@ function renderAgentsMenu(): void {
             h('button', { type: 'button', class: 'btn small', onclick: () => open(t) }, 'Ouvrir'),
             h('button', { type: 'button', class: 'btn small danger', title: 'Arrêter cet agent (et ses sous-tâches)', onclick: () => void hub.cancelTask(t.id) }, '■ Arrêter'),
           ),
+        );
+      }),
+      // Agents lancés en arrière-plan par Claude (sessions persistantes) : ils vivent dans la session de la discussion.
+      ...[...claudeBackground.entries()].map(([convId, n]) => {
+        const conv = state.conversations.find((c) => c.id === convId);
+        return h(
+          'div',
+          { class: 'agents-row' },
+          h('div', { class: 'agents-row-top' }, h('span', { class: 'spinner' }), h('b', {}, `${n} agent${n > 1 ? 's' : ''} en arrière-plan`), providerTag('claude')),
+          h('div', { class: 'agents-where muted small' }, conv ? `discussion « ${conv.title} »` : ''),
+          h('div', { class: 'agents-last muted small' }, 'Lancé(s) par Claude : le résultat reviendra dans la discussion.'),
+          conv
+            ? h(
+                'div',
+                { class: 'agents-actions' },
+                h('button', { type: 'button', class: 'btn small', onclick: () => (toggleAgentsMenu(false), void showConversation(conv)) }, 'Ouvrir'),
+              )
+            : null,
         );
       }),
     ),
@@ -1242,6 +1262,15 @@ function convHeaderMenu(conv: Conversation, title: HTMLElement, agent: HTMLEleme
     { class: 'conv-menu', role: 'menu' },
     item('folder', 'Ouvrir le dossier', 'folder', () => void hub.openPath(conv.cwd)),
     obsidian,
+    conv.providerSessions?.claude && !conv.claudeForkPending
+      ? item('terminal', 'Continuer dans un terminal', 'terminal', () => void continueInTerminal(conv))
+      : null,
+    conv.participants.some((p) => p.providerId === 'claude')
+      ? item('robot', 'Redémarrer la session Claude', 'restart', () => {
+          void hub.closeClaudeSession(conv.id);
+          toast('Session Claude redémarrée : elle se rouvre, avec tout l’historique, à ton prochain message.');
+        })
+      : null,
     conv.knowledgeNote ? item('note', 'Ouvrir la note de la discussion', 'note', () => void openNoteIn(conv.knowledgeNoteBase ?? conv.knowledgeBaseId, conv.knowledgeNote!)) : null,
     item('pencil', 'Renommer la discussion', 'rename', () => edit(title)),
     item('robot', 'Renommer l’agent', 'agent', () => edit(agent)),
@@ -1250,6 +1279,27 @@ function convHeaderMenu(conv: Conversation, title: HTMLElement, agent: HTMLEleme
       if (confirm(`Supprimer la discussion « ${conv.title} » ?`)) void hub.deleteConversation(conv.id);
     }, 'danger'),
   );
+}
+
+/** « Continuer dans un terminal » : la session Claude quitte le hub et s'ouvre dans une fenêtre de terminal. */
+async function continueInTerminal(conv: Conversation): Promise<void> {
+  try {
+    await hub.continueClaudeInTerminal(conv.id);
+    toast('Session Claude ouverte dans un terminal (claude --resume). Elle reprendra dans le hub à ton prochain message ici.');
+  } catch (err: any) {
+    const msg = String(err?.message ?? err);
+    if (/AGENTS_EN_COURS/.test(msg)) {
+      if (!confirm('Des agents Claude travaillent encore en arrière-plan dans cette discussion : continuer dans un terminal les arrêtera. Continuer quand même ?')) return;
+      try {
+        await hub.continueClaudeInTerminal(conv.id, true);
+        toast('Session Claude ouverte dans un terminal.');
+      } catch (e: any) {
+        toast(e?.message ?? String(e));
+      }
+      return;
+    }
+    toast(msg.replace(/^.*?AGENTS_EN_COURS:\s*/, ''));
+  }
 }
 
 /** Icône d'une ligne d'activité : outil (clé), info (i), erreur (attention ambre). */
@@ -1872,6 +1922,7 @@ function renderComposer(conv: Conversation | undefined): void {
   send.title = running ? 'Une réponse est en cours : ce message sera envoyé automatiquement juste après' : '';
   $<HTMLTextAreaElement>('prompt').disabled = !conv;
   renderQueueStrip(conv, running);
+  renderBackgroundStrip(conv);
   const picker = $<HTMLButtonElement>('ai-picker-btn');
   picker.replaceChildren(iconText('robot', pickerLabel(conv)));
   picker.disabled = !conv;
@@ -1885,6 +1936,21 @@ function renderComposer(conv: Conversation | undefined): void {
   renderBgToggle(conv);
   renderAttachStrip();
   renderAiMenu();
+}
+
+/** Agents Claude d'arrière-plan en cours, par discussion (sessions persistantes). */
+const claudeBackground = new Map<string, number>();
+
+/** Bandeau « N agents Claude en arrière-plan » : on peut écrire, leur résultat arrivera dans la discussion. */
+function renderBackgroundStrip(conv: Conversation | undefined): void {
+  const strip = $('bg-agents-strip');
+  const n = conv ? (claudeBackground.get(conv.id) ?? 0) : 0;
+  strip.classList.toggle('hidden', !n);
+  if (!n) return strip.replaceChildren();
+  strip.replaceChildren(
+    h('span', { class: 'spinner' }),
+    h('span', {}, `${n} agent${n > 1 ? 's' : ''} Claude en arrière-plan — tu peux continuer à écrire, ${n > 1 ? 'leurs résultats arriveront' : 'son résultat arrivera'} ici.`),
+  );
 }
 
 /** Messages en attente au-dessus de la zone de saisie : « Envoyer maintenant », modifier, retirer. */
@@ -4171,6 +4237,13 @@ function onHubEvent(ev: HubEvent): void {
     }
     case 'claudeLogUsage': {
       if (cc.usage && !cc.loading && state.view === 'stats') void loadClaudeUsage(false, true);
+      break;
+    }
+    case 'claudeBackground': {
+      if (ev.count) claudeBackground.set(ev.conversationId, ev.count);
+      else claudeBackground.delete(ev.conversationId);
+      if (state.activeConvId === ev.conversationId && state.view === 'chat') renderComposer(activeConv());
+      renderAgentsPill();
       break;
     }
     case 'claudeLogProgress': {

@@ -7,6 +7,7 @@ import type { ProviderInfo } from '../../shared/types';
 import { checkClaudePath, claudeLaunchSpec, findClaudeOnWindowsPath, npmGlobalClaude, windowsLoginCommand } from '../claude-launch';
 import { caseInsensitiveFs, claudeCandidates, findInPath, firstExisting, killProcessTree, openInMacTerminal, testOnlyEnv, treeSpawnOptions } from '../platform';
 import { CancelledError, type Provider, type RunContext, type RunResult } from './provider';
+import { ClaudeLiveSessions, type LiveHooks } from './claude-live';
 
 /** Modèles proposés ; "default" = ne pas passer --model (Claude choisit). */
 const MODELS = ['default', 'opus', 'sonnet', 'haiku'];
@@ -20,7 +21,27 @@ export class ClaudeProvider implements Provider {
   /** Appelé au démarrage d'une session avec les serveurs MCP vus par Claude (nom + état). */
   onMcpServers: ((servers: { name: string; status: string }[]) => void) | null = null;
 
-  constructor(private getPath: () => string) {}
+  /** Sessions persistantes, une par discussion (voir claude-live.ts). Les rappels sont branchés par le hub. */
+  readonly live: ClaudeLiveSessions;
+  liveHooks: LiveHooks = { spontaneous: () => null, background: () => undefined, closed: () => undefined };
+
+  constructor(private getPath: () => string) {
+    this.live = new ClaudeLiveSessions(
+      {
+        command: (extra) => this.command(extra),
+        invocation: (ctx) => buildClaudeInvocation(ctx),
+        explainFailure: (text) => explainClaudeFailure(text),
+        describeTool: (name, input) => describeTool(name, input),
+        onLimits: (info) => this.onLimits?.(info),
+        onMcpServers: (servers) => this.onMcpServers?.(servers),
+      },
+      {
+        spontaneous: (key) => this.liveHooks.spontaneous(key),
+        background: (key, n) => this.liveHooks.background(key, n),
+        closed: (key) => this.liveHooks.closed(key),
+      },
+    );
+  }
 
   /**
    * Trouve Claude Code : réglage explicite (revalidé : nom claude/claude.exe/claude.cmd, aucun caractère réservé),
@@ -104,7 +125,59 @@ export class ClaudeProvider implements Provider {
     }
   }
 
+  /**
+   * Session Claude ouverte AILLEURS (terminal, appli Claude, session d'arrière-plan) ? D'après « claude agents --json »
+   * (versions récentes ; false si la commande n'existe pas ou échoue). Sert à prévenir avant de reprendre la même
+   * session dans le hub (deux suites différentes sinon).
+   */
+  openElsewhere(sessionId: string): Promise<boolean> {
+    return new Promise((done) => {
+      let c: ReturnType<ClaudeProvider['command']>;
+      try {
+        c = this.command(['agents', '--json']);
+      } catch {
+        return done(false);
+      }
+      const child = spawn(c.cmd, c.args, { env: c.env, windowsHide: true, windowsVerbatimArguments: !!c.verbatim, stdio: ['ignore', 'pipe', 'ignore'] });
+      let out = '';
+      const timer = setTimeout(() => {
+        killTree(child.pid);
+        done(false);
+      }, 5000);
+      child.stdout.setEncoding('utf8');
+      child.stdout.on('data', (d: string) => (out += d));
+      child.on('error', () => done(false));
+      child.on('close', (code) => {
+        clearTimeout(timer);
+        try {
+          const list = code === 0 ? JSON.parse(out) : [];
+          done(Array.isArray(list) && list.some((s: any) => s?.sessionId === sessionId));
+        } catch {
+          done(false);
+        }
+      });
+    });
+  }
+
+  /** Ouvre une fenêtre de terminal visible, dans le dossier de la discussion, avec « claude --resume <session> ». */
+  openResumeTerminal(sessionId: string, cwd: string): void {
+    if (!/^[\w-]+$/.test(sessionId)) throw new Error('Identifiant de session refusé');
+    const exe = this.resolvePath();
+    if (process.platform === 'win32') {
+      const spec = claudeLaunchSpec(exe, []);
+      const term = windowsLoginCommand({ ...spec, shimPath: exe }, ['--resume', sessionId], childEnv(), '/k', 'Claude Code - Hub IA');
+      spawn(term.cmd, term.args, { cwd, detached: true, stdio: 'ignore', windowsHide: false, windowsVerbatimArguments: true, env: term.env }).unref();
+    } else if (process.platform === 'darwin') {
+      const abs = exe.includes('/') ? exe : (findInPath(exe) ?? exe);
+      openInMacTerminal([abs, '--resume', sessionId], 'Claude Code (Hub IA)', cwd);
+    } else {
+      throw new Error(`Ouverture dans un terminal non prise en charge sur ce système : lance « claude --resume ${sessionId} » dans le dossier de la discussion.`);
+    }
+  }
+
   run(ctx: RunContext): Promise<RunResult> {
+    // Message d'une discussion : sa session persistante (ouverte au besoin, gardée jusqu'à l'arrêt du hub).
+    if (ctx.liveKey) return this.live.run(ctx.liveKey, ctx);
     return new Promise((resolve, reject) => {
       const { args, prompt } = buildClaudeInvocation(ctx);
 

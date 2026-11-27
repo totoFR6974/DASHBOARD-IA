@@ -292,10 +292,11 @@ export function shQuote(s: string): string {
 }
 
 /** Contenu du script .command lancé dans le Terminal (exporté pour les tests). */
-export function terminalScript(argv: string[], title: string): string {
+export function terminalScript(argv: string[], title: string, cwd?: string): string {
   return [
     '#!/bin/bash',
     `printf '\\033]0;%s\\007' ${shQuote(title)}`,
+    ...(cwd ? [`cd ${shQuote(cwd)} || exit 1`] : []),
     argv.map(shQuote).join(' '),
     'echo',
     `echo ${shQuote('Tu peux fermer cette fenêtre.')}`,
@@ -307,10 +308,10 @@ export function terminalScript(argv: string[], title: string): string {
  * macOS : ouvre une fenêtre du Terminal qui lance la commande donnée (arguments en tableau, chacun protégé).
  * Passe par un petit script .command (ouvert par `open -a Terminal`), sans AppleScript ni chaîne à échapper.
  */
-export function openInMacTerminal(argv: string[], title: string): void {
+export function openInMacTerminal(argv: string[], title: string, cwd?: string): void {
   const dir = mkdtempSync(join(tmpdir(), 'hub-ia-'));
   const file = join(dir, 'hub-ia.command');
-  writeFileSync(file, terminalScript(argv, title), 'utf8');
+  writeFileSync(file, terminalScript(argv, title, cwd), 'utf8');
   chmodSync(file, 0o700);
   spawn('open', ['-a', 'Terminal', file], { detached: true, stdio: 'ignore' }).unref();
 }

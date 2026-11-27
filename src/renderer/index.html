@@ -134,6 +134,8 @@
           <form id="composer" class="composer">
             <!-- Messages en attente (écrits pendant une réponse) : envoyés automatiquement, ou « Envoyer maintenant » -->
             <div id="queue-strip" class="queue-strip hidden"></div>
+            <!-- Agents Claude lancés en arrière-plan (session persistante) : leur résultat arrivera dans la discussion -->
+            <div id="bg-agents-strip" class="bg-agents-strip hidden"></div>
             <!-- Images jointes au prochain message (miniatures + avertissement si l'IA choisie ne voit pas les images) -->
             <div id="attach-strip" class="attach-strip hidden"></div>
             <input type="file" id="attach-input" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" multiple hidden />

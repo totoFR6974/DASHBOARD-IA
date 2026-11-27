@@ -46,7 +46,8 @@ export type IconName =
   | 'music'
   | 'film'
   | 'cube'
-  | 'eye';
+  | 'eye'
+  | 'terminal';
 
 const FILL = 'var(--icon-fill, #4f5257)';
 const FILL_ROBOT = 'var(--icon-fill-robot, #5e6166)';
@@ -192,6 +193,8 @@ const SHAPES: Record<IconName, string> = {
   // Pellicule.
   film: ['<rect x="3" y="4.4" width="18" height="15.2" rx="2.2"/>', `<path ${line} d="M7.2 4.6v14.8M16.8 4.6v14.8M3.2 9.6h4M3.2 14.4h4M16.8 9.6h4M16.8 14.4h4"/>`].join(''),
   // Cube (fichiers Roblox, modèles 3D).
+  // Fenêtre de terminal avec invite « >_ ».
+  terminal: ['<rect x="2.6" y="4" width="18.8" height="16" rx="2.6"/>', `<path ${line} d="M6.8 9.4l3.2 2.6-3.2 2.6M12 15.6h5"/>`].join(''),
   // Œil (reconnaissance d'images) : amande et iris.
   eye: ['<path d="M2.4 12C4.6 7.6 8 5.4 12 5.4s7.4 2.2 9.6 6.6c-2.2 4.4-5.6 6.6-9.6 6.6S4.6 16.4 2.4 12z"/>', `<circle ${ink} cx="12" cy="12" r="2.9"/>`].join(''),
   cube: ['<path d="M12 2.8 20 7.2v9.6L12 21.2 4 16.8V7.2z"/>', `<path ${line} d="M4.2 7.3 12 11.6l7.8-4.3M12 11.6v9.4"/>`].join(''),

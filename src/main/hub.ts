@@ -61,6 +61,7 @@ import type { KnowledgeLocationInfo, KnowledgeMovePlan, KnowledgeMoveResult, Syn
 import { spawn } from 'node:child_process';
 import { installObsidian as runObsidianInstall, obsidianStatus, registerVaults } from './obsidian';
 import { ClaudeProvider, ClaudeSessionLostError } from './providers/claude';
+import type { SpontaneousTurn } from './providers/claude-live';
 import { ComfyUIProvider, IMAGE_PROVIDERS } from './providers/comfyui';
 import { OllamaProvider } from './providers/ollama';
 import { CodexProvider } from './providers/codex';
@@ -280,6 +281,10 @@ export class Hub {
   /** Serveur MCP local (outils de délégation), démarré à la première tâche qui en a besoin. */
   readonly mcp: McpServer;
   private delegation = new Map<string, DelegationContext>();
+  /** Sessions Claude persistantes : tâche (réponse) la plus récente de chaque discussion, pour les outils du hub. */
+  private liveTask = new Map<string, string>();
+  /** Agents Claude d'arrière-plan en cours, par discussion. */
+  private claudeBackground = new Map<string, number>();
   readonly knowledge: Knowledge;
   readonly vaults: Vaults;
   /** Emplacement des bases (dossier synchronisé possible), déplacement vérifié, conflits de synchro. */
@@ -458,6 +463,18 @@ export class Hub {
       for (const s of servers) if (s.name !== 'hub') known.set(s.name, s);
       this.db.data.claudeMcpServers = [...known.values()].sort((a, b) => a.name.localeCompare(b.name));
       this.db.save();
+    };
+    // Sessions persistantes : réponse spontanée (agent d'arrière-plan terminé), compteur d'agents, fermeture.
+    claude.liveHooks = {
+      spontaneous: (convId) => this.startClaudeFollowUp(convId),
+      background: (convId, count) => {
+        if (count) this.claudeBackground.set(convId, count);
+        else this.claudeBackground.delete(convId);
+        this.emit({ type: 'claudeBackground', conversationId: convId, count });
+      },
+      // Session fermée (redémarrage, plantage, terminal) : sa config MCP est gardée pour la suivante ; elle n'est
+      // révoquée qu'à la suppression de la discussion ou à l'arrêt du hub.
+      closed: () => undefined,
     };
     const list: Provider[] = [
       claude,
@@ -926,6 +943,9 @@ export class Hub {
     for (const t of this.db.data.tasks) {
       if (t.conversationId === id && this.running.has(t.id)) this.cancelTask(t.id);
     }
+    this.closeClaudeSession(id);
+    this.endDelegation(`live:${id}`);
+    this.liveTask.delete(id);
     this.db.data.conversations = this.db.data.conversations.filter((c) => c.id !== id);
     this.db.save();
     // Images jointes de cette discussion : elles n'appartiennent qu'à elle.
@@ -1026,8 +1046,14 @@ export class Hub {
       mkdirSync(cwd, { recursive: true });
     }
     let result: RunResult | undefined;
+    // Message d'une discussion avec Claude : session PERSISTANTE (gardée jusqu'à l'arrêt du hub). Tâches déléguées,
+    // étapes de workflow : un process par message, comme avant.
+    const liveKey = info.id === 'claude' && task.conversationId && !task.parentTaskId && !task.workflowRunId ? task.conversationId : undefined;
+    if (liveKey) this.liveTask.set(liveKey, task.id);
     // Délégation : outils MCP du hub pour les tâches Claude de 1er niveau (si la préparation échoue, on continue sans).
-    const prepare = this.canDelegate(task, info) ? this.prepareDelegation(task, cwd, run).catch(() => null) : Promise.resolve(null);
+    const prepare = this.canDelegate(task, info)
+      ? (liveKey ? this.prepareLiveDelegation(liveKey, cwd, run) : this.prepareDelegation(task, cwd, run)).catch(() => null)
+      : Promise.resolve(null);
 
     return prepare
       .then(async (mcp) => {
@@ -1039,6 +1065,12 @@ export class Hub {
         const allowedTools = [...hubTools, ...extraTools];
         const addDirs = [...(run.addDirs ?? []), ...(isClaude ? this.settings.claudeExtraDirs.filter((d) => existsSync(d)) : [])];
         const systemAppend = isClaude && mcp ? await this.claudeBriefing(run.permission) : undefined;
+        // Session persistante sur le point d'être (r)ouverte alors qu'elle est ouverte ailleurs (terminal…) : on prévient,
+        // sinon les deux suites divergent sans que personne ne le voie.
+        const claude = this.providers.get('claude') as ClaudeProvider | undefined;
+        if (liveKey && run.sessionId && claude && !claude.live.has(liveKey) && (await claude.openElsewhere(run.sessionId))) {
+          addActivity({ kind: 'error', text: 'Cette session Claude est aussi ouverte ailleurs (terminal ou appli Claude) : les deux suites vont diverger. Ferme-la là-bas pour continuer seulement ici.' });
+        }
         return { mcp, allowedTools, addDirs, systemAppend };
       })
       .then(({ mcp, allowedTools, addDirs, systemAppend }) => {
@@ -1059,6 +1091,7 @@ export class Hub {
           ...(run.transparent ? { transparent: true } : {}),
           ...(allowedTools.length ? { allowedTools } : {}),
           ...(mcp ? { mcpConfigPath: mcp.configPath, extraEnv: { MCP_TOOL_TIMEOUT: String(DELEGATION_TIMEOUT_MS) } } : {}),
+          ...(liveKey ? { liveKey } : {}),
           signal: controller.signal,
           onDelta: (delta) => {
             task.output += delta;
@@ -1637,6 +1670,134 @@ export class Hub {
     return ctx;
   }
 
+  /**
+   * Outils du hub pour une session Claude PERSISTANTE : la config MCP (et son jeton) est donnée au process au
+   * démarrage et sert à toute la session → clé stable « live:<discussion> » ; l'appelant réel est la réponse en cours
+   * (liveTask). Révoquée à la fermeture de la session.
+   */
+  private async prepareLiveDelegation(convId: string, cwd: string, run: LaunchOptions): Promise<DelegationContext> {
+    const key = `live:${convId}`;
+    const useKnowledge = !!run.addDirs?.some((d) => samePath(d, this.vaultDir));
+    const known = this.delegation.get(key);
+    if (known && existsSync(known.configPath)) {
+      known.cwd = cwd;
+      known.permission = run.permission;
+      known.useKnowledge = useKnowledge;
+      return known;
+    }
+    await this.mcp.start();
+    const dir = join(this.dataDir, 'mcp');
+    mkdirSync(dir, { recursive: true });
+    const configPath = join(dir, `live-${convId}.json`);
+    const token = this.mcp.issueToken(key);
+    const config = { mcpServers: { [MCP_SERVER_NAME]: { type: 'http', url: this.mcp.url, headers: { Authorization: `Bearer ${token}` } } } };
+    try {
+      writeFileSync(configPath, JSON.stringify(config, null, 2), { encoding: 'utf8', mode: 0o600 });
+    } catch (err) {
+      this.mcp.revokeToken(key);
+      throw err;
+    }
+    const ctx: DelegationContext = { cwd, permission: run.permission, useKnowledge, configPath };
+    this.delegation.set(key, ctx);
+    return ctx;
+  }
+
+  /**
+   * Réponse que Claude commence de lui-même dans une session persistante (résultat d'un agent d'arrière-plan) :
+   * nouvelle tâche « suite » dans la discussion, affichée comme une réponse.
+   */
+  private startClaudeFollowUp(convId: string): SpontaneousTurn | null {
+    const conv = this.db.data.conversations.find((c) => c.id === convId);
+    if (!conv) return null;
+    const now = Date.now();
+    const participant = conv.participants.find((p) => p.providerId === 'claude');
+    const task: Task = {
+      id: randomUUID(),
+      conversationId: conv.id,
+      turnId: `bg-${randomUUID()}`,
+      providerId: 'claude',
+      ...(participant?.model ? { model: participant.model } : {}),
+      agent: conv.agent,
+      title: 'Suite : résultat d’un agent d’arrière-plan',
+      prompt: '(Claude reprend la main : un agent lancé en arrière-plan a terminé)',
+      status: 'running',
+      createdAt: now,
+      startedAt: now,
+      output: '',
+      activity: [{ at: now, kind: 'info', text: 'Un agent d’arrière-plan a terminé : Claude reprend la main' }],
+    };
+    this.db.data.tasks.push(task);
+    const controller = new AbortController();
+    this.running.set(task.id, controller);
+    this.liveTask.set(conv.id, task.id);
+    this.emit({ type: 'task', task });
+    const end = (status: Task['status'], result?: RunResult, error?: string) => {
+      this.running.delete(task.id);
+      this.endDelegation(task.id);
+      task.status = status;
+      task.finishedAt = Date.now();
+      if (result) {
+        task.output = result.output || task.output;
+        task.usage = result.usage;
+        if (result.sessionId) conv.providerSessions.claude = result.sessionId;
+      }
+      if (error) task.error = error;
+      task.usage = { ...task.usage, durationMs: task.usage?.durationMs ?? task.finishedAt - now };
+      if (this.db.data.conversations.includes(conv)) {
+        const content = status === 'done' ? task.output : status === 'cancelled' ? (task.output ? `${CANCELLED_TEXT}\n\n${task.output}` : CANCELLED_TEXT) : `⚠️ ${error ?? 'Erreur inconnue'}`;
+        const images = uniquePaths([...this.delegatedImages(task.id), ...(task.output ? this.citedImages(conv, task.output) : [])]);
+        conv.messages.push({ role: 'assistant', content, at: task.finishedAt, taskId: task.id, providerId: 'claude', model: task.model, turnId: task.turnId, ...(images.length ? { images } : {}) });
+        conv.updatedAt = task.finishedAt;
+        this.emit({ type: 'conversation', conversation: conv });
+      }
+      this.countUsage(task, true);
+      this.db.save();
+      this.emit({ type: 'task', task });
+      setTimeout(() => this.drainQueue(conv.id, task), 0);
+    };
+    return {
+      signal: controller.signal,
+      onDelta: (delta) => {
+        task.output += delta;
+        this.emit({ type: 'delta', taskId: task.id, conversationId: conv.id, text: delta });
+      },
+      onActivity: (a) => {
+        task.activity.push({ ...a, at: Date.now() });
+        this.db.save();
+        this.emit({ type: 'task', task });
+      },
+      done: (result) => end('done', result),
+      fail: (err) => end(controller.signal.aborted || err instanceof CancelledError ? 'cancelled' : 'error', undefined, err.message),
+    };
+  }
+
+  /** Ferme la session Claude persistante d'une discussion (elle sera rouverte, avec --resume, au prochain message). */
+  closeClaudeSession(conversationId: string): void {
+    const claude = this.providers.get('claude') as ClaudeProvider | undefined;
+    claude?.live.close(conversationId);
+  }
+
+  /**
+   * « Continuer dans un terminal » : la session Claude de la discussion est fermée dans le hub (une seule suite à la
+   * fois), puis rouverte dans une fenêtre de terminal, dans le dossier de la discussion (`claude --resume <id>`).
+   * Refusé pendant une réponse ; des agents d'arrière-plan en cours seraient coupés → il faut confirmer (force).
+   */
+  async continueClaudeInTerminal(conversationId: string, force = false): Promise<void> {
+    const conv = this.conversation(conversationId);
+    const sessionId = conv.providerSessions?.claude;
+    if (!sessionId || conv.claudeForkPending) throw new Error('Pas encore de session Claude dans cette discussion : envoie d’abord un message à Claude.');
+    if (this.convBusy(conv.id)) throw new Error('Une réponse est en cours : attends sa fin (ou arrête-la) avant de continuer dans un terminal.');
+    if (!force && this.claudeBackground.get(conv.id)) {
+      throw new Error('AGENTS_EN_COURS: des agents Claude travaillent encore en arrière-plan dans cette discussion ; continuer dans un terminal les arrêterait.');
+    }
+    const claude = this.providers.get('claude') as ClaudeProvider | undefined;
+    if (!claude) throw new Error('Claude Code indisponible');
+    claude.live.close(conv.id);
+    // Laisse le process se fermer (il écrit la fin de la session) avant que le terminal la rouvre.
+    await new Promise((r) => setTimeout(r, 800));
+    claude.openResumeTerminal(sessionId, conv.cwd || this.workspaceDir);
+  }
+
   /** Fin d'une tâche : jeton MCP révoqué, config MCP supprimée, sous-tâches encore en cours annulées. */
   private endDelegation(taskId: string): void {
     this.mcp.revokeToken(taskId);
@@ -1696,12 +1857,16 @@ export class Hub {
   }
 
   /** Exécute une sous-tâche confiée par une tâche en cours et renvoie son résultat. */
-  async delegate(parentTaskId: string, agentRef: string, demande: string, contexte?: string, options: { transparent?: boolean; images?: string[] } = {}): Promise<DelegationResult> {
+  async delegate(callerKey: string, agentRef: string, demande: string, contexte?: string, options: { transparent?: boolean; images?: string[] } = {}): Promise<DelegationResult> {
+    // Session Claude persistante : l'appelant est la réponse en cours (ou la dernière) de la discussion ; la session
+    // peut déléguer tant qu'elle est ouverte (ex. un agent d'arrière-plan après la fin de la réponse).
+    const liveConv = callerKey.startsWith('live:') ? callerKey.slice(5) : null;
+    const parentTaskId = liveConv ? (this.liveTask.get(liveConv) ?? '') : callerKey;
     const parent = this.db.data.tasks.find((t) => t.id === parentTaskId);
     if (!parent) throw new Error('Délégation impossible : tâche appelante introuvable.');
     if (parent.parentTaskId) throw new Error('Délégation en cascade refusée : une tâche déléguée ne peut pas déléguer à son tour.');
-    const ctx = this.delegation.get(parentTaskId);
-    if (!ctx || !this.running.has(parentTaskId)) throw new Error("Délégation impossible : la tâche appelante n'est plus en cours.");
+    const ctx = this.delegation.get(callerKey);
+    if (!ctx || (!liveConv && !this.running.has(parentTaskId))) throw new Error("Délégation impossible : la tâche appelante n'est plus en cours.");
     if (this.settings.delegationEnabled === false) throw new Error('La délégation entre agents est désactivée (Réglages).');
 
     const ref = agentRef.trim().toLowerCase();
@@ -2296,8 +2461,10 @@ export class Hub {
    */
   private notesBasesForTask(parentTaskId: string): string[] {
     const out: string[] = [];
-    const parent = parentTaskId ? this.db.data.tasks.find((t) => t.id === parentTaskId) : undefined;
-    const conv = parent?.conversationId ? this.db.data.conversations.find((c) => c.id === parent.conversationId) : undefined;
+    const liveConv = parentTaskId.startsWith('live:') ? parentTaskId.slice(5) : null;
+    const parent = parentTaskId && !liveConv ? this.db.data.tasks.find((t) => t.id === parentTaskId) : undefined;
+    const convId = liveConv ?? parent?.conversationId;
+    const conv = convId ? this.db.data.conversations.find((c) => c.id === convId) : undefined;
     if (conv) out.push(this.vaults.forConversation(conv).id);
     const ctx = parentTaskId ? this.delegation.get(parentTaskId) : undefined;
     if (ctx) out.push(this.vaults.forFolder(ctx.cwd).id);
@@ -2567,6 +2734,8 @@ export class Hub {
   }
 
   shutdown(): void {
+    // Sessions Claude persistantes : fermées seulement ici (arrêt du hub).
+    (this.providers.get('claude') as ClaudeProvider | undefined)?.live.closeAll();
     for (const c of this.running.values()) c.abort();
     for (const id of [...this.delegation.keys()]) this.endDelegation(id);
     this.cutout.shutdown();

@@ -163,7 +163,7 @@ export async function smokeFakeClaude(win: BrowserWindow, outDir: string, shot: 
       a.print && a.verbose && a.partial && a['permission-mode'] && a.mcpConfig?.length === 1 && a.allowedTools?.includes('mcp__hub__demander_a') && a.allowedTools?.includes('mcp__hub__chercher_notes') && !!a['append-system-prompt'] && start.mcpToolTimeout === String(15 * 60 * 1000),
       { ...a, 'append-system-prompt': a['append-system-prompt'] ? `${String(a['append-system-prompt']).length} car.` : null, mcpToolTimeout: start?.mcpToolTimeout },
     );
-    check('A simple : fichier --mcp-config supprimé après la tâche', !!a.mcpConfig?.[0] && !existsSync(a.mcpConfig[0]), a.mcpConfig?.[0]);
+    check('A simple : session persistante (--input-format stream-json), config MCP propre à la discussion gardée tant que la session est ouverte', !!start?.live && a['input-format'] === 'stream-json' && /live-/.test(a.mcpConfig?.[0] ?? '') && existsSync(a.mcpConfig[0]), { live: start?.live, input: a['input-format'], mcp: a.mcpConfig?.[0] });
     const cv = await conv(c.id);
     check('A simple : session Claude mémorisée dans la discussion', !!start?.sessionOut && cv?.providerSessions?.claude === start.sessionOut, { stored: cv?.providerSessions, fake: start?.sessionOut });
     const ui = await lastTurn('FC · simple');
@@ -200,7 +200,13 @@ export async function smokeFakeClaude(win: BrowserWindow, outDir: string, shot: 
     const before = (await conv(c.id))?.providerSessions?.claude;
     const [t3] = await waitDone(await send(c.id, '[fake:session] suite'));
     const s3 = lastStart();
-    check('E resume : --resume <session> sans --fork-session, même session renvoyée', t3?.status === 'done' && s3?.args?.resume === before && !s3?.args?.fork && s3?.sessionOut === before && (await conv(c.id))?.providerSessions?.claude === before, { before, args: { resume: s3?.args?.resume, fork: s3?.args?.fork }, out: s3?.sessionOut, output: t3?.output?.slice(0, 200) });
+    // Session persistante : le message va dans le process déjà ouvert (ou, s'il a été rouvert, avec --resume).
+    const prevStart = readLog().filter((e) => e.event === 'start' && e.sessionOut === before && e !== s3 && e.at <= (s3?.at ?? 0)).pop();
+    check(
+      'E session persistante : même session, sans relancer Claude (même process, ou rouvert avec --resume)',
+      t3?.status === 'done' && s3?.sessionOut === before && !!s3?.live && (s3?.pid === prevStart?.pid || s3?.args?.resume === before) && (await conv(c.id))?.providerSessions?.claude === before,
+      { before, pid: s3?.pid, prevPid: prevStart?.pid, resume: s3?.args?.resume, out: s3?.sessionOut, output: t3?.output?.slice(0, 200) },
+    );
     check('E resume : prompt sans répétition de l’historique (Claude garde sa session)', /^\[fake:session\] suite$/.test(String(s3?.promptTail ?? '').trim()), s3?.promptTail);
   }
 
@@ -245,7 +251,7 @@ export async function smokeFakeClaude(win: BrowserWindow, outDir: string, shot: 
     );
     const [f2] = await waitDone(await send(forked.id, '[fake:session] deuxième question'));
     const e2 = lastStart();
-    check('E2 fork : envoi suivant = --resume <copie> sans --fork-session', f2?.status === 'done' && e2?.args?.resume === e1?.sessionOut && !e2?.args?.fork, { resume: e2?.args?.resume, fork: e2?.args?.fork });
+    check('E2 fork : envoi suivant dans la même session (la copie), même process', f2?.status === 'done' && e2?.sessionOut === e1?.sessionOut && e2?.pid === e1?.pid && (await conv(forked.id))?.providerSessions?.claude === e1?.sessionOut, { pid: e2?.pid, pid1: e1?.pid, out: e2?.sessionOut, out1: e1?.sessionOut });
 
     // Session perdue (supprimée par Claude Code) : le hub doit repartir sur une nouvelle session, pas rester bloqué.
     const resumed = await js(`window.hub.continueClaudeSession(${JSON.stringify(lost)}, 'resume')`);
@@ -264,6 +270,9 @@ export async function smokeFakeClaude(win: BrowserWindow, outDir: string, shot: 
     // E4. Session perdue dans une discussion qui a déjà des échanges : le nouvel essai reprend toute la discussion.
     const sc = await conv(simpleConvId);
     const dead = sc?.providerSessions?.claude;
+    // La session est ouverte dans le hub : on la ferme (comme un redémarrage), elle sera rouverte avec --resume.
+    await js(`window.hub.closeClaudeSession(${JSON.stringify(simpleConvId)})`);
+    await wait(800);
     const list = JSON.parse(readFileSync(join(stateDir, 'sessions.json'), 'utf8')).filter((s: string) => s !== dead);
     writeFileSync(join(stateDir, 'sessions.json'), JSON.stringify(list), 'utf8');
     const [l3] = await waitDone(await send(simpleConvId, '[fake:session] après la perte de session'));
@@ -411,6 +420,56 @@ export async function smokeFakeClaude(win: BrowserWindow, outDir: string, shot: 
     );
     const pillAfter = await js(`document.getElementById('agents-btn').classList.contains('hidden')`);
     check('Q2 agents en cours : pastille masquée quand plus rien ne tourne', pillAfter === true || (await tasks()).some((t) => t.status === 'running'), pillAfter);
+  }
+
+  // ---------- L. Session persistante : agent d'arrière-plan (comme l'appli Claude) ----------
+  {
+    const title = 'FC · agent en arrière-plan';
+    const lc = await newConv(title);
+    const [l1] = await waitDone(await send(lc.id, "[fake:bg-agent] délai: 3000 lance un agent puis rends-moi la main"));
+    const startL = lastStart();
+    await select(title);
+    await wait(300);
+    const strip = await js(`(() => { const s = document.getElementById('bg-agents-strip'); return { shown: !!s && !s.classList.contains('hidden'), text: s?.textContent ?? '' }; })()`);
+    const pill = await js(`document.getElementById('agents-btn')?.textContent ?? ''`);
+    // Pendant que l'agent travaille, on peut écrire : réponse normale, dans le même process.
+    const [l2] = await waitDone(await send(lc.id, '[fake:simple] je peux écrire pendant ce temps'));
+    const s2 = lastStart();
+    await shot('fc-agent-arriere-plan');
+    let follow: any = null;
+    for (let i = 0; i < 60 && !follow; i++) {
+      await wait(250);
+      follow = (await tasks()).find((t) => t.conversationId === lc.id && /Suite/.test(t.title) && t.status === 'done');
+    }
+    await wait(400);
+    const cv = await conv(lc.id);
+    const lastMsg = cv?.messages?.filter((m: any) => m.role === 'assistant').pop();
+    const strip2 = await js(`document.getElementById('bg-agents-strip')?.classList.contains('hidden')`);
+    const replyText = await js(`[...document.querySelectorAll('#messages .msg.assistant .msg-body')].map((e) => e.textContent).join(' | ')`);
+    check('L agent d’arrière-plan : la réponse se termine tout de suite (Claude rend la main), sans le texte interne du sous-agent', l1?.status === 'done' && /Agent lancé en arrière-plan/.test(l1.output) && !/TEXTE INTERNE/.test(l1.output) && !/TEXTE INTERNE/.test(replyText), { status: l1?.status, output: l1?.output?.slice(0, 160) });
+    check('L agent d’arrière-plan : bandeau « agent Claude en arrière-plan » + compté dans « agents en cours »', strip?.shown === true && /arrière-plan/.test(strip.text) && /agent/.test(pill), { strip, pill });
+    check('L on écrit pendant que l’agent travaille : réponse normale, même session, même process', l2?.status === 'done' && s2?.pid === startL?.pid && s2?.sessionOut === startL?.sessionOut, { status: l2?.status, pid: s2?.pid, pid1: startL?.pid });
+    check('L résultat de l’agent : revient seul dans la discussion (nouvelle réponse « suite »), bandeau retiré', !!follow && /Résultat de l'agent d'arrière-plan reçu/.test(follow.output) && /Résultat de l'agent d'arrière-plan reçu/.test(lastMsg?.content ?? '') && strip2 === true, { follow: follow?.title, output: follow?.output?.slice(0, 120), last: lastMsg?.content?.slice(0, 120), stripHidden: strip2 });
+    // Session ouverte ailleurs (terminal) : au moment de la rouvrir, le hub prévient.
+    writeFileSync(join(stateDir, 'agents.json'), JSON.stringify([{ id: 'x', kind: 'interactive', sessionId: cv?.providerSessions?.claude, state: 'idle', cwd: 'ailleurs' }]), 'utf8');
+    await js(`window.hub.closeClaudeSession(${JSON.stringify(lc.id)})`);
+    await wait(800);
+    const [l3] = await waitDone(await send(lc.id, '[fake:simple] encore'));
+    writeFileSync(join(stateDir, 'agents.json'), '[]', 'utf8');
+    check('L session ouverte ailleurs (terminal) : avertissement dans l’activité de la réponse', l3?.status === 'done' && (l3.activity ?? []).some((a: any) => /aussi ouverte ailleurs/.test(a.text)), (l3?.activity ?? []).map((a: any) => a.text));
+    // « Continuer dans un terminal » : refusé sans session (aucun terminal ouvert pendant les tests).
+    const fresh = await newConv('FC · sans session');
+    const refusal = await js(`window.hub.continueClaudeInTerminal(${JSON.stringify(fresh.id)}).then(() => 'ouvert', (e) => String(e.message ?? e))`);
+    check('L « Continuer dans un terminal » refusé tant qu’il n’y a pas de session Claude', /Pas encore de session Claude/.test(refusal), refusal);
+    const menu = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      document.querySelector('#chat-header .conv-more-btn')?.click();
+      await sleep(250);
+      const items = [...document.querySelectorAll('.conv-menu [data-conv-action]')].map((b) => b.dataset.convAction);
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      return items;
+    })()`);
+    check('L menu « ⋯ » : « Continuer dans un terminal » et « Redémarrer la session Claude » quand la discussion a une session', menu.includes('terminal') && menu.includes('restart'), menu);
   }
 
   // ---------- S. Statistiques : mise à jour en place (pas de redessin ni de clignotement) ----------
@@ -907,7 +966,9 @@ export async function smokeFakeClaude(win: BrowserWindow, outDir: string, shot: 
   }
 
   // ---------- Bilan : aucun faux Claude encore vivant ----------
-  await wait(1000);
+  // (sessions persistantes : ouvertes jusqu'à l'arrêt du hub — on les ferme comme le ferait l'arrêt)
+  await js(`(async () => { for (const c of await window.hub.listConversations()) await window.hub.closeClaudeSession(c.id); })()`);
+  await wait(2500);
   const leftovers = logFor()
     .map((e) => e.pid)
     .filter((pid) => alive(pid));

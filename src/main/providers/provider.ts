@@ -35,6 +35,12 @@ export interface RunContext {
   systemAppend?: string;
   /** Images : le résultat sera détouré (fond transparent) → prompt adapté (sujet isolé sur fond uni). */
   transparent?: boolean;
+  /**
+   * Claude : clé de session PERSISTANTE (identifiant de la discussion). Le message va dans la session ouverte de
+   * cette discussion (gardée jusqu'à l'arrêt du hub) au lieu d'un nouveau process. Absent = un process par message
+   * (tâches déléguées, étapes de workflow, relevés de limites).
+   */
+  liveKey?: string;
   signal: AbortSignal;
   onDelta(text: string): void;
   onActivity(activity: Omit<TaskActivity, 'at'>): void;
