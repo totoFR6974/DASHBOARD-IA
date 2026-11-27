@@ -413,6 +413,47 @@ export async function smokeFakeClaude(win: BrowserWindow, outDir: string, shot: 
     check('Q2 agents en cours : pastille masquée quand plus rien ne tourne', pillAfter === true || (await tasks()).some((t) => t.status === 'running'), pillAfter);
   }
 
+  // ---------- S. Statistiques : mise à jour en place (pas de redessin ni de clignotement) ----------
+  {
+    const before = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      document.querySelector('.tabs button[data-view="stats"]').click();
+      await sleep(1200);
+      const root = document.getElementById('stats-root');
+      const stack = root.querySelector('.day-stack') ?? root.querySelector('.stat');
+      window.__statStack = stack; // référence (un attribut ajouté serait retiré par la mise à jour en place)
+      const kpis = root.querySelector('.stat.kpi');
+      window.__statKpi = kpis;
+      const sc = root.closest('.view') ?? root;
+      sc.scrollTop = 120;
+      return { stack: !!stack, kpi: kpis?.textContent ?? '', text: root.textContent, scroll: sc.scrollTop, usage: await window.hub.getUsage() };
+    })()`);
+    // Mise à jour des compteurs (comme après une réponse) : +5000 tokens aujourd'hui pour Claude.
+    const usage = before.usage ?? { days: {} };
+    const d = new Date();
+    const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    usage.days[today] ??= {};
+    const b = (usage.days[today].claude ??= { inputTokens: 0, outputTokens: 0, cacheTokens: 0, tasks: 0, images: 0, costUsd: 0 });
+    b.outputTokens += 5000;
+    win.webContents.send('hub:event', { type: 'usage', usage });
+    // Et un relevé des journaux de Claude Code (déclenchait une relecture avec état « chargement »).
+    win.webContents.send('hub:event', { type: 'claudeLogUsage' });
+    await wait(1500);
+    const after = await js(`(() => {
+      const root = document.getElementById('stats-root');
+      const sc = root.closest('.view') ?? root;
+      const kpi = window.__statKpi;
+      return { same: !!window.__statStack?.isConnected && root.contains(window.__statStack), kpiSame: !!kpi?.isConnected && root.contains(kpi), kpi: kpi?.textContent ?? '', text: root.textContent, scroll: sc.scrollTop };
+    })()`);
+    await shot('fc-statistiques');
+    check(
+      'S statistiques : mise à jour des compteurs appliquée EN PLACE (mêmes éléments, chiffres changés, défilement conservé)',
+      before?.stack === true && after?.same === true && after?.kpiSame === true && after?.text !== before?.text && after?.scroll === before?.scroll,
+      { before: { scroll: before?.scroll }, after: { same: after?.same, kpiSame: after?.kpiSame, scroll: after?.scroll, changed: after?.text !== before?.text } },
+    );
+    await js(`document.querySelector('.tabs button[data-view="chat"]').click()`);
+  }
+
   // ---------- H. En-tête de discussion compact : une ligne, menu « ⋯ » ----------
   {
     const hc = await newConv('FC · en-tête compact avec un titre assez long pour être tronqué proprement à droite', { permission: 'bypassPermissions' });

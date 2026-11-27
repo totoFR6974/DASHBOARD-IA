@@ -221,3 +221,6 @@ legend .ico { vertical-align: -0.2em; margin-right: 2px; }
 #chat-header .perm-wrap > select { width: auto; }
 #chat-header .chat-title { flex: 0 1000 auto; }
 #chat-header .chat-title { min-width: 150px; }
+
+/* Statistiques mises à jour en place : les barres changent de taille en douceur (pas de redessin). */
+#stats-root [style*="width"], #stats-root [style*="height"] { transition: width 0.5s var(--ease), height 0.5s var(--ease); }

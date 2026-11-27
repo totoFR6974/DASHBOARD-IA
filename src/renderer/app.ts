@@ -167,6 +167,77 @@ function h<K extends keyof HTMLElementTagNameMap>(
   return el;
 }
 
+// ---------- Mise à jour en place (sans redessiner) ----------
+
+type Listener = [type: string, fn: EventListenerOrEventListenerObject, opts?: boolean | AddEventListenerOptions];
+/** Écouteurs posés pendant une construction suivie par recordListeners (pour les reporter lors de morphChildren). */
+const recordedListeners = new WeakMap<EventTarget, Listener[]>();
+
+/** Construit une vue en notant les écouteurs posés sur chaque élément (clics, survols, infobulles…). */
+function recordListeners<T>(build: () => T): T {
+  const original = EventTarget.prototype.addEventListener;
+  EventTarget.prototype.addEventListener = function (this: EventTarget, type: string, fn: EventListenerOrEventListenerObject | null, opts?: boolean | AddEventListenerOptions) {
+    if (fn) {
+      const list = recordedListeners.get(this) ?? [];
+      list.push([type, fn, opts]);
+      recordedListeners.set(this, list);
+    }
+    return original.call(this, type, fn, opts);
+  } as typeof original;
+  try {
+    return build();
+  } finally {
+    EventTarget.prototype.addEventListener = original;
+  }
+}
+
+/**
+ * Applique `fresh` (construit à part) sur `live` sans le remplacer : textes, attributs (style des barres…), états
+ * des contrôles et écouteurs sont mis à jour sur les éléments existants ; seuls les éléments dont la nature change
+ * sont remplacés, les éléments en trop retirés. Aucune animation d'entrée rejouée, défilement et survol conservés.
+ */
+function morphChildren(live: Node, fresh: Node): void {
+  const olds = [...live.childNodes];
+  const news = [...fresh.childNodes];
+  news.forEach((n, i) => {
+    if (i < olds.length) morphNode(olds[i], n);
+    else live.appendChild(n);
+  });
+  for (let i = news.length; i < olds.length; i++) olds[i].remove();
+}
+
+function morphNode(old: Node, fresh: Node): void {
+  const sameKind = old.nodeType === fresh.nodeType && (!(old instanceof Element) || old.tagName === (fresh as Element).tagName);
+  if (!sameKind) {
+    old.parentNode?.replaceChild(fresh, old);
+    return;
+  }
+  if (!(old instanceof Element)) {
+    if (old.nodeValue !== fresh.nodeValue) old.nodeValue = fresh.nodeValue;
+    return;
+  }
+  const n = fresh as Element;
+  for (const a of [...old.attributes]) if (!n.hasAttribute(a.name)) old.removeAttribute(a.name);
+  for (const a of [...n.attributes]) if (old.getAttribute(a.name) !== a.value) old.setAttribute(a.name, a.value);
+  // États posés en propriétés par h() (cochée, désactivé, option choisie, valeur) — sans toucher au champ en cours d'édition.
+  if (old instanceof HTMLInputElement || old instanceof HTMLSelectElement || old instanceof HTMLTextAreaElement || old instanceof HTMLButtonElement) {
+    const nf = n as HTMLInputElement;
+    if (old.disabled !== nf.disabled) old.disabled = nf.disabled;
+    if (old instanceof HTMLInputElement && old.checked !== nf.checked) old.checked = nf.checked;
+  }
+  if (old instanceof HTMLOptionElement && old.selected !== (n as HTMLOptionElement).selected) old.selected = (n as HTMLOptionElement).selected;
+  // Écouteurs : ceux de la nouvelle version remplacent les anciens (les infobulles affichent les nouveaux chiffres).
+  for (const [t, f, o] of recordedListeners.get(old) ?? []) old.removeEventListener(t, f, o);
+  const fresh_ = recordedListeners.get(n) ?? [];
+  for (const [t, f, o] of fresh_) old.addEventListener(t, f, o);
+  recordedListeners.set(old, fresh_);
+  morphChildren(old, n);
+  if ((old instanceof HTMLSelectElement || old instanceof HTMLInputElement || old instanceof HTMLTextAreaElement) && document.activeElement !== old) {
+    const v = (n as HTMLInputElement).value;
+    if (old.value !== v) old.value = v;
+  }
+}
+
 function compact<T>(list: (T | null | undefined | false)[]): T[] {
   return list.filter((x): x is T => x !== null && x !== undefined && x !== false);
 }
@@ -610,7 +681,7 @@ function setView(view: View): void {
   if (view === 'settings') void renderSettings();
   if (view === 'chat') renderChat();
   if (view === 'workflows') renderWorkflows();
-  if (view === 'stats') renderStats();
+  if (view === 'stats') renderStats(true);
   if (view === 'claude') renderClaudeView();
   if (view === 'web') renderWeb();
   else webPanels.layout([]); // les sites sont des fenêtres natives : on les masque hors de l'onglet
@@ -4099,7 +4170,7 @@ function onHubEvent(ev: HubEvent): void {
       break;
     }
     case 'claudeLogUsage': {
-      if (cc.usage && !cc.loading && state.view === 'stats') void loadClaudeUsage(false);
+      if (cc.usage && !cc.loading && state.view === 'stats') void loadClaudeUsage(false, true);
       break;
     }
     case 'claudeLogProgress': {
@@ -4405,8 +4476,24 @@ function hideTip(): void {
   if (statsTip.el) statsTip.el.style.display = 'none';
 }
 
-function renderStats(): void {
-  const root = $('stats-root');
+/**
+ * Onglet Statistiques. Les compteurs changent souvent (chaque réponse, chaque ligne des journaux de Claude Code) :
+ * la page n'est PAS redessinée, la nouvelle version est construite à part puis appliquée en place (textes, tailles
+ * des barres, infobulles) → pas de clignotement, défilement et survol conservés. Redessin complet seulement en
+ * entrant dans l'onglet (full = true).
+ */
+function renderStats(full = false): void {
+  const live = $('stats-root');
+  const fresh = document.createElement('div');
+  recordListeners(() => buildStats(fresh));
+  if (full || !live.childNodes.length) {
+    live.replaceChildren(...fresh.childNodes);
+    return;
+  }
+  morphChildren(live, fresh);
+}
+
+function buildStats(root: HTMLElement): void {
   const period = usageUi.period;
   const per = usageFor(period);
   const entries = Object.entries(per).sort((a, b) => bucketTotal(b[1]) - bucketTotal(a[1]));
@@ -4650,11 +4737,12 @@ function modelColor(name: string): string {
   return i >= 0 && i < EXTRA_MODEL_COLORS.length ? EXTRA_MODEL_COLORS[i] : '#8b8f98';
 }
 
-async function loadClaudeUsage(refresh: boolean): Promise<void> {
+async function loadClaudeUsage(refresh: boolean, quiet = false): Promise<void> {
   if (cc.loading) return;
   cc.loading = true;
   cc.progress = null;
-  if (state.view === 'stats') renderStats();
+  // quiet : mise à jour de fond (nouvelles lignes dans les journaux) → on garde l'affichage tel quel pendant la lecture.
+  if (state.view === 'stats' && !quiet) renderStats();
   try {
     cc.usage = await hub.claudeLogUsage(refresh);
   } catch (err: any) {
