@@ -1209,23 +1209,13 @@ async function smokeWeb(
     })()`);
   let l = await layout();
   console.log(`IA web : ${JSON.stringify(l)}`);
-  check(!l.split, 'Case « Côte à côte » retirée');
-  check(l.slots.length === 1 && l.tabs.length === 2 && !l.tabs.some((t: string) => t.startsWith('claude')), '1 site affiché, Claude web non proposé par défaut');
+  check(!l.split && !(await js(`!!document.getElementById('web-sites-btn')`)), 'Plus de case « Côte à côte » ni de menu « Sites »');
+  check(l.slots.length === 1 && l.tabs.length === 3 && l.tabs.some((t: string) => t.startsWith('claude')) && l.pills.includes('claude'), `1 site affiché ; onglets ChatGPT, Gemini, Claude (${JSON.stringify(l.tabs)})`);
   await js(`document.querySelector('[data-web-tab="gemini"]').click()`);
   await wait(600);
   l = await layout();
   check(l.slots.length === 2 && l.slots[0].y === l.slots[1].y && l.slots[0].x < l.slots[1].x, `Gemini coché → 2 sites côte à côte (${JSON.stringify(l.slots)})`);
-  await js(`(async () => {
-    document.getElementById('web-sites-btn').click();
-    await new Promise((r) => setTimeout(r, 200));
-    document.querySelector('[data-web-site="claude"]').click();
-  })()`);
-  await wait(1500);
-  l = await layout();
-  const hub = (globalThis as { __hubSmoke?: { settings: { webPanelsShown?: string[] } } }).__hubSmoke;
-  check(!!hub?.settings.webPanelsShown?.includes('claude'), 'Sites ▾ › Claude : réglage enregistré');
-  check(l.tabs.includes('claude*') && l.pills.includes('claude'), 'Claude web proposé, coché et dans la barre du haut');
-  await js(`document.body.click()`);
+  await js(`document.querySelector('[data-web-tab="claude"]').click()`);
   await wait(9000);
   l = await layout();
   check(l.slots.length === 3 && new Set(l.slots.map((s: any) => s.y)).size === 1 && l.cols === 3, `3 sites cochés → les 3 côte à côte (${JSON.stringify(l.slots)})`);
@@ -1241,15 +1231,5 @@ async function smokeWeb(
   await wait(300);
   l = await layout();
   check(l.slots.length === 1, 'Le dernier site affiché ne se décoche pas');
-  await js(`(async () => {
-    document.getElementById('web-sites-btn').click();
-    await new Promise((r) => setTimeout(r, 200));
-    document.querySelector('[data-web-site="claude"]').click();
-    await new Promise((r) => setTimeout(r, 600));
-    document.body.click();
-  })()`);
-  await wait(800);
-  l = await layout();
-  check(!l.tabs.some((t: string) => t.startsWith('claude')) && l.slots.length === 1 && !l.pills.includes('claude'), `Claude retiré des sites → repli sur un site proposé (${JSON.stringify(l.tabs)})`);
   if (failures) throw new Error(`IA web : ${failures} vérification(s) en échec`);
 }

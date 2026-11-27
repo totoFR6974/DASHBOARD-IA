@@ -126,8 +126,9 @@ Niveaux de permission de la discussion : **Prudent** = lecture seule (Codex : ba
 mode `plan`, il analyse et propose sans modifier), **Modifications de fichiers** = fichiers du dossier autorisés,
 **Tout autorisé** = commandes comprises.
 
-**Pas d'abonnement Claude Code ?** Onglet **IA web › Sites ▾ › Claude** : le site claude.ai s'ajoute à côté de
-ChatGPT et Gemini, avec ton compte (formule gratuite comprise). Coche 1, 2 ou 3 sites pour les afficher côte à côte.
+**Pas d'abonnement Claude Code ?** Onglet **IA web › Claude** : le site claude.ai, à côté de ChatGPT et Gemini,
+avec ton compte (formule gratuite comprise). Coche 1, 2 ou 3 sites pour les afficher côte à côte (double-clic sur un
+onglet : ce site seul).
 
 ## Piloter le hub depuis son téléphone (accès mobile)
 

@@ -91,5 +91,5 @@ Cas où l'installation automatique est refusée (bouton « Télécharger » manu
 ## 9. Codex, Antigravity, IA web à 3 sites (alpha.11)
 - [ ] Réglages › IA connectées : Codex et Antigravity « Facultatif », commande d'installation (Terminal) + « Copier » ; absents de la barre du haut
 - [ ] (si abonnement) Installer Codex ou agy, « Revérifier », « Se connecter » ouvre le Terminal → connexion navigateur → l'IA passe au vert et apparaît dans le menu des IA ; une réponse dans une discussion
-- [ ] IA web : plus de case « Côte à côte » ; cocher Gemini → 2 sites côte à côte ; « Sites ▾ › Claude » → 3 sites côte à côte ; double-clic sur un onglet → ce site seul
+- [ ] IA web : plus de case « Côte à côte » ; onglets ChatGPT, Gemini, Claude ; cocher Gemini → 2 sites côte à côte ; cocher Claude → 3 sites côte à côte ; double-clic sur un onglet → ce site seul
 - [ ] Connexion à claude.ai dans le panneau (e-mail + code, ou Google)

@@ -43,7 +43,7 @@ import type {
   ClaudeSessionMessage,
   SetupStatus,
 } from '../shared/types';
-import { CLAUDE_EFFORTS, WEB_PANEL_IDS } from '../shared/types';
+import { CLAUDE_EFFORTS } from '../shared/types';
 import { COMFY_DIR_HINT, detectExistingComfy, findComfyRoot, ImageEngine } from './image-engine';
 import { caseInsensitiveFs } from './platform';
 import { isRealPathInside } from './path-guard';
@@ -2330,16 +2330,6 @@ export class Hub {
     const s = this.settingsFile.data;
     s.webMic = { ...(s.webMic && typeof s.webMic === 'object' ? s.webMic : {}), [panelId]: choice };
     this.settingsFile.flush();
-  }
-
-  /** Sites de l'onglet IA web (comme webMic : hors formulaire des réglages, qui ne l'écrase donc pas). */
-  setWebPanelsShown(ids: string[]): string[] {
-    const known = WEB_PANEL_IDS as readonly string[];
-    const clean = known.filter((id) => (Array.isArray(ids) ? ids : []).includes(id));
-    if (!clean.length) throw new Error('Garde au moins un site dans l’onglet IA web');
-    this.settingsFile.data.webPanelsShown = clean;
-    this.settingsFile.flush();
-    return clean;
   }
 
   saveSettings(next: HubSettings): HubSettings {

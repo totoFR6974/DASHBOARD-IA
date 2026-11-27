@@ -481,10 +481,7 @@ export interface HubSettings {
   /** ComfyUI portable déjà installé ailleurs, utilisé à la place de <données>/tools/ComfyUI (vide = dossier de l'appli). */
   comfyuiDir?: string;
   /** Micro des panneaux web, par panneau ('chatgpt', 'gemini') ; absent = demander à la première utilisation. */
-  webMic?: Record<string, WebMicChoice>;
-  /** Sites proposés dans l'onglet IA web (absent = ChatGPT et Gemini ; Claude web en option). */
-  webPanelsShown?: string[];
-  /** L'assistant de premier démarrage a été terminé ou passé. */
+  webMic?: Record<string, WebMicChoice>;  /** L'assistant de premier démarrage a été terminé ou passé. */
   onboardingDone: boolean;
 }
 
@@ -1115,8 +1112,6 @@ export interface HubApi {
   setMobileKeepAwake(on: boolean): Promise<MobileState>;
   /** Ouvre la fenêtre de connexion d'un agent en ligne de commande (claude, codex, antigravity). */
   providerLogin(providerId: string): Promise<void>;
-  /** Sites proposés dans l'onglet IA web (au moins un). Renvoie la liste enregistrée. */
-  setWebPanelsShown(ids: string[]): Promise<string[]>;
   onEvent(listener: (event: HubEvent) => void): () => void;
 }
 
@@ -1309,11 +1304,5 @@ export const HUB_METHODS = [
   'revokeMobileDevice',
   'setMobileKeepAwake',
   'providerLogin',
-  'setWebPanelsShown',
 ] as const;
-
-/** Sites des panneaux web (mêmes identifiants que web-panels.ts), dans l'ordre d'affichage. */
-export const WEB_PANEL_IDS = ['chatgpt', 'gemini', 'claude'] as const;
-/** Sites proposés par défaut dans l'onglet IA web (Claude web : en option, pour ceux sans abonnement Claude Code). */
-export const DEFAULT_WEB_PANELS = ['chatgpt', 'gemini'];
 export type HubMethod = (typeof HUB_METHODS)[number];

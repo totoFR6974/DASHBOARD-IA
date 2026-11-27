@@ -51,7 +51,7 @@ import type {
   ClaudeEffort,
   UpdateState,
 } from '../shared/types';
-import { CLAUDE_EFFORTS, DEFAULT_WEB_PANELS } from '../shared/types';
+import { CLAUDE_EFFORTS } from '../shared/types';
 
 declare global {
   interface Window {
@@ -583,10 +583,9 @@ function setWebSelection(ids: string[]): void {
   localStorage.setItem(WEB_SELECTION_KEY, JSON.stringify(ids));
 }
 
-/** Sites proposés dans l'onglet IA web (réglage ; Claude web en option). */
+/** Sites de l'onglet IA web : ChatGPT, Gemini et Claude, chacun avec son onglet à cocher. */
 function shownWebPanels(): WebPanelState[] {
-  const ids = state.settings?.webPanelsShown?.length ? state.settings.webPanelsShown : DEFAULT_WEB_PANELS;
-  return state.web.panels.filter((p) => ids.includes(p.id));
+  return state.web.panels;
 }
 
 /** Sites affichés : ceux cochés parmi les sites proposés (au moins un). */
@@ -634,34 +633,6 @@ function renderWebTabs(): void {
         h('span', { class: 'web-tab-check' }, on ? '✓' : ''),
         p.name,
       );
-    }),
-  );
-  renderWebSitesMenu();
-}
-
-/** Menu « Sites ▾ » : choisir les sites proposés (ex. ajouter Claude web pour ceux sans abonnement Claude Code). */
-function renderWebSitesMenu(): void {
-  const menu = $('web-sites-menu');
-  const shown = shownWebPanels().map((p) => p.id);
-  menu.replaceChildren(
-    h('div', { class: 'muted small' }, 'Sites proposés dans cet onglet'),
-    ...state.web.panels.map((p) => {
-      const cb = h('input', { type: 'checkbox', 'data-web-site': p.id, checked: shown.includes(p.id), disabled: shown.length === 1 && shown.includes(p.id) });
-      cb.addEventListener('change', async () => {
-        const next = cb.checked ? [...shown, p.id] : shown.filter((x) => x !== p.id);
-        try {
-          const saved = await hub.setWebPanelsShown(next);
-          if (state.settings) state.settings.webPanelsShown = saved;
-          // Un site ajouté s'affiche tout de suite, à côté des autres.
-          if (cb.checked && !webSelection().includes(p.id)) setWebSelection([...webSelection(), p.id]);
-        } catch (err: any) {
-          toast(err?.message ?? String(err));
-        }
-        renderWeb();
-        renderPills();
-      });
-      const hint = p.id === 'claude' ? h('span', { class: 'muted small' }, ' — sans abonnement Claude Code') : null;
-      return h('label', { class: 'check' }, cb, ` ${p.name}`, hint);
     }),
   );
 }
@@ -728,8 +699,7 @@ function arrangeWebPanes(): void {
 
 function sendWebLayout(): void {
   // Assistant ouvert : les sites (vues natives) passeraient au-dessus de lui.
-  // Menu « Sites ▾ » ouvert : idem, le temps du choix.
-  if (state.view !== 'web' || isOnboardingOpen() || !$('web-sites-menu').classList.contains('hidden')) return webPanels.layout([]);
+  if (state.view !== 'web' || isOnboardingOpen()) return webPanels.layout([]);
   const rects: WebRect[] = [...document.querySelectorAll<HTMLElement>('.web-slot')].map((el) => {
     const r = el.getBoundingClientRect();
     return { id: el.dataset.id!, x: r.left, y: r.top, width: r.width, height: r.height };
@@ -5125,20 +5095,6 @@ function bindUi(): void {
   });
   $('providers-refresh').addEventListener('click', () => void hub.listProviders(true));
 
-  $('web-sites-btn').addEventListener('click', (e) => {
-    e.stopPropagation();
-    const menu = $('web-sites-menu');
-    menu.classList.toggle('hidden');
-    // Menu ouvert : les sites (vues natives, au-dessus de la page) sont masqués le temps du choix.
-    if (!menu.classList.contains('hidden')) webPanels.layout([]);
-    else sendWebLayout();
-  });
-  document.addEventListener('click', (e) => {
-    const menu = $('web-sites-menu');
-    if (menu.classList.contains('hidden') || (e.target as HTMLElement).closest('.web-sites')) return;
-    menu.classList.add('hidden');
-    sendWebLayout();
-  });
   new ResizeObserver(() => {
     if (state.view === 'web') arrangeWebPanes();
     sendWebLayout();

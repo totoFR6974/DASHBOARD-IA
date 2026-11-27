@@ -48,7 +48,7 @@ npm start
   - Ollama : tout reste sur ton PC.
 - **Tâches** : chaque message devient une tâche. Tri par colonne, filtres (IA, agent, statut, recherche),
   regroupement par IA / agent / statut, détail (demande, outils utilisés, réponse, durée), bouton Arrêter.
-- **IA web** : les vrais sites ChatGPT, Gemini et (en option, menu « Sites ▾ ») Claude web dans l'appli, avec ta
+- **IA web** : les vrais sites ChatGPT, Gemini et Claude (claude.ai) dans l'appli, chacun son onglet, avec ta
   connexion (mémorisée, une session séparée par site). Les sites cochés s'affichent ensemble : 1 en plein écran,
   2 ou 3 côte à côte (fenêtre étroite : sur deux lignes) ; double-clic sur un site = lui seul. Le hub ne les pilote
   pas : c'est toi qui les utilises.
