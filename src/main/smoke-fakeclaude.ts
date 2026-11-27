@@ -435,6 +435,7 @@ export async function smokeFakeClaude(win: BrowserWindow, outDir: string, shot: 
       head.querySelector('.conv-more-btn').click();
       await sleep(250);
       res.items = [...document.querySelectorAll('.conv-menu [data-conv-action]')].map((b) => b.dataset.convAction);
+      res.obsidianLabel = document.querySelector('.conv-menu [data-conv-action="obsidian"]')?.textContent?.trim() ?? null;
       return res;
     })()`);
     await shot('fc-entete-menu');
@@ -451,7 +452,14 @@ export async function smokeFakeClaude(win: BrowserWindow, outDir: string, shot: 
       return { renaming, closedByEscape: !document.querySelector('.conv-menu') };
     })()`);
     check('H en-tête : une seule ligne, « Tout autorisé » avec l’icône attention, dossier et base visibles, anciens boutons retirés', hd?.oneLine === true && hd?.height < 80 && hd?.perm && hd?.folder && hd?.base && hd?.oldButtons === 0 && hd?.agentHidden, hd);
-    check('H menu « ⋯ » : ouvrir le dossier, renommer, renommer l’agent, supprimer', ['folder', 'rename', 'agent', 'delete'].every((a) => hd?.items?.includes(a)), hd?.items);
+    check('H menu « ⋯ » : ouvrir le dossier, renommer, renommer l’agent, supprimer', ['folder', 'obsidian', 'rename', 'agent', 'delete'].every((a) => hd?.items?.includes(a)), hd?.items);
+    // « Ouvrir dans Obsidian » juste sous « Ouvrir le dossier » (pas de clic : ça lancerait la vraie appli Obsidian).
+    const iFolder = hd?.items?.indexOf('folder') ?? -1;
+    check(
+      'H menu « ⋯ » : « Ouvrir dans Obsidian » juste après « Ouvrir le dossier »',
+      iFolder >= 0 && hd?.items?.[iFolder + 1] === 'obsidian' && /Obsidian/.test(hd?.obsidianLabel ?? ''),
+      { items: hd?.items, label: hd?.obsidianLabel },
+    );
     check('H « Renommer » met le titre en édition ; Échap ferme le menu', after?.renaming === true && after?.closedByEscape === true, after);
     void hc;
   }

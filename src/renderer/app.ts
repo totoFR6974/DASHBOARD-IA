@@ -1023,10 +1023,20 @@ function convHeaderMenu(conv: Conversation, title: HTMLElement, agent: HTMLEleme
     sel?.removeAllRanges();
     sel?.addRange(range);
   };
+  // Obsidian : la note de la discussion si elle en a une, sinon sa base. Même source que l'onglet Connaissances
+  // pour savoir si Obsidian est installé (tant que l'info n'est pas chargée, on le suppose installé).
+  const obsidianInstalled = state.kn.info?.obsidianInstalled !== false;
+  const obsidian = item('gem', obsidianInstalled ? 'Ouvrir dans Obsidian' : 'Obsidian', 'obsidian', () =>
+    void hub
+      .openInObsidian(conv.knowledgeNote ?? '', conv.knowledgeNote ? (conv.knowledgeNoteBase ?? conv.knowledgeBaseId) : conv.knowledgeBaseId)
+      .catch((err: any) => toast(err.message ?? String(err))),
+  );
+  if (!obsidianInstalled) obsidian.title = 'Obsidian non installé : ouvre le dossier';
   return h(
     'div',
     { class: 'conv-menu', role: 'menu' },
     item('folder', 'Ouvrir le dossier', 'folder', () => void hub.openPath(conv.cwd)),
+    obsidian,
     conv.knowledgeNote ? item('note', 'Ouvrir la note de la discussion', 'note', () => void openNoteIn(conv.knowledgeNoteBase ?? conv.knowledgeBaseId, conv.knowledgeNote!)) : null,
     item('pencil', 'Renommer la discussion', 'rename', () => edit(title)),
     item('robot', 'Renommer l’agent', 'agent', () => edit(agent)),
