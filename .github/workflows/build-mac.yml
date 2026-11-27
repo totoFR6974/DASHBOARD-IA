@@ -4,7 +4,8 @@
 #   ou automatiquement quand un tag v* est poussé.
 # - La release du tag est créée par la publication Windows (prerelease) : ce workflow ne crée, ne remplace ni ne
 #   supprime AUCUN fichier Windows ; il ajoute seulement Hub-IA-Mac-AppleSilicon-<version>.dmg et .zip.
-#   Pas de latest-mac.yml ni de .blockmap : sur Mac la mise à jour se limite à une notification (API GitHub).
+#   Pas de latest-mac.yml ni de .blockmap : sur Mac, le hub lit l'API GitHub (taille + empreinte sha256 du .dmg)
+#   et installe lui-même la mise à jour (src/main/mac-update.ts), sans electron-updater.
 # - Zéro coût : runner macos-latest (Apple Silicon) gratuit pour un dépôt public ; signature « ad hoc » (pas de compte
 #   Apple Developer, pas de notarisation) ; aucun secret autre que le GITHUB_TOKEN fourni par GitHub.
 # - Ordre garanti par electron-builder : fuses Electron (package.json › build.electronFuses, dont
@@ -42,6 +43,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ env.TAG != '' && env.TAG || github.ref }}
+          # Le jeton (contents: write) n'est pas laissé dans .git/config : les scripts d'installation de npm ci ne
+          # peuvent pas le lire. Seule la dernière étape s'en sert, via GH_TOKEN.
+          persist-credentials: false
 
       - name: Node.js
         uses: actions/setup-node@v4
@@ -88,8 +92,9 @@ jobs:
 
       - name: Fichiers à publier
         id: files
+        env:
+          V: ${{ steps.version.outputs.version }}
         run: |
-          V="${{ steps.version.outputs.version }}"
           DMG="release/Hub-IA-Mac-AppleSilicon-$V.dmg"
           ZIP="release/Hub-IA-Mac-AppleSilicon-$V.zip"
           for f in "$DMG" "$ZIP"; do test -f "$f" || { echo "::error::$f manquant"; ls -la release; exit 1; }; done
@@ -114,9 +119,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
+          DMG: ${{ steps.files.outputs.dmg }}
+          ZIP: ${{ steps.files.outputs.zip }}
         run: |
-          DMG="${{ steps.files.outputs.dmg }}"
-          ZIP="${{ steps.files.outputs.zip }}"
           # Garde-fou : on n'envoie que des fichiers Mac (jamais un nom qui pourrait écraser un fichier Windows).
           for f in "$DMG" "$ZIP"; do
             case "$(basename "$f")" in Hub-IA-Mac-AppleSilicon-*.dmg|Hub-IA-Mac-AppleSilicon-*.zip) ;; *) echo "::error::nom inattendu : $f"; exit 1;; esac

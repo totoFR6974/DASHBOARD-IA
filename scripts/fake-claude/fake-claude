@@ -1,0 +1,4 @@
+#!/bin/sh
+# Faux CLI « claude » (tests du Hub IA, sans quota) : lance fake-claude.mjs avec Node (macOS / Linux).
+# chmod +x scripts/fake-claude/fake-claude   puis   HUB_CLAUDE_BIN=scripts/fake-claude/fake-claude
+exec node "$(dirname "$0")/fake-claude.mjs" "$@"

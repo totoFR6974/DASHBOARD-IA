@@ -492,6 +492,7 @@ tr.group td { background: transparent; color: var(--accent); }
 .update-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .update-ico { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: #fff; font-weight: 700; font-size: 12px; flex-shrink: 0; }
 .update-text { font-weight: 500; }
+.update-reason { flex-basis: 100%; font-size: 12.5px; color: var(--muted); }
 .update-progress { width: 160px; height: 6px; border-radius: 99px; background: rgba(255, 255, 255, 0.1); overflow: hidden; }
 .update-progress span { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--accent-2), #ffb27a); transition: width 0.4s var(--ease); }
 .update-notes { max-height: 220px; overflow: auto; font-size: 13px; padding: 8px 10px; border-radius: 10px; background: rgba(0, 0, 0, 0.25); border: 1px solid var(--line); }

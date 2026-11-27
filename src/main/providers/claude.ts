@@ -1,9 +1,11 @@
 // Connecteur Claude Code : lance `claude -p` (mode sans interface) avec ton abonnement.
 // Claude garde ses outils et ses serveurs MCP (ex. Roblox Studio) selon le niveau de permission choisi.
 import { spawn, spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import type { ProviderInfo } from '../../shared/types';
-import { caseInsensitiveFs, claudeCandidates, findInPath, firstExisting, killProcessTree, openInMacTerminal, treeSpawnOptions } from '../platform';
+import { checkClaudePath, claudeLaunchSpec, findClaudeOnWindowsPath, npmGlobalClaude, windowsLoginCommand } from '../claude-launch';
+import { caseInsensitiveFs, claudeCandidates, findInPath, firstExisting, killProcessTree, openInMacTerminal, testOnlyEnv, treeSpawnOptions } from '../platform';
 import { CancelledError, type Provider, type RunContext, type RunResult } from './provider';
 
 /** Modèles proposés ; "default" = ne pas passer --model (Claude choisit). */
@@ -21,18 +23,41 @@ export class ClaudeProvider implements Provider {
   constructor(private getPath: () => string) {}
 
   /**
-   * Trouve claude.exe : réglage explicite, sinon les emplacements connus (Windows : ~/.local/bin ; macOS : aussi
-   * Homebrew, ~/.claude/local…), sinon le PATH (complété au démarrage sur macOS, voir platform.fixFinderPath).
+   * Trouve Claude Code : réglage explicite (revalidé : nom claude/claude.exe/claude.cmd, aucun caractère réservé),
+   * sinon les emplacements connus (Windows : ~/.local/bin ; macOS : aussi Homebrew, ~/.claude/local…), sinon le PATH
+   * (Windows : claude.exe puis claude.cmd d'une installation npm, puis %APPDATA%\npm ; macOS : PATH complété au
+   * démarrage, voir platform.fixFinderPath).
    */
   resolvePath(): string {
-    const configured = this.getPath().trim();
+    const configured = checkClaudePath(this.getPath(), { requireExists: false });
     if (configured) return configured;
-    return firstExisting(claudeCandidates()) ?? 'claude';
+    const known = firstExisting(claudeCandidates());
+    if (known) return known;
+    if (process.platform === 'win32') return findClaudeOnWindowsPath() ?? npmGlobalClaude() ?? 'claude';
+    return 'claude';
+  }
+
+  /**
+   * Commande réellement lancée : faux CLI de test (HUB_CLAUDE_BIN, hors appli packagée) sinon le vrai Claude.
+   * Lanceur npm claude.cmd (Windows) : voir claude-launch.ts (programme appelé lancé directement, sinon cmd.exe
+   * avec arguments échappés ; verbatim = à passer en windowsVerbatimArguments).
+   */
+  command(extra: string[]): { cmd: string; args: string[]; env: NodeJS.ProcessEnv; verbatim?: boolean } {
+    const test = claudeTestCommand();
+    if (test) return { cmd: test.cmd, args: [...test.pre, ...extra], env: { ...childEnv(), ...test.env } };
+    const spec = claudeLaunchSpec(this.resolvePath(), extra);
+    return { cmd: spec.cmd, args: spec.args, env: childEnv(), verbatim: spec.verbatim };
   }
 
   async describe(): Promise<ProviderInfo> {
     const base = { id: this.id, name: this.name, kind: 'cli' as const, models: MODELS, defaultModel: 'default', keepsOwnHistory: true, usesWorkspace: true };
-    const res = spawnSync(this.resolvePath(), ['--version'], { encoding: 'utf8', timeout: 15000, env: childEnv(), windowsHide: true });
+    let v: ReturnType<ClaudeProvider['command']>;
+    try {
+      v = this.command(['--version']);
+    } catch (err: any) {
+      return { ...base, available: false, detail: `Introuvable (${err?.message ?? err})` };
+    }
+    const res = spawnSync(v.cmd, v.args, { encoding: 'utf8', timeout: 15000, env: v.env, windowsHide: true, windowsVerbatimArguments: !!v.verbatim });
     if (res.error || res.status !== 0) {
       return { ...base, available: false, detail: `Introuvable (${res.error?.message ?? res.stderr?.trim() ?? 'erreur'})` };
     }
@@ -50,8 +75,9 @@ export class ClaudeProvider implements Provider {
    * (jamais l'e-mail ni l'organisation). loggedIn = null si la commande n'existe pas (ancienne version) ou échoue.
    */
   authStatus(): { loggedIn: boolean | null; method?: string; plan?: string } {
-    const res = spawnSync(this.resolvePath(), ['auth', 'status', '--json'], { encoding: 'utf8', timeout: 15000, env: childEnv(), windowsHide: true });
     try {
+      const a = this.command(['auth', 'status', '--json']);
+      const res = spawnSync(a.cmd, a.args, { encoding: 'utf8', timeout: 15000, env: a.env, windowsHide: true, windowsVerbatimArguments: !!a.verbatim });
       const j = JSON.parse(res.stdout || '');
       if (typeof j?.loggedIn !== 'boolean') return { loggedIn: null };
       const plan = typeof j.subscriptionType === 'string' && j.subscriptionType ? `abonnement ${j.subscriptionType}` : typeof j.authMethod === 'string' ? j.authMethod : undefined;
@@ -65,7 +91,10 @@ export class ClaudeProvider implements Provider {
   openLogin(): void {
     const exe = this.resolvePath();
     if (process.platform === 'win32') {
-      spawn('cmd.exe', ['/c', 'start', 'Connexion a Claude Code', 'cmd.exe', '/k', exe, 'auth', 'login'], { detached: true, stdio: 'ignore', windowsHide: false, env: childEnv() }).unref();
+      // Aucun chemin relu par cmd : programme passé par variable d'environnement (voir windowsLoginCommand).
+      const spec = claudeLaunchSpec(exe, []);
+      const login = windowsLoginCommand({ ...spec, shimPath: exe }, ['auth', 'login'], childEnv());
+      spawn(login.cmd, login.args, { detached: true, stdio: 'ignore', windowsHide: false, windowsVerbatimArguments: true, env: login.env }).unref();
     } else if (process.platform === 'darwin') {
       // Fenêtre du Terminal (chemin absolu : le Terminal n'a pas forcément le même PATH que le hub).
       const abs = exe.includes('/') ? exe : (findInPath(exe) ?? exe);
@@ -80,7 +109,8 @@ export class ClaudeProvider implements Provider {
       const { args, prompt } = buildClaudeInvocation(ctx);
 
       // macOS / Linux : Claude devient chef d'un groupe de process → l'annulation arrête aussi ses serveurs MCP.
-      const child = spawn(this.resolvePath(), args, { cwd: ctx.cwd, env: { ...childEnv(), ...(ctx.extraEnv ?? {}) }, windowsHide: true, ...treeSpawnOptions() });
+      const c = this.command(args);
+      const child = spawn(c.cmd, c.args, { cwd: ctx.cwd, env: { ...c.env, ...(ctx.extraEnv ?? {}) }, windowsHide: true, windowsVerbatimArguments: !!c.verbatim, ...treeSpawnOptions() });
       let buffer = '';
       let stderr = '';
       let output = '';
@@ -182,19 +212,56 @@ export class ClaudeProvider implements Provider {
         ctx.signal.removeEventListener('abort', onAbort);
         if (buffer) handleLine(buffer);
         if (ctx.signal.aborted) return reject(new CancelledError());
-        if (failure) {
-          if (/not logged in|please run \/login/i.test(failure)) {
-            return reject(new Error("Claude Code n'est pas connecté à un compte Claude. Réglages › Assistant d'installation › Claude Code › « Se connecter » (ou lance « claude auth login » dans un terminal), puis réessaie."));
-          }
-          return reject(new Error(failure));
-        }
+        if (failure) return reject(explainClaudeFailure(failure) ?? new Error(failure));
         if (result) return resolve(result);
-        reject(new Error(`Claude s'est arrêté (code ${code}). ${stderr.trim()}`.trim()));
+        // Sans ligne « result » : erreur écrite sur stderr (ex. session introuvable pour --resume).
+        reject(explainClaudeFailure(stderr) ?? new Error(`Claude s'est arrêté (code ${code}). ${stderr.trim()}`.trim()));
       });
 
       child.stdin.end(prompt, 'utf8');
     });
   }
+}
+
+/** --resume vers une session que Claude Code ne connaît plus (nettoyage des anciennes sessions, autre PC…). */
+export class ClaudeSessionLostError extends Error {
+  constructor(readonly sessionId: string) {
+    super(`La session Claude Code de cette discussion est introuvable (${sessionId}) : Claude Code l'a sans doute supprimée (nettoyage des anciennes conversations).`);
+  }
+}
+
+/**
+ * Erreurs connues de Claude Code traduites en français, avec la marche à suivre (null = message inconnu, gardé tel quel).
+ * Ordre important : « OAuth session expired … Please run /login » est une connexion EXPIRÉE, pas un compte absent.
+ */
+export function explainClaudeFailure(text: string, now: Date = new Date()): Error | null {
+  const t = String(text ?? '');
+  const lost = /no conversation found with session id:?\s*([\w-]+)/i.exec(t);
+  if (lost) return new ClaudeSessionLostError(lost[1]);
+  // Connexion expirée (jeton OAuth périmé et non renouvelable, ex. compte reconnecté ailleurs ou longue absence) :
+  // « claude auth status » dit encore « connecté », seule une nouvelle connexion règle le problème.
+  if (/oauth session expired|oauth token (has )?expired|could not be refreshed|failed to authenticate|invalid (oauth |access |refresh )?(token|credentials)/i.test(t)) {
+    return new Error("La connexion de Claude Code à ton compte a expiré. Reconnecte-toi : Réglages › Assistant d'installation › Claude Code › « Se connecter » (ou lance « claude auth login » dans un terminal), puis réessaie.");
+  }
+  if (/not logged in|please run \/login/i.test(t)) {
+    return new Error("Claude Code n'est pas connecté à un compte Claude. Réglages › Assistant d'installation › Claude Code › « Se connecter » (ou lance « claude auth login » dans un terminal), puis réessaie.");
+  }
+  // Limite de l'abonnement : « Claude AI usage limit reached|<epoch> » (anciennes versions) ou « 5-hour limit reached ∙
+  // resets 3pm » / « You've hit your limit · resets … » (récentes).
+  if (/usage limit reached|(5-hour|weekly|opus|sonnet|session) limit reached|hit your (usage |weekly )?limit/i.test(t)) {
+    const epoch = /\|(\d{9,11})\b/.exec(t);
+    let when = '';
+    if (epoch) {
+      const d = new Date(Number(epoch[1]) * 1000);
+      const time = d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+      when = d.toDateString() === now.toDateString() ? ` vers ${time}` : ` le ${d.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })} vers ${time}`;
+    } else {
+      const reset = /resets?\s+([^\n·∙|]+)/i.exec(t)?.[1]?.trim();
+      if (reset) when = ` (Claude indique : « resets ${reset} »)`;
+    }
+    return new Error(`Limite d'utilisation de Claude atteinte pour ton abonnement : réessaie${when || ' plus tard'}. En attendant, les autres IA du hub (Ollama, images locales) restent utilisables.`);
+  }
+  return null;
 }
 
 /**
@@ -237,6 +304,23 @@ export function buildClaudeInvocation(ctx: Pick<RunContext, 'prompt' | 'images' 
 function sameDir(a: string, b: string): boolean {
   const n = (p: string) => (caseInsensitiveFs() ? resolve(p).toLowerCase() : resolve(p)).replace(/[\\/]+$/, '');
   return n(a) === n(b);
+}
+
+/**
+ * Faux CLI Claude pour les tests (scripts/fake-claude) : HUB_CLAUDE_BIN, lue UNIQUEMENT hors appli packagée
+ * (testOnlyEnv). Un script .mjs/.js est lancé avec le Node embarqué (Electron en mode Node) ; sous Windows, un
+ * lanceur .cmd/.bat (impossible à lancer sans shell) est remplacé par le .mjs du même nom posé à côté.
+ */
+export function claudeTestCommand(env: NodeJS.ProcessEnv = process.env, packaged?: boolean): { cmd: string; pre: string[]; env: Record<string, string> } | null {
+  const raw = testOnlyEnv('HUB_CLAUDE_BIN', env, packaged);
+  if (!raw) return null;
+  let bin = resolve(raw);
+  if (/\.(cmd|bat)$/i.test(bin)) {
+    const mjs = bin.replace(/\.(cmd|bat)$/i, '.mjs');
+    if (existsSync(mjs)) bin = mjs;
+  }
+  if (/\.(mjs|cjs|js)$/i.test(bin)) return { cmd: process.execPath, pre: [bin], env: process.versions.electron ? { ELECTRON_RUN_AS_NODE: '1' } : {} };
+  return { cmd: bin, pre: [], env: {} };
 }
 
 /** Environnement du process enfant : on retire les variables d'une éventuelle session Claude parente. */

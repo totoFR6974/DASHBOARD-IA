@@ -92,3 +92,15 @@ export function imagePreset(id: string | undefined): ImageModelPreset | undefine
 export function presetSize(p: ImageModelPreset): number {
   return p.files.reduce((s, f) => s + f.sizeBytes, 0);
 }
+
+/**
+ * Mac (mémoire unifiée partagée entre le système, ComfyUI et ses modèles) : modèle d'image conseillé, avec une raison
+ * honnête. Z-Image Turbo charge ~20 Go (modèle bf16 12,3 Go + encodeur de texte 8 Go) : impossible ou très lent sous
+ * 24 Go. Ses variantes allégées officielles (int8 / fp8 / fp4 de Comfy-Org) visent les cartes NVIDIA : leurs formats
+ * ne sont pas pris en charge de façon fiable par la puce graphique Apple (MPS), elles ne sont donc pas proposées.
+ */
+export function macImageAdvice(memoryGb: number): { presetId: string; reason: string } {
+  if (memoryGb >= 32) return { presetId: 'z-image-turbo', reason: `${memoryGb} Go de mémoire unifiée : Z-Image Turbo (≈ 20 Go chargés) tient, lentement (plusieurs minutes par image)` };
+  if (memoryGb >= 24) return { presetId: 'sdxl', reason: `${memoryGb} Go de mémoire unifiée : SDXL conseillé ; Z-Image Turbo (≈ 20 Go chargés) possible mais très lent` };
+  return { presetId: 'sdxl', reason: `${memoryGb} Go de mémoire unifiée : SDXL conseillé ; Z-Image Turbo (≈ 20 Go chargés) très lent ou impossible` };
+}

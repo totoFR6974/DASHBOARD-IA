@@ -97,7 +97,7 @@ function ollamaExe(): string | null {
   return first?.trim() || null;
 }
 
-function detectGpu(): SetupStatus['gpu'] {
+export function detectGpu(): SetupStatus['gpu'] {
   const res = spawnSync('nvidia-smi', ['--query-gpu=name,memory.total', '--format=csv,noheader,nounits'], { encoding: 'utf8', timeout: 8000, windowsHide: true });
   if (res.error || res.status !== 0) return null;
   // Plusieurs cartes : on garde celle qui a le plus de mémoire.
@@ -367,13 +367,21 @@ export class Setup {
     });
   }
 
-  /** Télécharge un modèle via l'API d'Ollama (progression en octets). */
-  async pullModel(name: string): Promise<void> {
+  /** Une installation ou un téléchargement de l'assistant est en cours (un seul à la fois). */
+  get busy(): boolean {
+    return !!this.abort;
+  }
+
+  /**
+   * Télécharge un modèle via l'API d'Ollama (progression en octets). onProgress (modules complémentaires) :
+   * la progression lui est envoyée au lieu des événements 'setup' de l'assistant.
+   */
+  async pullModel(name: string, onProgress?: (p: SetupProgress) => void): Promise<void> {
     const model = String(name ?? '').trim();
     if (!/^[a-z0-9][a-z0-9._\-/]*(:[a-z0-9._\-]+)?$/i.test(model)) throw new Error(`Nom de modèle invalide : ${name}`);
     if (this.abort) throw new Error('Un téléchargement est déjà en cours');
     this.abort = new AbortController();
-    const emit = (p: Omit<SetupProgress, 'task'>) => this.host.emit({ task: 'model', ...p });
+    const emit = (p: Omit<SetupProgress, 'task'>) => (onProgress ? onProgress({ task: 'model', ...p }) : this.host.emit({ task: 'model', ...p }));
     let lastEmit = 0;
     try {
       emit({ state: 'running', message: `Préparation du téléchargement de ${model}…` });

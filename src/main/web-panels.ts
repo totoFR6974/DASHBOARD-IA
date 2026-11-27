@@ -17,6 +17,8 @@ import {
 } from 'electron';
 import { execFile } from 'node:child_process';
 import type { WebAction, WebMicChoice, WebMicInfo, WebMicSystemStatus, WebPanelState, WebRect } from '../shared/types';
+import { clipboardReadAllowed, safeExternalUrl } from './path-guard';
+import { panelNavVerdict, panelPopupVerdict } from './web-nav';
 
 /** Règle de détection de connexion : présence d'un cookie de session sur un site donné. */
 interface LoginRule {
@@ -55,9 +57,6 @@ const PANELS: PanelDef[] = [
   },
 ];
 
-/** Fenêtres pop-up autorisées dans l'appli (connexion) ; les autres liens s'ouvrent dans ton navigateur. */
-const AUTH_HOSTS = [/(^|\.)openai\.com$/, /(^|\.)chatgpt\.com$/, /(^|\.)google\.com$/, /(^|\.)live\.com$/, /(^|\.)microsoftonline\.com$/, /(^|\.)apple\.com$/];
-
 /**
  * Permissions accordées aux sites sans rien demander : presse-papiers et plein écran (pas de caméra, position…).
  * Le micro (« media ») est traité à part : audio seul, origine officielle du panneau, avec ton accord (voir micRequest).
@@ -76,6 +75,12 @@ export interface MicTestHooks {
   log?: (line: string) => void;
   /** Ne pas afficher l'aide « micro bloqué par le système ». */
   noSystemHelp?: boolean;
+}
+
+/** Crochets des tests automatiques (--smoke=web…) : liens externes non ouverts dans le navigateur, décisions tracées. */
+export interface NavTestHooks {
+  openExternal?: (url: string) => void;
+  log?: (line: string) => void;
 }
 
 const MIC_CHOICES: WebMicChoice[] = ['ask', 'allow', 'deny'];
@@ -117,12 +122,13 @@ function readConsent(key: string): Promise<string | null> {
   });
 }
 
-function isAuthUrl(url: string): boolean {
+/** Origine + chemin d'une URL (journal des tests : jamais les paramètres, qui peuvent porter un code de connexion). */
+function shortUrl(url: string): string {
   try {
-    const { protocol, hostname } = new URL(url);
-    return protocol === 'https:' && AUTH_HOSTS.some((re) => re.test(hostname));
+    const u = new URL(url);
+    return u.protocol === 'about:' ? url : `${u.origin}${u.pathname}`;
   } catch {
-    return false;
+    return '(adresse invalide)';
   }
 }
 
@@ -138,6 +144,8 @@ export class WebPanels {
   private micHelpShown = false;
   /** Tests automatiques uniquement. */
   micTestHooks: MicTestHooks = {};
+  /** Tests automatiques uniquement. */
+  navTestHooks: NavTestHooks = {};
 
   constructor(
     private win: BrowserWindow,
@@ -149,6 +157,12 @@ export class WebPanels {
       ses.setPermissionRequestHandler((wc, permission, callback, details) => {
         if (permission === 'media') {
           this.micRequest(def, wc, details as MediaAccessPermissionRequest).then(callback, () => callback(false));
+          return;
+        }
+        // Lecture du presse-papiers : seulement le site officiel du panneau (page principale), jamais un autre site
+        // ouvert dans le panneau ni une page de connexion (ils liraient en silence ce que tu as copié).
+        if (permission === 'clipboard-read') {
+          callback(clipboardReadAllowed(def.micOrigin, (details as { requestingUrl?: string }).requestingUrl, wc.getURL()));
           return;
         }
         callback(ALLOWED_PERMISSIONS.has(permission));
@@ -169,20 +183,38 @@ export class WebPanels {
     setInterval(() => void this.flushAll(), 60_000).unref();
     win.on('close', () => void this.flushAll());
 
-    ipcMain.handle('web:list', async () => {
+    // Seule la page du hub (fenêtre principale) pilote les panneaux : jamais un site affiché dans un panneau.
+    const fromHub = (e: { sender: WebContents }) => {
+      if (this.win.isDestroyed() || e.sender !== this.win.webContents) throw new Error('Appel refusé');
+    };
+    ipcMain.handle('web:list', async (e) => {
+      fromHub(e);
       await this.ready;
       return PANELS.map((p) => this.state(p.id));
     });
-    ipcMain.on('web:layout', (_e, rects: WebRect[]) => this.layout(Array.isArray(rects) ? rects : []));
-    ipcMain.handle('web:action', (_e, id: string, action: WebAction) => this.action(id, action));
-    ipcMain.handle('web:micInfo', () => this.micInfo());
-    ipcMain.handle('web:setMic', (_e, id: string, choice: WebMicChoice) => {
+    ipcMain.on('web:layout', (e, rects: WebRect[]) => {
+      if (this.win.isDestroyed() || e.sender !== this.win.webContents) return;
+      this.layout(Array.isArray(rects) ? rects : []);
+    });
+    ipcMain.handle('web:action', (e, id: string, action: WebAction) => {
+      fromHub(e);
+      return this.action(id, action);
+    });
+    ipcMain.handle('web:micInfo', (e) => {
+      fromHub(e);
+      return this.micInfo();
+    });
+    ipcMain.handle('web:setMic', (e, id: string, choice: WebMicChoice) => {
+      fromHub(e);
       this.def(id);
       if (!MIC_CHOICES.includes(choice)) throw new Error(`Choix de micro inconnu : ${choice}`);
       this.micPrefs.set(id, choice);
       return this.micInfo();
     });
-    ipcMain.handle('web:openMicSettings', () => this.openMicSystemSettings());
+    ipcMain.handle('web:openMicSettings', (e) => {
+      fromHub(e);
+      return this.openMicSystemSettings();
+    });
   }
 
   // ---------- Micro (dictée / mode voix des sites) ----------
@@ -407,16 +439,7 @@ export class WebPanels {
     this.win.contentView.addChildView(view);
 
     const wc = view.webContents;
-    wc.setWindowOpenHandler(({ url }) => {
-      if (isAuthUrl(url)) {
-        return {
-          action: 'allow',
-          overrideBrowserWindowOptions: { width: 520, height: 720, parent: this.win, autoHideMenuBar: true, webPreferences: { session: ses, sandbox: true } },
-        };
-      }
-      if (/^https?:\/\//.test(url)) void shell.openExternal(url);
-      return { action: 'deny' };
-    });
+    this.guardNavigation(def, wc, ses);
     const push = () => this.emit(id);
     for (const ev of ['did-start-loading', 'did-stop-loading', 'page-title-updated', 'did-navigate', 'did-navigate-in-page'] as const) {
       wc.on(ev as any, push);
@@ -426,6 +449,54 @@ export class WebPanels {
     this.startUrl.delete(id);
     this.views.set(id, view);
     return view;
+  }
+
+  /** Lien confié au navigateur par défaut : http(s) seulement (jamais file:, javascript:, schémas d'applis…). */
+  private openOutside(url: string): void {
+    const safe = safeExternalUrl(url);
+    if (!safe) return;
+    if (this.navTestHooks.openExternal) this.navTestHooks.openExternal(safe);
+    else void shell.openExternal(safe);
+  }
+
+  /**
+   * Filtre d'adresses d'un panneau ET de ses fenêtres de connexion (voir web-nav.ts) :
+   * - will-navigate / will-redirect (page principale) : origine officielle et pages de connexion connues restent
+   *   dans l'appli ; les autres liens http(s) partent dans le navigateur ; le reste est bloqué ;
+   * - pop-ups : mêmes règles ; une pop-up de connexion s'ouvre dans l'appli avec la session du panneau (cookies
+   *   partagés, la connexion aboutit dans le panneau) et reçoit à son tour ce filtre (did-create-window).
+   * Les cadres internes (iframes : contrôle anti-robot, widgets Google…) ne sont pas filtrés ici.
+   */
+  private guardNavigation(def: PanelDef, wc: WebContents, ses: Session): void {
+    const onNavigate = (kind: string) => (e: Electron.Event<{ url: string; isMainFrame: boolean }>) => {
+      if (!e.isMainFrame) return;
+      const verdict = panelNavVerdict(def.id, e.url);
+      this.navTestHooks.log?.(`${kind} ${def.id} ${shortUrl(e.url)} → ${verdict}`);
+      if (verdict === 'panel') return;
+      e.preventDefault();
+      if (verdict === 'external') this.openOutside(e.url);
+    };
+    wc.on('will-navigate', onNavigate('navigation'));
+    wc.on('will-redirect', onNavigate('redirection'));
+    wc.setWindowOpenHandler(({ url }) => {
+      const verdict = panelPopupVerdict(def.id, url);
+      this.navTestHooks.log?.(`pop-up ${def.id} ${shortUrl(url)} → ${verdict}`);
+      if (verdict === 'panel') {
+        return {
+          action: 'allow',
+          overrideBrowserWindowOptions: {
+            width: 520,
+            height: 720,
+            parent: this.win,
+            autoHideMenuBar: true,
+            webPreferences: { session: ses, sandbox: true, contextIsolation: true, nodeIntegration: false },
+          },
+        };
+      }
+      if (verdict === 'external') this.openOutside(url);
+      return { action: 'deny' };
+    });
+    wc.on('did-create-window', (child) => this.guardNavigation(def, child.webContents, ses));
   }
 
   /** Place les panneaux demandés par l'interface ; les autres sont masqués. */
@@ -463,7 +534,8 @@ export class WebPanels {
         await wc.loadURL(def.url);
         break;
       case 'external':
-        await shell.openExternal(wc.getURL() || def.url);
+        // L'adresse vient de la page : seulement http(s), jamais un autre schéma (file:, applis…).
+        await shell.openExternal(safeExternalUrl(wc.getURL()) ?? def.url);
         break;
     }
   }

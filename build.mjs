@@ -40,6 +40,7 @@ cpSync('src/renderer/index.html', 'dist/renderer/index.html');
 cpSync('src/renderer/styles.css', 'dist/renderer/styles.css');
 cpSync('src/renderer/theme.css', 'dist/renderer/theme.css');
 cpSync('src/renderer/image-viewer.css', 'dist/renderer/image-viewer.css');
+cpSync('src/renderer/modules.css', 'dist/renderer/modules.css');
 // Police Inter (SIL OFL 1.1) embarquée : rien n'est chargé depuis internet.
 mkdirSync('dist/renderer/fonts', { recursive: true });
 for (const f of ['inter-latin-wght-normal.woff2', 'inter-latin-ext-wght-normal.woff2']) {

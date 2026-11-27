@@ -7,7 +7,8 @@
 // - Visionneuse : ouverture au clic, zoom molette, double-clic, ← →, copie de l'image (presse-papiers relu ici,
 //   côté process principal), chemins refusés, Échap. Captures : bulles et visionneuse.
 import { clipboard, nativeImage, type BrowserWindow } from 'electron';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -345,6 +346,43 @@ export async function smokeViewer(win: BrowserWindow, outDir: string, shot: (nam
     };
   })()`);
   check('chemins refusés (système, hors hub, pas une image, absent, ..)', Object.values(refused ?? {}).every((v) => v !== 'accepté'), refused);
+
+  // Sécurité : protocole hub-file et lien (jonction / lien symbolique) posé dans un dossier autorisé qui pointe
+  // ailleurs ; ouverture d'un exécutable par openPath ; appel du hub depuis un panneau web.
+  {
+    const outside = mkdtempSync(join(tmpdir(), 'hub-ia-hors-'));
+    const link = join(outDir, 'workspace', 'images', 'lien-externe');
+    writeTestPng(join(outside, 'secret.png'), 64, 64, 1);
+    let linked = false;
+    try {
+      symlinkSync(outside, link, process.platform === 'win32' ? 'junction' : 'dir');
+      linked = true;
+    } catch (err) {
+      console.log(`Visionneuse : lien non créé (${err}), test du lien sauté`);
+    }
+    const url = (f: string) => 'hub-file:///' + encodeURI(f.replace(/\\/g, '/').replace(/^\/+/, '')).replace(/#/g, '%23').replace(/\?/g, '%3F');
+    const sec = await js(`(async () => {
+      // Chargé comme une <img> (la CSP n'autorise hub-file: qu'en img-src) : 'chargée' ou 'refusée'.
+      const status = (u) => new Promise((res) => { const i = new Image(); i.onload = () => res('chargée'); i.onerror = () => res('refusée'); i.src = u; });
+      const open = (p) => window.hub.openPath(p).then(() => 'ouvert', (e) => String(e.message || e));
+      return {
+        allowed: await status(${JSON.stringify(url(p.img1))}),
+        viaLink: ${linked ? `await status(${JSON.stringify(url(join(link, 'secret.png')))})` : 'null'},
+        direct: await status(${JSON.stringify(url(join(outside, 'secret.png')))}),
+        encodedDots: await status(${JSON.stringify(url(join(outDir, 'workspace')) + '/%2e%2e/%2e%2e/%2e%2e/build/icon.png')}),
+        bat: await open(${JSON.stringify(join(outDir, 'nexiste-pas.bat'))}),
+        lnk: await open(${JSON.stringify(join(outDir, 'nexiste-pas.lnk'))}),
+      };
+    })()`);
+    check('hub-file : image du hub servie, lien vers l’extérieur / chemin hors hub / %2e%2e refusés', sec?.allowed === 'chargée' && (sec?.viaLink === null || sec?.viaLink === 'refusée') && sec?.direct === 'refusée' && sec?.encodedDots === 'refusée', sec);
+    check('openPath : exécutable (.bat, .lnk) refusé côté main', /sécurité/i.test(sec?.bat ?? '') && /sécurité/i.test(sec?.lnk ?? ''), [sec?.bat, sec?.lnk]);
+    try {
+      if (linked) unlinkSync(link);
+    } catch {
+      /* jonction déjà retirée */
+    }
+    rmSync(outside, { recursive: true, force: true });
+  }
 
   // Échap ferme ; un clic sur le fond aussi.
   const esc = await js(`(async () => {

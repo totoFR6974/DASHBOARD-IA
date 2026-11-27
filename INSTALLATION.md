@@ -78,6 +78,38 @@ Discussions, notes, réglages et connexions restent sur ton PC :
 Pour sauvegarder ou déplacer tes données, copie ce dossier. Les connexions ChatGPT et Gemini sont
 protégées par ton compte Windows : sur un autre PC, il faudra simplement te reconnecter.
 
+## Synchroniser ses bases entre plusieurs appareils
+
+Les bases de connaissances (notes Markdown, compatibles Obsidian) peuvent être partagées entre ton PC et ton Mac.
+Le réglage est dans **Réglages › Base de connaissances › Emplacement des bases de connaissances ›
+« Changer d'emplacement… »** : le hub propose les dossiers synchronisés trouvés sur l'appareil (Google Drive,
+OneDrive, iCloud Drive, Dropbox), ou n'importe quel dossier. Il y **déplace** tes bases (copie vérifiée, puis
+suppression de l'ancien emplacement) après t'avoir montré le nombre de notes et la taille, et les réinscrit dans
+Obsidian (Obsidian doit être fermé). Sur le **2e appareil**, choisis le même dossier : les bases déjà présentes
+sont reconnues (fichier `.hub-base.json` de chaque base), rien n'est écrasé, et un dossier de travail du même nom
+(`C:\…\Projet` sur PC, `/Users/…/Projet` sur Mac) retrouve automatiquement sa base.
+
+Trois façons de faire, au choix (le hub n'en impose aucune et n'installe rien) :
+
+- **Dossier cloud** (Google Drive, OneDrive, iCloud Drive, Dropbox) : le plus simple. Choisis le raccourci proposé
+  (sous-dossier « Hub IA - bases ») sur chaque appareil. Laisse l'outil de synchro tourner en fond. Avec Google
+  Drive, préfère le mode « dupliquer les fichiers » (fichiers disponibles hors connexion).
+- **Git** (GitHub, GitLab… dépôt privé) : choisis comme emplacement le dossier du dépôt cloné, puis fais
+  `git pull` avant de travailler et `git commit` + `git push` après. Ajoute au `.gitignore` :
+  `.obsidian/workspace*.json`, `.corbeille/` et `.~hub-*.tmp`. Historique complet, mais rien n'est automatique.
+- **Syncthing** (appareil à appareil, sans cloud) : partage le même dossier entre le PC et le Mac dans Syncthing,
+  puis choisis-le comme emplacement sur chacun. Les deux appareils doivent être allumés en même temps pour se
+  synchroniser.
+
+**Bonne pratique : un seul appareil à la fois sur une même note.** Si deux appareils modifient la même note avant
+d'avoir été synchronisés, l'outil garde les deux versions (« conflicted copy », `.sync-conflict-`, `(1)`…).
+L'onglet Connaissances affiche alors discrètement « N conflits de synchronisation » : ouvre chaque paire, garde le
+bon contenu et supprime la copie. Le hub ne fusionne jamais rien tout seul.
+
+L'index de recherche par le sens et les réglages du hub restent sur chaque appareil (dans ses données), jamais dans
+le dossier synchronisé. Si le dossier synchronisé est absent au lancement (Google Drive pas encore démarré, disque
+débranché), le hub le signale dans les Réglages et n'écrit aucune note ailleurs en attendant.
+
 ## Désinstaller
 
 - **Version installée** : Paramètres Windows › Applications › **Hub IA** › Désinstaller.

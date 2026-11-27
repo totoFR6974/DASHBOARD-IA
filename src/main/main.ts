@@ -14,6 +14,7 @@ import { fixFinderPath } from './platform';
 import { installAppMenu, titleBarOptions } from './window-chrome';
 import { clipboardFilePaths } from './clipboard-files';
 import { IMAGE_TYPES, isAllowedImagePath, registerImageActions } from './image-actions';
+import { checkOpenPath, isRealPathInside, mainWindowPermission } from './path-guard';
 
 const appDir = app.getAppPath();
 
@@ -45,6 +46,8 @@ mkdirSync(rootDir, { recursive: true });
 // HUB_SMOKE_DIR : dossier de test propre (plusieurs tests visuels en parallèle sans s'écraser), ex. data/smoke-obsidian.
 const dataDir = smoke ? join(rootDir, 'data', process.env.HUB_SMOKE_DIR?.replace(/[^\w-]/g, '') || 'smoke') : join(rootDir, 'data');
 if (smoke) rmSync(dataDir, { recursive: true, force: true });
+// Tests : jamais le vrai obsidian.json de l'utilisateur (faux fichier dans le dossier de test, cf. obsidian.ts).
+if (smoke && !process.env.HUB_OBSIDIAN_CONFIG) process.env.HUB_OBSIDIAN_CONFIG = join(dataDir, 'obsidian-test', 'obsidian.json');
 // Test visuel : base de départ fournie (HUB_SMOKE_SEED = chemin d'un db.json), pour tester sans appeler d'IA.
 if (smoke && process.env.HUB_SMOKE_SEED && existsSync(process.env.HUB_SMOKE_SEED)) {
   mkdirSync(dataDir, { recursive: true });
@@ -71,6 +74,8 @@ let hub: Hub;
 let win: BrowserWindow | null = null;
 let webPanels: WebPanels | null = null;
 let updater: Updater | null = null;
+/** Fermeture déjà confirmée (tâches en cours) : pas de seconde question. */
+let closeConfirmed = false;
 
 function createWindow(): void {
   win = new BrowserWindow({
@@ -109,7 +114,6 @@ function createWindow(): void {
     win!.showInactive();
   });
   // Fermeture pendant qu'une IA travaille : la réponse en cours serait perdue → on demande confirmation.
-  let closeConfirmed = false;
   win.on('close', (e) => {
     if (smoke || closeConfirmed || !hub) return;
     const n = hub.activeTaskCount();
@@ -172,6 +176,16 @@ if (!smoke && !app.requestSingleInstanceLock()) {
   app.whenReady().then(start);
 }
 
+/**
+ * L'appel IPC vient-il de la page du hub (cadre principal de la fenêtre principale, chargée depuis file://) ?
+ * Les panneaux web n'ont pas de preload, mais on ne compte pas que sur ça (défense en profondeur).
+ */
+function isMainWindowSender(e: Electron.IpcMainInvokeEvent | Electron.IpcMainEvent): boolean {
+  if (!win || win.isDestroyed() || e.sender !== win.webContents) return false;
+  const frame = e.senderFrame;
+  return !!frame && frame === win.webContents.mainFrame && frame.url.startsWith('file:');
+}
+
 /** Chemin absolu demandé par une URL hub-file (formats acceptés : hub-file://local/C:/…, hub-file:///C:/…, hub-file://c/…). */
 function pathFromHubFileUrl(raw: string): string {
   const url = new URL(raw);
@@ -188,7 +202,9 @@ function registerHubFileProtocol(): void {
     try {
       const abs = pathFromHubFileUrl(req.url);
       const type = IMAGE_TYPES[extname(abs).toLowerCase()];
-      if (!type || !isAllowedImagePath(abs, hub.imageRoots())) return new Response('Accès refusé', { status: 403 });
+      // Chemin demandé ET chemin réel (lien symbolique / jonction résolus) dans les dossiers d'images du hub.
+      const roots = hub.imageRoots();
+      if (!type || !isAllowedImagePath(abs, roots) || !isRealPathInside(abs, roots)) return new Response('Accès refusé', { status: 403 });
       return new Response(await readFile(abs), { headers: { 'Content-Type': type, 'Cache-Control': 'no-cache' } });
     } catch {
       return new Response('Introuvable', { status: 404 });
@@ -251,23 +267,21 @@ function registerHubAssetProtocol(): void {
 }
 
 /**
- * Micro (dictée vocale) : autorisé UNIQUEMENT pour la fenêtre principale du hub et UNIQUEMENT en audio (jamais la caméra).
- * Les panneaux ChatGPT / Gemini ont leurs propres sessions et leur propre politique (web-panels.ts), inchangées.
- * Les autres permissions de la fenêtre principale gardent le comportement par défaut (ex. presse-papiers des boutons Copier).
+ * Permissions de la fenêtre principale (session par défaut) : liste blanche (mainWindowPermission, path-guard.ts).
+ * Presse-papiers (boutons Copier, collage), plein écran, micro en audio seul (dictée) ; tout le reste refusé, et
+ * rien pour une autre page que celle du hub. Les panneaux ChatGPT / Gemini ont leurs propres sessions et leur propre
+ * politique (web-panels.ts), inchangées.
  */
 function registerMainWindowPermissions(): void {
   const ses = session.defaultSession;
+  const fromHub = (wc: Electron.WebContents | null) => !!win && !win.isDestroyed() && wc === win.webContents;
   ses.setPermissionRequestHandler((wc, permission, callback, details) => {
-    if (permission === 'media') {
-      const types = (details as { mediaTypes?: string[] }).mediaTypes ?? [];
-      callback(!!win && wc === win.webContents && types.length > 0 && types.every((t) => t === 'audio'));
-      return;
-    }
-    callback(true);
+    const d = details as { mediaTypes?: string[]; requestingUrl?: string };
+    callback(mainWindowPermission(permission, { fromHub: fromHub(wc), url: d.requestingUrl, mediaTypes: d.mediaTypes }));
   });
   ses.setPermissionCheckHandler((wc, permission, _origin, details) => {
-    if (permission === 'media') return !!win && wc === win.webContents && (details as { mediaType?: string }).mediaType !== 'video';
-    return true;
+    const d = details as { mediaType?: string; requestingUrl?: string };
+    return mainWindowPermission(permission, { fromHub: fromHub(wc), url: d.requestingUrl, mediaType: d.mediaType, check: true });
   });
 }
 
@@ -291,7 +305,10 @@ function start(): void {
   const projectTools = join(appDir, 'tools', 'ComfyUI');
   const rootTools = join(rootDir, 'tools', 'ComfyUI');
   const toolsDir = !app.isPackaged && !existsSync(rootTools) && existsSync(projectTools) ? projectTools : rootTools;
-  hub = new Hub(dataDir, smoke ? dataDir : rootDir, { toolsDir });
+  // Tests (--smoke=fakeclaude) : journaux Claude Code isolés (HUB_CLAUDE_LOGS_ROOT) au lieu de ~/.claude/projects.
+  const claudeLogsRoot = smoke && !app.isPackaged && process.env.HUB_CLAUDE_LOGS_ROOT ? resolve(process.env.HUB_CLAUDE_LOGS_ROOT) : undefined;
+  hub = new Hub(dataDir, smoke ? dataDir : rootDir, { toolsDir, ...(claudeLogsRoot ? { claudeLogsRoot } : {}) });
+  if (smoke) (globalThis as { __hubSmoke?: Hub }).__hubSmoke = hub; // tests (smoke-vaultsync.ts) : écrire des notes sans IA
   // macOS : menu d'application (⌘C ⌘V ⌘Q ⌘W…) ; icône du Dock en dev (la version packagée a son .icns).
   installAppMenu();
   if (process.platform === 'darwin' && !app.isPackaged && existsSync(windowIcon)) app.dock?.setIcon(windowIcon);
@@ -306,7 +323,7 @@ function start(): void {
   });
 
   // Mises à jour (releases GitHub publiques) : installée = automatique, portable = notification, dev = manuelle.
-  // Mac (signature ad hoc, Squirrel.Mac impossible) : notification + lien du .dmg, comme la version portable.
+  // Mac (signature ad hoc, Squirrel.Mac impossible) : installeur maison (mac-update.ts), repli sur le lien du .dmg.
   updater = new Updater({
     mode: !app.isPackaged ? 'dev' : process.platform === 'darwin' ? 'mac' : process.env.PORTABLE_EXECUTABLE_DIR ? 'portable' : 'installed',
     settings: () => hub.settings,
@@ -314,6 +331,28 @@ function start(): void {
       if (win && !win.isDestroyed()) win.webContents.send('hub:event', { type: 'update', state });
     },
     disableAuto: smoke,
+    updatesDir: join(dataDir, 'updates'),
+    // Mac : le hub va se fermer pour installer → même avertissement que la fermeture si des tâches tournent.
+    confirmInstall: () => {
+      const n = smoke ? 0 : hub.activeTaskCount();
+      if (n === 0) return true;
+      const choice = dialog.showMessageBoxSync(win!, {
+        type: 'warning',
+        title: 'Hub IA',
+        message: n > 1 ? `${n} tâches sont en cours, installer quand même ?` : 'Une tâche est en cours, installer quand même ?',
+        detail:
+          'Pour installer la mise à jour, le hub se ferme puis se relance : les IA qui travaillent sont arrêtées et leur réponse en cours est perdue (la tâche apparaîtra « Interrompue » ; tu pourras la relancer).',
+        buttons: ['Installer et relancer', 'Plus tard'],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true,
+      });
+      return choice === 0;
+    },
+    quitForUpdate: () => {
+      closeConfirmed = true; // déjà confirmé juste avant
+      app.quit();
+    },
   });
   updater.start();
 
@@ -339,14 +378,19 @@ function start(): void {
     }
   });
 
-  ipcMain.handle('hub:invoke', async (_e, method: HubMethod, args: unknown[]) => {
+  ipcMain.handle('hub:invoke', async (e, method: HubMethod, args: unknown[]) => {
+    // Seule la page principale du hub (cadre principal de la fenêtre) peut appeler le hub.
+    if (!isMainWindowSender(e)) throw new Error('Appel refusé');
     if (!HUB_METHODS.includes(method)) throw new Error(`Méthode non autorisée : ${method}`);
+    if (!Array.isArray(args)) args = [];
     switch (method) {
       case 'getSettings':
         return hub.settings;
-      case 'openPath':
-        await shell.openPath(String(args[0]));
+      case 'openPath': {
+        // Dossiers et documents seulement : jamais un exécutable (.exe, .bat, .lnk, .app…).
+        await shell.openPath(checkOpenPath(args[0]));
         return;
+      }
       // Pièces jointes : chemin validé par le hub (dossier des pièces jointes uniquement, exécutables jamais ouverts).
       case 'openAttachment': {
         const target = hub.attachmentToOpen(String(args[0]), !!args[1]);
@@ -365,12 +409,18 @@ function start(): void {
         const res = await dialog.showOpenDialog(win!, { title: 'Choisir un dossier de travail', properties: ['openDirectory'] });
         return res.canceled ? null : (res.filePaths[0] ?? null);
       }
+      case 'pickKnowledgeFolder': {
+        const res = await dialog.showOpenDialog(win!, { title: 'Emplacement des bases de connaissances', properties: ['openDirectory', 'createDirectory'] });
+        return res.canceled ? null : (res.filePaths[0] ?? null);
+      }
       case 'getUpdateState':
         return updater!.getState();
       case 'checkForUpdates':
         return updater!.check();
       case 'installUpdateNow':
         return updater!.installNow();
+      case 'cancelUpdateDownload':
+        return updater!.cancelDownload();
       case 'openInObsidian':
         return openInObsidian(args[0] === undefined || args[0] === null || args[0] === '' ? undefined : String(args[0]), args[1] ? String(args[1]) : undefined);
       default:
@@ -384,6 +434,13 @@ function start(): void {
     get: (id) => hub.settings.webMic?.[id] ?? 'ask',
     set: (id, choice) => hub.setWebMicChoice(id, choice),
   });
+  // Tests visuels : un lien qui sortirait d'un panneau n'ouvre pas le vrai navigateur ; décisions tracées.
+  if (smoke) {
+    webPanels.navTestHooks = {
+      openExternal: (url) => console.log(`[web] navigateur par défaut (test : non ouvert) : ${new URL(url).origin}`),
+      log: (line) => console.log(`[web] ${line}`),
+    };
+  }
 }
 
 // Fermeture : on attend que les cookies des sites web soient écrits sur disque (Chromium les écrit en différé),

@@ -1,7 +1,7 @@
 {
   "name": "hub-ia",
   "productName": "Hub IA",
-  "version": "0.1.0-alpha.9",
+  "version": "0.1.0-alpha.10",
   "private": true,
   "description": "Hub local pour piloter plusieurs IA (Claude Code, Ollama...) depuis un seul endroit",
   "author": "Hub IA",
@@ -20,7 +20,10 @@
     "dist:mac": "node build.mjs && electron-builder --mac dmg zip --arm64 --publish never",
     "icon:mac": "electron scripts/make-icns.mjs",
     "test:platform": "esbuild scripts/test-platform.ts --bundle --platform=node --format=cjs --outfile=dist/test-platform.js --external:7zip-bin --log-level=warning && node dist/test-platform.js",
-    "release:assets": "node scripts/release-assets.mjs"
+    "test:vaults": "esbuild scripts/test-vaults.ts --bundle --platform=node --format=cjs --outfile=dist/test-vaults.js --external:7zip-bin --log-level=warning && node dist/test-vaults.js",
+    "release:assets": "node scripts/release-assets.mjs",
+    "test:fakeclaude": "esbuild scripts/test-fakeclaude.ts --bundle --platform=node --format=cjs --outfile=dist/test-fakeclaude.js --log-level=warning && node dist/test-fakeclaude.js",
+    "smoke:fakeclaude": "node scripts/fake-claude/smoke.mjs"
   },
   "build": {
     "appId": "local.hubia.app",

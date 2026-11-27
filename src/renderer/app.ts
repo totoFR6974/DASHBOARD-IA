@@ -7,8 +7,11 @@ import { renderWebAccountSettings, webLogout } from './web-account-settings';
 import { cutoutButton, initCutout, isCutout, onCutoutRequest, onCutoutStatus, renderCutoutSettings } from './cutout';
 import { initImageViewer, openImageViewer } from './image-viewer';
 import { clearSemanticQuery, initSemanticSearch, renderSemanticResults } from './semantic-search';
+import { initVaultSync, invalidateSyncConflicts, renderKnowledgeLocation, syncConflictBadge } from './vault-sync';
 import { attachBusy, attachmentChips, clearPending, initAttachments, pendingImages, renderAttachStrip, renderVisionSettings, restorePending } from './attachments';
 import { hydrateIcons, icon, iconSelect, iconText } from './icons';
+import { initModules, moduleHintForError, moduleOptionsBox, openModuleCard, renderModulesSettings } from './module-offer';
+import { wikiLinks } from './wikilinks';
 import type {
   AgentRole,
   ChatMessage,
@@ -969,6 +972,8 @@ function replyEl(m: ChatMessage): HTMLElement {
     activityEl(t),
     delegationChips(t),
     h('div', { class: 'msg-body', html: md(m.content) }),
+    // Module absent (ex. images sans ComfyUI) : message clair + bouton vers la carte des Réglages.
+    t?.status === 'error' ? moduleHintForError(t.error ?? m.content) : null,
     thumbs(images),
     footEl(t),
   );
@@ -1171,10 +1176,25 @@ function renderUpdateBanner(): void {
     : null;
   const later = h('button', { type: 'button', class: 'btn ghost small', onclick: () => ((updateUi.dismissed = key), renderUpdateBanner()) }, 'Plus tard');
   const parts: (HTMLElement | null)[] = [h('span', { class: 'update-ico' }, s.status === 'ready' ? '✓' : '↑')];
+  const mac = s.mode === 'mac';
+  const install = () => void hub.installUpdateNow().catch((e: any) => toast(e.message ?? String(e)));
+  const manual = (label = 'Télécharger') =>
+    h('button', { type: 'button', class: 'btn primary small', title: 'Ouvre le fichier de la nouvelle version dans le navigateur', onclick: () => s.url && void hub.openExternal(s.url).catch((e: any) => toast(e.message ?? String(e))) }, label);
   if (s.status === 'downloading') {
+    const verifying = mac && s.step === 'verify';
     parts.push(
-      h('span', { class: 'update-text' }, `Mise à jour ${s.version} en cours de téléchargement… ${s.percent ?? 0} %`),
-      h('span', { class: 'update-progress' }, h('span', { style: `width:${s.percent ?? 0}%` })),
+      h('span', { class: 'update-text' }, verifying ? `Vérification de la mise à jour ${s.version}…` : `Mise à jour ${s.version} en cours de téléchargement… ${s.percent ?? 0} %`),
+      h('span', { class: 'update-progress' }, h('span', { style: `width:${verifying ? 100 : (s.percent ?? 0)}%` })),
+      mac ? h('button', { type: 'button', class: 'btn ghost small', onclick: () => void hub.cancelUpdateDownload().catch(() => undefined) }, 'Annuler') : null,
+      notesBtn,
+    );
+  } else if (s.status === 'ready' && mac) {
+    // Mac : nouvelle version copiée à côté de l'appli ; le hub se ferme et se relance pour l'installer.
+    parts.push(
+      h('span', { class: 'update-text' }, `Mise à jour ${s.version} prête : le hub va se fermer et se relancer.`),
+      h('button', { type: 'button', class: 'btn primary small', onclick: install }, 'Installer maintenant'),
+      s.installError ? h('span', { class: 'update-reason' }, s.installError) : null,
+      s.installError ? manual() : null,
       notesBtn,
     );
   } else if (s.status === 'ready') {
@@ -1182,6 +1202,20 @@ function renderUpdateBanner(): void {
       h('span', { class: 'update-text' }, `Mise à jour ${s.version} téléchargée : installation…`),
       h('button', { type: 'button', class: 'btn primary small', onclick: () => void hub.installUpdateNow().catch((e: any) => toast(e.message ?? String(e))) }, 'Installer maintenant'),
       notesBtn,
+    );
+  } else if (mac) {
+    // Mac : « Télécharger et installer » si l'appli peut se remplacer elle-même ; sinon (ou après un échec)
+    // « Télécharger » ouvre le .dmg dans le navigateur, avec la raison.
+    const reason = s.installError ?? (s.autoInstall ? '' : (s.autoInstallReason ?? ''));
+    parts.push(
+      h('span', { class: 'update-text' }, `Nouvelle version ${s.version} disponible (tu as ${s.currentVersion}).`),
+      s.autoInstall && !s.installError
+        ? h('button', { type: 'button', class: 'btn primary small', title: 'Télécharge et vérifie la mise à jour, puis ferme et relance le hub sur la nouvelle version', onclick: install }, 'Télécharger et installer')
+        : manual(),
+      s.autoInstall && s.installError ? h('button', { type: 'button', class: 'btn ghost small', onclick: install }, 'Réessayer l’installation') : null,
+      notesBtn,
+      later,
+      reason ? h('span', { class: 'update-reason' }, reason) : null,
     );
   } else {
     // Version installée : téléchargement puis installation (l'appli redémarre) sur demande uniquement.
@@ -1220,18 +1254,20 @@ function renderUpdateResult(): void {
     checking: 'Vérification…',
     'up-to-date': `À jour${s.checkedAt ? ` (vérifié à ${new Date(s.checkedAt).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })})` : ''}.`,
     available: `Nouvelle version ${s.version} disponible.`,
-    downloading: `Téléchargement de la version ${s.version}… ${s.percent ?? 0} %`,
-    ready: `Version ${s.version} prête : redémarre pour l’installer.`,
+    downloading: s.step === 'verify' ? `Vérification de la version ${s.version}…` : `Téléchargement de la version ${s.version}… ${s.percent ?? 0} %`,
+    ready: s.mode === 'mac' ? `Version ${s.version} prête : « Installer maintenant » ferme et relance le hub.` : `Version ${s.version} prête : redémarre pour l’installer.`,
     error: `Erreur : ${s.error ?? 'inconnue'}`,
   };
-  res.textContent = txt[s.status];
+  // Mac : échec de la dernière installation automatique (ou raison pour laquelle elle est impossible).
+  const extra = s.mode === 'mac' && s.status !== 'checking' ? (s.installError ?? (s.autoInstall === false ? s.autoInstallReason : undefined)) : undefined;
+  res.textContent = extra ? `${txt[s.status]} ${extra}`.trim() : txt[s.status];
 }
 
 function renderUpdateSettings(): void {
   const s = updateUi.state;
   const settings = state.settings;
   $('upd-version').textContent = s?.currentVersion ?? '—';
-  $('upd-mode').textContent = s ? { installed: '(version installée : mise à jour automatique)', portable: '(version portable : notification et lien de téléchargement)', mac: '(version Mac : notification et téléchargement du .dmg)', dev: '(version de développement : vérification manuelle)' }[s.mode] : '';
+  $('upd-mode').textContent = s ? { installed: '(version installée : mise à jour automatique)', portable: '(version portable : notification et lien de téléchargement)', mac: s.autoInstall ? '(version Mac : téléchargement et installation sur demande)' : '(version Mac : notification et téléchargement du .dmg)', dev: '(version de développement : vérification manuelle)' }[s.mode] : '';
   $<HTMLInputElement>('set-autoupdate').checked = settings?.autoUpdate !== false;
   $<HTMLInputElement>('set-prerelease').checked = typeof settings?.updateIncludePrerelease === 'boolean' ? settings.updateIncludePrerelease : !!s?.includePrerelease;
   renderUpdateResult();
@@ -2073,6 +2109,7 @@ function renderStepDetail(run: WorkflowRun, force: boolean): void {
     ...delegationList(t),
     s.error ? h('div', { class: 'block-title', style: 'color:var(--err)' }, 'Erreur') : null,
     s.error ? h('div', { class: 'box pre' }, s.error) : null,
+    moduleHintForError(s.error),
     s.status === 'error' || s.status === 'cancelled'
       ? h(
           'button',
@@ -2382,17 +2419,34 @@ function renderTasks(opts: { tick?: boolean } = {}): void {
     }
   };
 
-  const group = state.filters.group as '' | 'providerId' | 'agent' | 'status' | 'workflowRunId';
+  const group = state.filters.group as '' | 'providerId' | 'agent' | 'status' | 'workflowRunId' | 'conversation';
+  // Discussion d'une tâche : la sienne, sinon celle de sa tâche parente (sous-tâches déléguées), sinon son workflow.
+  const convKey = (t: Task): string => {
+    let cur: Task | undefined = t;
+    for (let i = 0; cur && i < 10; i++) {
+      if (cur.conversationId) return `c:${cur.conversationId}`;
+      if (cur.workflowRunId) return `w:${cur.workflowRunId}`;
+      cur = cur.parentTaskId ? state.tasks.get(cur.parentTaskId) : undefined;
+    }
+    return '';
+  };
+  const convLabel = (k: string): string => {
+    if (k.startsWith('c:')) return `Discussion : ${state.conversations.find((c) => c.id === k.slice(2))?.title ?? '(supprimée)'}`;
+    if (k.startsWith('w:')) return `Workflow : ${state.workflows.find((r) => r.id === k.slice(2))?.title ?? '(supprimé)'}`;
+    return 'Sans discussion';
+  };
   if (group) {
     const groups = new Map<string, Task[]>();
     for (const t of tasks) {
-      const k = group === 'workflowRunId' ? (t.workflowRunId ?? '') : String(t[group]);
+      const k = group === 'conversation' ? convKey(t) : group === 'workflowRunId' ? (t.workflowRunId ?? '') : String(t[group]);
       if (!groups.has(k)) groups.set(k, []);
       groups.get(k)!.push(t);
     }
     for (const [k, list] of groups) {
       const label =
-        group === 'providerId'
+        group === 'conversation'
+          ? convLabel(k)
+          : group === 'providerId'
           ? providerName(k)
           : group === 'status'
             ? STATUS_LABEL[k as TaskStatus]
@@ -2489,6 +2543,7 @@ function renderTaskDetail(): void {
     ...delegationList(t),
     t.error ? h('div', { class: 'block-title', style: 'color:var(--err)' }, 'Erreur') : null,
     t.error ? h('div', { class: 'box pre' }, t.error) : null,
+    moduleHintForError(t.error),
     blockTitleCopy('Réponse', () => withImages(t.output, t.images)),
     h('div', { class: 'box msg-body', html: t.output ? md(t.output) : '<span class="muted">—</span>' }),
     thumbs(t.images),
@@ -2684,10 +2739,7 @@ function updateKnStatus(): void {
   }
 }
 
-/** Liens [[Note]] / [[Note|libellé]] de l'aperçu (le HTML d'entrée est déjà échappé par md()). */
-function wikiLinks(html: string): string {
-  return html.replace(/\[\[([^\]|]+?)(?:\|([^\]]+?))?\]\]/g, (_m, target: string, label?: string) => `<a href="#" class="wikilink" data-note="${target.trim()}">${label ?? target}</a>`);
-}
+// Liens [[Note]] / [[Note|libellé]] de l'aperçu : wikilinks.ts (balises retirées du texte placé dans l'attribut).
 
 /** En-tête de discussion : base de connaissances liée (sa note y est tenue à jour) + accès rapide à la note. */
 function convBaseSelect(conv: Conversation): HTMLElement {
@@ -2775,6 +2827,7 @@ function renderKnowledgeMain(): void {
     knBaseSelect(),
     h('span', { class: 'kn-vault muted', title: info?.vaultDir ?? '' }, info?.vaultDir ?? ''),
     h('span', { class: 'muted', id: 'kn-count' }, info ? `${info.noteCount} note(s)` : ''),
+    syncConflictBadge(), // « N conflits de synchronisation » (vault-sync.ts), caché s'il n'y en a pas
     h('span', { class: 'spacer' }),
     knDiscussionLink(),
     obsidianBtn(state.kn.current ?? undefined),
@@ -3014,6 +3067,7 @@ async function runKnowledgeSearch(): Promise<void> {
 }
 
 async function onKnowledgeChanged(): Promise<void> {
+  invalidateSyncConflicts(); // conflits de synchro relus au prochain affichage de l'en-tête
   // Nouvelle base créée (1re discussion d'un dossier) : le sélecteur de l'en-tête doit la proposer.
   const before = state.kn.bases.length;
   if (state.view !== 'knowledge') await loadKnowledgeBases();
@@ -3057,10 +3111,7 @@ async function renderKnowledgeCard(): Promise<void> {
         : 'Obsidian n’est pas nécessaire : l’onglet Connaissances suffit. Si tu l’installes, la 1re fois : « Ouvrir un dossier comme coffre » et choisis ce dossier.',
     ),
   );
-}
-
-function fmtBytes(bytes: number): string {
-  return `${(bytes / 1024 ** 3).toFixed(2).replace('.', ',')} Go`;
+  void renderKnowledgeLocation(); // « Emplacement des bases de connaissances » (vault-sync.ts)
 }
 
 function renderImageCard(): void {
@@ -3071,35 +3122,18 @@ function renderImageCard(): void {
     box.replaceChildren(h('p', { class: 'muted' }, 'Statut inconnu (moteur d’images pas encore disponible).'));
     return;
   }
-  const label = s.installing ? 'Installation…' : s.running ? 'En marche' : s.installed ? 'Installé' : 'Non installé';
-  const cls = s.installing ? 'running' : s.installed ? 'done' : 'cancelled';
+  // État, progression, erreurs, bouton Installer et (Mac) installation de ComfyUI Desktop : en-tête de la carte du
+  // module « Images locales » (module-offer.ts). Ici : les options (dossier ComfyUI, choix du modèle d'image…).
   const total = s.plannedDownloads.reduce((acc, d) => acc + (d.sizeBytes || 0), 0);
   const unknown = s.plannedDownloads.some((d) => !d.sizeBytes);
-  const p = s.progress;
-  const pct = p && p.totalBytes ? Math.min(100, Math.round((p.receivedBytes * 100) / p.totalBytes)) : 0;
   const parts: (HTMLElement | null)[] = [
-    h('div', { class: 'row', style: 'justify-content:flex-start' }, h('span', { class: `status ${cls}`, id: 'img-status' }, label), h('span', { class: 'muted small img-dir', title: s.dir }, s.dir)),
-    s.error ? h('div', { class: 'wf-error' }, `⚠️ ${s.error}`) : null,
-    // Mac : pas d'installation intégrée (pas d'archive portable) → ComfyUI Desktop, installé à part.
-    IS_MAC && !s.installed
-      ? h(
-          'div',
-          { class: 'small', id: 'img-mac-hint' },
-          'Sur Mac, le hub utilise ',
-          h('b', {}, 'ComfyUI Desktop'),
-          ' (gratuit, plus lent que sur une carte NVIDIA). Installe-le, ouvre-le une fois pour terminer sa configuration, puis reviens ici : le hub y téléchargera le modèle choisi ci-dessous. ',
-          h('button', { type: 'button', class: 'btn ghost small', onclick: () => void hub.openExternal('https://www.comfy.org/download').catch((e: any) => toast(e.message ?? String(e))) }, 'Télécharger ComfyUI Desktop ↗'),
-        )
-      : null,
+    h(
+      'div',
+      { class: 'row', style: 'justify-content:flex-start' },
+      s.running ? h('span', { class: 'status running', id: 'img-status' }, 'En marche') : null,
+      h('span', { class: 'muted small img-dir', title: s.dir }, `Dossier ComfyUI : ${s.dir}`),
+    ),
     comfyDirBlock(s),
-    s.installing && p
-      ? h(
-          'div',
-          { class: 'progress-wrap', id: 'img-progress' },
-          h('div', { class: 'small' }, `${p.step}${p.totalBytes ? ` — ${pct} % (${fmtBytes(p.receivedBytes)} / ${fmtBytes(p.totalBytes)})` : p.receivedBytes ? ` — ${fmtBytes(p.receivedBytes)}` : '…'}`),
-          h('div', { class: 'progress' }, h('div', { class: `progress-bar ${p.totalBytes ? '' : 'indeterminate'}`, style: p.totalBytes ? `width:${pct}%` : undefined })),
-        )
-      : null,
     s.imageModels?.length ? imageModelList(s) : s.models.length ? h('div', { class: 'kv-line' }, h('span', { class: 'muted' }, 'Modèles :'), h('span', {}, s.models.join(', '))) : null,
     !s.installed && s.plannedDownloads.length
       ? h(
@@ -3113,8 +3147,6 @@ function renderImageCard(): void {
     h(
       'div',
       { class: 'row', style: 'justify-content:flex-start' },
-      !s.installed && !s.installing && !s.imageModels?.length ? h('button', { type: 'button', class: 'btn primary small', id: 'img-install', onclick: () => installImages() }, 'Installer') : null,
-      s.installing ? h('button', { type: 'button', class: 'btn danger small', id: 'img-cancel', onclick: () => void hub.cancelImageInstall() }, 'Annuler') : null,
       s.running ? h('button', { type: 'button', class: 'btn small', id: 'img-stop', onclick: () => void hub.stopImageEngine() }, 'Arrêter ComfyUI') : null,
       s.installed ? h('button', { type: 'button', class: 'btn ghost small', onclick: () => void hub.openPath(s.dir) }, iconText('folder', 'Dossier')) : null,
     ),
@@ -3230,15 +3262,6 @@ function installImageModel(id: string): void {
   hub.installImageModel(id).catch((err: any) => toast(err.message ?? String(err)));
 }
 
-function installImages(): void {
-  const s = state.image;
-  if (!s) return;
-  const total = s.plannedDownloads.reduce((acc, d) => acc + (d.sizeBytes || 0), 0);
-  const list = s.plannedDownloads.map((d) => `• ${d.name} (${fmtGb(d.sizeBytes)})`).join('\n');
-  if (!confirm(`Installer les images locales (ComfyUI) ?\n\nFichiers à télécharger :\n${list || '(liste indisponible)'}\n\nTotal : ${fmtGb(total)}\n\nTout est installé dans le dossier de l’appli (portable).`)) return;
-  hub.installImageEngine().catch((err: any) => toast(err.message ?? String(err)));
-}
-
 // ---------- Réglages ----------
 
 /** Réglages › Accès de Claude : serveurs MCP autorisés et dossiers lisibles en plus (enregistrés tout de suite). */
@@ -3286,22 +3309,12 @@ async function renderClaudeAccess(): Promise<void> {
   $('access-add-skills').onclick = () => void save(access.allowed, [...access.extraDirs, '~/.claude']);
 }
 
-/** Section « Détourage » des Réglages, créée juste après « Images locales » (corps : #cutout-settings-body). */
-function cutoutSettingsBox(): HTMLElement {
-  let body = document.getElementById('cutout-settings-body');
-  if (!body) {
-    body = h('div', { id: 'cutout-settings-body' });
-    const set = h('fieldset', { id: 'cutout-settings', class: 'info-card' }, h('legend', {}, '✂ Détourage (fond transparent)'), body);
-    const after = document.getElementById('img-settings');
-    if (after) after.after(set);
-    else $('settings-form').append(set);
-  }
-  return body;
-}
-
 async function renderSettings(): Promise<void> {
   const s = await hub.getSettings();
   state.settings = s;
+  // Réglages › Modules complémentaires : une carte par module ; les « Options » de chaque carte sont remplies
+  // ci-dessous par chaque module (dictée, vision, détourage, images) — d'où la création des cartes en premier.
+  renderModulesSettings($('modules-settings-body'));
   const form = $<HTMLFormElement>('settings-form');
   for (const [k, v] of Object.entries(s)) {
     const field = form.elements.namedItem(k) as HTMLInputElement | HTMLSelectElement | null;
@@ -3309,6 +3322,7 @@ async function renderSettings(): Promise<void> {
   }
   $<HTMLInputElement>('set-autostart').checked = !!s.workflowAutoStart;
   $<HTMLInputElement>('set-delegation').checked = s.delegationEnabled !== false;
+  $<HTMLInputElement>('set-notes-all').checked = s.notesSearchAllBases === true;
   $<HTMLInputElement>('set-conv-notes').checked = s.conversationNotes !== false;
   void renderClaudeAccess();
   void renderVoiceSettings($('voice-settings-body'));
@@ -3326,7 +3340,8 @@ async function renderSettings(): Promise<void> {
   state.rolesDraft = state.roles.map((r) => ({ ...r }));
   state.plannerDraft = state.plannerRoleId;
   renderRolesEditor();
-  void renderCutoutSettings(cutoutSettingsBox());
+  const cutoutBox = moduleOptionsBox('cutout');
+  if (cutoutBox) void renderCutoutSettings(cutoutBox);
   renderProvidersDetail();
   void renderKnowledgeCard();
   renderImageCard();
@@ -4778,6 +4793,8 @@ function bindShell(): void {
 function bindUi(): void {
   // Icônes « sticker » du HTML statique (<span data-icon="…">).
   hydrateIcons();
+  // Modules complémentaires (registre du hub) : avant les modules qui proposent une installation au moment du besoin.
+  initModules({ hub, toast, openSettings: () => setView('settings') });
   bindShell();
   // Dictée vocale : bouton micro du composer (les champs Workflow / Notes ont le leur, créé au rendu).
   initVoice({ hub, toast, getSettings: () => state.settings });
@@ -4791,10 +4808,7 @@ function bindUi(): void {
     toast,
     imgUrl,
     setParticipants,
-    openVisionSettings: () => {
-      setView('settings');
-      window.setTimeout(() => document.getElementById('vision-settings')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 150);
-    },
+    openVisionSettings: () => openModuleCard('vision', true),
   });
   initCutout({ hub, toast, getRoles: () => state.roles, imageProviders: () => IMAGE_PROVIDER_IDS });
   // Visionneuse d'images (clic sur une vignette) : bouton « Détourer » du module cutout repris dans sa barre.
@@ -4905,6 +4919,7 @@ function bindUi(): void {
     toast: (msg) => toast(msg),
     rerenderSide: () => renderKnowledgeSide(),
   });
+  initVaultSync({ hub, toast: (msg) => toast(msg), openNoteIn: (baseId, path) => void openNoteIn(baseId, path) });
   $('kn-new-btn').addEventListener('click', () => openNewNoteRow());
   $('kn-new-cancel').addEventListener('click', () => closeNewNoteRow());
   const createFromRow = () => {
@@ -4953,6 +4968,7 @@ function bindUi(): void {
       ...Object.fromEntries(new FormData(e.target as HTMLFormElement)),
       workflowAutoStart: $<HTMLInputElement>('set-autostart').checked,
       delegationEnabled: $<HTMLInputElement>('set-delegation').checked,
+      notesSearchAllBases: $<HTMLInputElement>('set-notes-all').checked,
       conversationNotes: $<HTMLInputElement>('set-conv-notes').checked,
       autoUpdate: $<HTMLInputElement>('set-autoupdate').checked,
       updateIncludePrerelease: $<HTMLInputElement>('set-prerelease').checked,

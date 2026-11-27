@@ -46,25 +46,30 @@ import type {
 import { CLAUDE_EFFORTS } from '../shared/types';
 import { COMFY_DIR_HINT, detectExistingComfy, findComfyRoot, ImageEngine } from './image-engine';
 import { caseInsensitiveFs } from './platform';
+import { isRealPathInside } from './path-guard';
 import { isVoiceModel, isVoiceVariant, VoiceModels } from './voice';
 import { Cutout, isCutoutPath, isCutoutVariant, wantsTransparent } from './cutout';
 import type { CutoutStatus, CutoutVariant } from '../shared/types';
 import { ClaudeLogs } from './claude-logs';
+import { checkClaudePath } from './claude-launch';
 import { Setup } from './setup';
 import { Knowledge } from './knowledge';
 import { HUB_BASE_ID, Vaults } from './vaults';
+import { KnowledgeLocation } from './vault-location';
+import type { KnowledgeLocationInfo, KnowledgeMovePlan, KnowledgeMoveResult, SyncConflictInfo } from '../shared/types';
 import { spawn } from 'node:child_process';
 import { installObsidian as runObsidianInstall, obsidianStatus, registerVaults } from './obsidian';
-import { ClaudeProvider } from './providers/claude';
+import { ClaudeProvider, ClaudeSessionLostError } from './providers/claude';
 import { ComfyUIProvider, IMAGE_PROVIDERS } from './providers/comfyui';
 import { OllamaProvider } from './providers/ollama';
-import { CancelledError, type Provider, type RunResult } from './providers/provider';
+import { CancelledError, type Provider, type RunContext, type RunResult } from './providers/provider';
 import { JsonFile } from './store';
-import { DELEGATION_TOOLS, KNOWLEDGE_TOOLS, MCP_SERVER_NAME, McpServer, PARENT_HEADER, type DelegableAgent, type DelegationResult } from './mcp-server';
+import { DELEGATION_TOOLS, KNOWLEDGE_TOOLS, MCP_SERVER_NAME, McpServer, chooseNotesBase, type DelegableAgent, type DelegationResult } from './mcp-server';
 import { defaultEmbedModel, EMBED_MODELS, SemanticIndex } from './semantic';
 import type { SemanticHit, SemanticStatus } from '../shared/types';
 import { defaultRoles, illustratorRole, imagePathsIn, OBSERVER_ID, observerRole, roleModel, WorkflowEngine, type TaskSpec, type WorkflowHost } from './workflows';
-import type { AttachmentInfo } from '../shared/types';
+import type { AttachmentInfo, ModuleEnv, ModuleId, ModuleInfo } from '../shared/types';
+import { Modules } from './modules';
 import { describeAttachment, FILE_MAX_BYTES, filesForModel, FILES_TEXT_BUDGET, IMAGE_FILE_RE, isRiskyFile, MAX_FILES_PER_MESSAGE, MAX_IMAGES_PER_MESSAGE, safeFileName } from './attachment-files';
 
 interface Db {
@@ -120,6 +125,8 @@ interface LaunchOptions {
   effort?: ClaudeEffort;
   /** Claude : reprendre sessionId dans une nouvelle session (--fork-session). */
   forkSession?: boolean;
+  /** Claude : prompt de secours si la session `sessionId` est introuvable (toute la discussion en contexte). */
+  freshPrompt?: string;
   /** Images : chaque image produite est aussi détourée (fond transparent, original conservé). */
   transparent?: boolean;
   /** Images jointes au prompt (chemins absolus) : modèle vision Ollama, ou chemins donnés à Claude. */
@@ -197,6 +204,8 @@ export class Hub {
   private delegation = new Map<string, DelegationContext>();
   readonly knowledge: Knowledge;
   readonly vaults: Vaults;
+  /** Emplacement des bases (dossier synchronisé possible), déplacement vérifié, conflits de synchro. */
+  readonly knowledgeLoc: KnowledgeLocation;
   /** Recherche par le sens (embeddings Ollama), index dans <données>/semantic. */
   readonly semantic: SemanticIndex;
   private obsidianInstall: import('node:child_process').ChildProcess | null = null;
@@ -205,6 +214,8 @@ export class Hub {
   readonly voice: VoiceModels;
   /** Détourage d'images : modèle BiRefNet local (<données>/models/cutout), exécuté par l'interface. */
   readonly cutout: Cutout;
+  /** Modules complémentaires (registre unique des modèles à télécharger). */
+  readonly modules: Modules;
 
   /**
    * @param dataDir  dossier des données (db.json, settings.json)
@@ -265,12 +276,16 @@ export class Hub {
         if (kind === 'templates') this.emit({ type: 'templates', templates: this.knowledge.listTemplates() });
         this.emit({ type: 'knowledgeChanged' });
       },
+      () => this.knowledgeRootAvailable(),
     );
     // Bases par dossier de travail + note par discussion (la base historique vault/ devient la base « Hub »).
+    // Emplacement réglable (dossier synchronisé) : voir vault-location.ts ; identité portable : vault-sync.ts.
     this.vaults = new Vaults(
       {
         hubDir: () => this.vaultDir,
-        rootDir: () => this.resolveAppPath('vaults'),
+        rootDir: () => this.knowledgeRootDir,
+        isDefaultRoot: () => !this.settings.knowledgeRoot,
+        canWrite: () => this.knowledgeRootAvailable(),
         getMap: () => this.settings.knowledgeBaseMap,
         setMap: (map) => {
           this.settings.knowledgeBaseMap = map;
@@ -284,6 +299,20 @@ export class Hub {
       },
       this.knowledge,
     );
+    this.knowledgeLoc = new KnowledgeLocation({
+      settings: () => this.settings,
+      saveSettings: () => this.settingsFile.flush(),
+      vaults: this.vaults,
+      defaultRoot: () => this.resolveAppPath('vaults'),
+      defaultHubDir: () => this.resolveAppPath('vault'),
+      currentRoot: () => this.knowledgeRootDir,
+      hubDir: () => this.vaultDir,
+      dataDir: () => this.dataDir,
+      conversations: () => this.db.data.conversations,
+      workflows: () => this.db.data.workflows,
+      saveDb: () => this.db.save(),
+      emitChanged: () => this.emit({ type: 'knowledgeChanged' }),
+    });
     this.semantic = new SemanticIndex({
       ollamaUrl: () => this.settings.ollamaUrl,
       indexDir: () => join(this.dataDir, 'semantic'),
@@ -401,6 +430,58 @@ export class Hub {
         await this.listProviders(true);
       },
     });
+
+    // Modules complémentaires : registre unique, au-dessus du code de chaque module.
+    this.modules = new Modules({
+      emit: (module) => this.emit({ type: 'module', module }),
+      ollamaUrl: () => this.settings.ollamaUrl,
+      settings: () => this.settings,
+      embedModel: () => this.embedModel,
+      visionModels: async () => (await this.listProviders()).find((p) => p.id === 'ollama')?.visionModels ?? [],
+      pullOllama: (name, onProgress) => this.setup.pullModel(name, onProgress),
+      ollamaBusy: () => this.setup.busy,
+      cancelOllama: () => this.setup.cancel(),
+      refreshProviders: async () => {
+        await this.listProviders(true);
+      },
+      voice: this.voice,
+      cutout: this.cutout,
+      images: this.images,
+      installImageModel: (id) => this.installImageModel(id),
+      deleteImageModel: (id) => this.deleteImageModel(id),
+    });
+    // Progression des modules qui ont leur propre événement : retransmise sous la forme commune { type: 'module' }.
+    this.onEvent((ev) => {
+      if (ev.type === 'voice') void this.modules.refresh('voice');
+      else if (ev.type === 'cutout') void this.modules.refresh('cutout');
+      else if (ev.type === 'imageEngine') void this.modules.refresh('images');
+    });
+  }
+
+  // ---------- Modules complémentaires ----------
+
+  listModules(): Promise<ModuleInfo[]> {
+    return this.modules.list();
+  }
+
+  moduleInfo(id: ModuleId, variant?: string): Promise<ModuleInfo> {
+    return this.modules.info(id, variant ? String(variant) : undefined);
+  }
+
+  installModule(id: ModuleId, variant?: string): Promise<ModuleInfo> {
+    return this.modules.install(id, variant ? String(variant) : undefined);
+  }
+
+  cancelModule(id: ModuleId): void {
+    this.modules.cancel(id);
+  }
+
+  removeModule(id: ModuleId): Promise<ModuleInfo> {
+    return this.modules.remove(id);
+  }
+
+  setModuleEnv(env: ModuleEnv): void {
+    this.modules.setEnv(env);
   }
 
   // ---------- Assistant de premier démarrage ----------
@@ -473,9 +554,21 @@ export class Hub {
     return this.resolveAppPath(this.settings.vaultDir || 'vault');
   }
 
+  /** Dossier des bases par dossier de travail : réglage « Emplacement des bases », sinon <données>/vaults. */
+  get knowledgeRootDir(): string {
+    const r = this.settings.knowledgeRoot?.trim();
+    return r ? resolve(r) : this.resolveAppPath('vaults');
+  }
+
+  /** false : l'emplacement choisi (dossier synchronisé) est absent → on n'écrit aucune note ailleurs. */
+  knowledgeRootAvailable(): boolean {
+    const r = this.settings.knowledgeRoot?.trim();
+    return !r || existsSync(r);
+  }
+
   /** Dossiers d'où l'interface peut afficher des images (protocole hub-file). */
   imageRoots(): string[] {
-    return [resolve(this.baseDir), this.workspaceDir, this.vaultDir, this.attachmentsRoot, ...this.settings.folders.map((f) => resolve(f.path))];
+    return [resolve(this.baseDir), this.workspaceDir, this.vaultDir, this.knowledgeRootDir, this.attachmentsRoot, ...this.settings.folders.map((f) => resolve(f.path))];
   }
 
   /** Images produites par les sous-tâches déléguées d'une tâche (outil demander_a), dans l'ordre de création. */
@@ -861,8 +954,8 @@ export class Hub {
         const systemAppend = isClaude && mcp ? await this.claudeBriefing(run.permission) : undefined;
         return { mcp, allowedTools, addDirs, systemAppend };
       })
-      .then(({ mcp, allowedTools, addDirs, systemAppend }) =>
-        provider.run({
+      .then(({ mcp, allowedTools, addDirs, systemAppend }) => {
+        const ctx: RunContext = {
           prompt: run.prompt,
           ...(run.images?.length ? { images: run.images } : {}),
           ...(run.files?.length ? { files: run.files } : {}),
@@ -885,8 +978,15 @@ export class Hub {
             this.emit({ type: 'delta', taskId: task.id, conversationId: task.conversationId, text: delta });
           },
           onActivity: addActivity,
-        }),
-      )
+        };
+        // Session Claude introuvable (supprimée par Claude Code) : un seul nouvel essai dans une NOUVELLE session, avec
+        // la discussion du hub en contexte — sinon chaque message suivant reprendrait la session morte et échouerait.
+        return provider.run(ctx).catch((err) => {
+          if (!(err instanceof ClaudeSessionLostError) || !run.sessionId || run.freshPrompt === undefined || controller.signal.aborted) throw err;
+          addActivity({ kind: 'info', text: 'Session Claude Code introuvable (supprimée ?) : nouvelle session, avec les échanges de cette discussion en contexte.' });
+          return provider.run({ ...ctx, prompt: run.freshPrompt, sessionId: undefined, forkSession: false });
+        });
+      })
       .then((r) => {
         result = r;
         task.status = 'done';
@@ -1384,18 +1484,28 @@ export class Hub {
     return true;
   }
 
-  /** Fichier de config MCP propre à la tâche (jeton + identité de la tâche), supprimé à la fin. */
+  /**
+   * Fichier de config MCP propre à la tâche, avec SON jeton (le serveur en déduit la tâche appelante ; aucun en-tête
+   * d'identité déclaratif). Fichier supprimé et jeton révoqué à la fin de la tâche (endDelegation).
+   */
   private async prepareDelegation(task: Task, cwd: string, run: LaunchOptions): Promise<DelegationContext> {
     await this.mcp.start();
     const dir = join(this.dataDir, 'mcp');
     mkdirSync(dir, { recursive: true });
     const configPath = join(dir, `${task.id}.json`);
+    const token = this.mcp.issueToken(task.id);
     const config = {
       mcpServers: {
-        [MCP_SERVER_NAME]: { type: 'http', url: this.mcp.url, headers: { Authorization: `Bearer ${this.mcp.token}`, [PARENT_HEADER]: task.id } },
+        [MCP_SERVER_NAME]: { type: 'http', url: this.mcp.url, headers: { Authorization: `Bearer ${token}` } },
       },
     };
-    writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
+    // Contient le jeton de la tâche : lisible par l'utilisateur seul (macOS / Linux ; sans effet sous Windows).
+    try {
+      writeFileSync(configPath, JSON.stringify(config, null, 2), { encoding: 'utf8', mode: 0o600 });
+    } catch (err) {
+      this.mcp.revokeToken(task.id);
+      throw err;
+    }
     const ctx: DelegationContext = {
       cwd,
       permission: run.permission,
@@ -1406,8 +1516,9 @@ export class Hub {
     return ctx;
   }
 
-  /** Fin d'une tâche : config MCP supprimée, sous-tâches encore en cours annulées. */
+  /** Fin d'une tâche : jeton MCP révoqué, config MCP supprimée, sous-tâches encore en cours annulées. */
   private endDelegation(taskId: string): void {
+    this.mcp.revokeToken(taskId);
     const ctx = this.delegation.get(taskId);
     if (ctx) {
       this.delegation.delete(taskId);
@@ -1436,19 +1547,27 @@ export class Hub {
   }
 
   /**
-   * Images passées à une délégation : fichiers PNG/JPEG existants (20 Mo max). Pour un agent Claude, seulement des
-   * images des dossiers du hub (la délégation ne doit pas ouvrir à Claude un dossier qu'il ne pouvait pas lire).
+   * Images passées à une délégation : fichiers PNG/JPEG existants (20 Mo max), chemins fournis par l'IA appelante.
+   * Ils doivent rester dans ce que l'agent appelant pouvait déjà lire : dossiers du hub, son dossier de travail, ses
+   * accès supplémentaires (chemin réel, liens résolus). Sinon une IA détournée par un contenu piégé ferait décrire
+   * par l'Observateur n'importe quelle image du disque (captures, photos), hors de son mode de permission.
+   * Seule exception : appelant en « Accès total » (il lit déjà tout), sauf pour un agent Claude (les dossiers des
+   * images lui seraient ouverts).
    */
-  private delegationImages(paths: string[], forClaude: boolean): string[] {
+  private delegationImages(paths: string[], forClaude: boolean, caller: Pick<DelegationContext, 'cwd' | 'permission'>): string[] {
     const out: string[] = [];
-    const roots = this.imageRoots().map((r) => resolve(r).toLowerCase());
+    const roots = [...this.imageRoots(), caller.cwd, ...(this.settings.claudeExtraDirs ?? [])].filter(Boolean);
+    const restricted = forClaude || caller.permission !== 'bypassPermissions';
     for (const raw of paths.slice(0, 6)) {
       const abs = resolve(String(raw).trim().replace(/^["']|["']$/g, ''));
       if (!IMAGE_PATH_RE.test(abs)) throw new Error(`Format non pris en charge (PNG ou JPEG uniquement) : ${abs}`);
       if (!existsSync(abs) || !statSync(abs).isFile()) throw new Error(`Image introuvable : ${abs} (donne un chemin ABSOLU vers le fichier)`);
       if (statSync(abs).size > ATTACHMENT_MAX_BYTES) throw new Error(`Image trop lourde (20 Mo maximum) : ${abs}`);
-      if (forClaude && !roots.some((r) => abs.toLowerCase().startsWith(`${r}${process.platform === 'win32' ? '\\' : '/'}`))) {
-        throw new Error(`Image hors des dossiers du hub : ${abs}. Confie plutôt l'image à l'agent « ${OBSERVER_ID} ».`);
+      if (restricted && !isRealPathInside(abs, roots)) {
+        throw new Error(
+          `Image hors des dossiers accessibles (dossier de travail, dossiers du hub, accès supplémentaires) : ${abs}. ` +
+            `Copie-la dans le dossier de travail ou joins-la à la discussion.`,
+        );
       }
       if (!out.some((p) => samePath(p, abs))) out.push(abs);
     }
@@ -1492,7 +1611,7 @@ export class Hub {
     if (imagePaths.length) {
       if (isImage) throw new Error(`« ${role.name} » génère des images mais ne sait pas en lire : confie l'image à l'agent « ${OBSERVER_ID} ».`);
       if (info.id === 'ollama' && !vision) throw new Error(`« ${role.name} » (${model ?? 'modèle inconnu'}) ne voit pas les images : confie-les à l'agent « ${OBSERVER_ID} ».`);
-      images = this.delegationImages(imagePaths, info.id === 'claude');
+      images = this.delegationImages(imagePaths, info.id === 'claude', ctx);
     }
     if (role.id === OBSERVER_ID && !images.length) {
       throw new Error("Aucune image à regarder : passe le CHEMIN ABSOLU de chaque image dans le paramètre « images » de demander_a.");
@@ -1589,6 +1708,21 @@ export class Hub {
       .join('\n\n');
     if (transcript.length > MAX_CONTEXT_CHARS) transcript = `…\n${transcript.slice(-MAX_CONTEXT_CHARS)}`;
     return `Contexte — échanges de la discussion que tu n'as pas vus (autres IA du hub) :\n\n${transcript}\n\n---\nNouveau message de l'utilisateur :\n${text}`;
+  }
+
+  /**
+   * Prompt d'une NOUVELLE session Claude quand l'ancienne est introuvable : tous les échanges de la discussion (ses
+   * propres réponses comprises, réponses en échec et messages d'information exclus), puis le nouveau message.
+   */
+  private freshClaudePrompt(previous: ChatMessage[], text: string): string {
+    const imgs = (m: ChatMessage) => `${m.images?.length ? `\n(images : ${m.images.join(' ; ')})` : ''}${m.files?.length ? `\n(fichiers joints : ${m.files.join(' ; ')})` : ''}`;
+    const kept = previous.filter((m) => (m.role === 'user' ? !!(m.content || m.images?.length || m.files?.length) : !!m.taskId && !isFailedReply(m.content)));
+    if (!kept.length) return text;
+    let transcript = kept
+      .map((m) => (m.role === 'user' ? `### Utilisateur\n${m.content}${imgs(m)}` : `### ${this.providerLabel(m.providerId ?? '?', m.model)}\n${m.content}${imgs(m)}`))
+      .join('\n\n');
+    if (transcript.length > MAX_CONTEXT_CHARS) transcript = `…\n${transcript.slice(-MAX_CONTEXT_CHARS)}`;
+    return `Contexte — ta session précédente de cette discussion est introuvable ; voici les échanges déjà eus (tes réponses comprises) :\n\n${transcript}\n\n---\nNouveau message de l'utilisateur :\n${text}`;
   }
 
   /** Envoie un message dans une discussion : une tâche par IA cochée, exécutées en parallèle. */
@@ -1722,6 +1856,8 @@ export class Hub {
     const sessionId = info.keepsOwnHistory ? conv.providerSessions[info.id] : undefined;
     const isImage = IMAGE_PROVIDERS.has(info.id);
     let runPrompt = info.keepsOwnHistory ? this.promptFor(info.id, previous, task.prompt, !!sessionId) : task.prompt;
+    // Secours si la session Claude a disparu : toute la discussion (réponses de Claude comprises) en contexte.
+    let freshPrompt = info.id === 'claude' && sessionId ? this.freshClaudePrompt(previous, task.prompt) : undefined;
     const history = info.keepsOwnHistory || isImage ? [] : this.historyFor(info.id, previous);
     let addDirs: string[] | undefined;
     let numCtx: number | undefined;
@@ -1737,6 +1873,7 @@ export class Hub {
       if (info.usesWorkspace) {
         addDirs = [...(addDirs ?? []), kb.dir];
         runPrompt = `${kb.promptHint()}\n\n${runPrompt}`;
+        if (freshPrompt !== undefined) freshPrompt = `${kb.promptHint()}\n\n${freshPrompt}`;
       } else if (this.settings.semanticContext) {
         // Option « par le sens » : passages trouvés par embeddings (repli sur les mots-clés si l'index n'est pas prêt).
         const exclude = conv.knowledgeNoteBase === baseId ? conv.knowledgeNote : undefined;
@@ -1791,6 +1928,7 @@ export class Hub {
         ...(numCtx ? { numCtx } : {}),
         ...(files.length && !isImage ? { files } : {}),
         sessionId,
+        ...(freshPrompt !== undefined ? { freshPrompt } : {}),
         cwd: conv.cwd || this.workspaceDir,
         permission: conv.permission ?? this.settings.claudePermission,
         addDirs,
@@ -1940,23 +2078,34 @@ export class Hub {
     return this.semanticStatus();
   }
 
-  /** Outil MCP chercher_notes : base demandée, sinon celle de la discussion / du dossier de la tâche appelante. */
+  /**
+   * Bases liées à une tâche, pour chercher_notes : base de sa discussion (choisie, sinon celle du dossier de la
+   * discussion), puis base de son dossier de travail ; la base Hub si la tâche n'a ni l'un ni l'autre.
+   * (S'appuie sur Vaults.forConversation / forFolder : aucune logique d'identification des bases ici.)
+   */
+  private notesBasesForTask(parentTaskId: string): string[] {
+    const out: string[] = [];
+    const parent = parentTaskId ? this.db.data.tasks.find((t) => t.id === parentTaskId) : undefined;
+    const conv = parent?.conversationId ? this.db.data.conversations.find((c) => c.id === parent.conversationId) : undefined;
+    if (conv) out.push(this.vaults.forConversation(conv).id);
+    const ctx = parentTaskId ? this.delegation.get(parentTaskId) : undefined;
+    if (ctx) out.push(this.vaults.forFolder(ctx.cwd).id);
+    if (!out.length) out.push(HUB_BASE_ID);
+    return [...new Set(out)];
+  }
+
+  /**
+   * Outil MCP chercher_notes : base demandée, sinon celle de la discussion / du dossier de la tâche appelante.
+   * Par défaut limité aux bases liées à la tâche ; toutes les bases seulement si l'utilisateur l'a autorisé
+   * (Réglages › Agents : notesSearchAllBases).
+   */
   async searchNotesForAgent(parentTaskId: string, question: string, base?: string, nombre = 6): Promise<string> {
     const bases = this.vaults.list();
-    let baseId: string = HUB_BASE_ID;
-    if (base) {
-      const ref = base.trim().toLowerCase();
-      const found = bases.find((b) => b.id.toLowerCase() === ref || b.name.toLowerCase() === ref);
-      if (!found) return `Base inconnue : « ${base} ». Bases disponibles : ${bases.map((b) => b.id).join(', ')}.`;
-      baseId = found.id;
-    } else {
-      const parent = parentTaskId ? this.db.data.tasks.find((t) => t.id === parentTaskId) : undefined;
-      const conv = parent?.conversationId ? this.db.data.conversations.find((c) => c.id === parent.conversationId) : undefined;
-      if (conv) baseId = this.vaults.forConversation(conv).id;
-      else if (parentTaskId && this.delegation.get(parentTaskId)) baseId = this.vaults.forFolder(this.delegation.get(parentTaskId)!.cwd).id;
-    }
+    const choice = chooseNotesBase(base, this.notesBasesForTask(parentTaskId), bases, this.settings.notesSearchAllBases === true);
+    if ('error' in choice) return choice.error;
+    const baseId = choice.baseId;
     const kb = this.vaults.get(baseId);
-    const head = `Base « ${baseId} » (${kb.dir}) — autres bases : ${bases.filter((b) => b.id !== baseId).map((b) => b.id).join(', ') || 'aucune'}.`;
+    const head = `Base « ${baseId} » (${kb.dir}) — autres bases accessibles : ${choice.allowed.filter((b) => b !== baseId).join(', ') || 'aucune'}.`;
     try {
       // Index mis à jour au passage (construit s'il n'existe pas encore).
       const hits = await this.semantic.search(baseId, kb, question, { limit: nombre, refresh: true, build: true });
@@ -2008,6 +2157,24 @@ export class Hub {
     if (!st.installed && !configPath) return { added: [], alreadyThere: [], needsClose: false, installed: false };
     const res = registerVaults(this.vaults.allDirs(), configPath ? { configPath, isRunning: () => false } : {});
     return { added: res.added, alreadyThere: res.alreadyThere, needsClose: res.needsClose, installed: st.installed || !!configPath };
+  }
+
+  // ---------- Synchronisation des bases entre appareils (vault-location.ts) ----------
+
+  knowledgeLocation(): KnowledgeLocationInfo {
+    return this.knowledgeLoc.info();
+  }
+
+  planKnowledgeMove(dest: string): KnowledgeMovePlan {
+    return this.knowledgeLoc.plan(String(dest ?? ''));
+  }
+
+  moveKnowledgeBases(dest: string): Promise<KnowledgeMoveResult> {
+    return this.knowledgeLoc.move(String(dest ?? ''));
+  }
+
+  knowledgeSyncConflicts(): SyncConflictInfo[] {
+    return this.knowledgeLoc.conflicts();
   }
 
   async installObsidian(): Promise<void> {
@@ -2154,7 +2321,10 @@ export class Hub {
 
   saveSettings(next: HubSettings): HubSettings {
     const s = this.settingsFile.data;
-    s.claudePath = String(next.claudePath ?? '').trim();
+    // Chemin de Claude Code : validé AVANT toute écriture (nom claude/claude.exe/claude.cmd, fichier existant, aucun
+    // caractère de contrôle ni métacaractère cmd). Inchangé = gardé tel quel (un autre réglage reste enregistrable).
+    const claudePath = String(next.claudePath ?? '').trim();
+    if (claudePath !== String(s.claudePath ?? '').trim()) s.claudePath = checkClaudePath(claudePath);
     s.ollamaUrl = String(next.ollamaUrl ?? '').trim() || 'http://127.0.0.1:11434';
     s.workspaceDir = String(next.workspaceDir ?? '').trim() || s.workspaceDir;
     if (samePath(this.resolveAppPath(s.workspaceDir), join(this.baseDir, 'workspace'))) s.workspaceDir = 'workspace';
@@ -2167,6 +2337,7 @@ export class Hub {
     if (Array.isArray(next.defaultParticipants)) s.defaultParticipants = next.defaultParticipants;
     if (typeof next.workflowAutoStart === 'boolean') s.workflowAutoStart = next.workflowAutoStart;
     if (typeof next.delegationEnabled === 'boolean') s.delegationEnabled = next.delegationEnabled;
+    if (typeof next.notesSearchAllBases === 'boolean') s.notesSearchAllBases = next.notesSearchAllBases;
     if (typeof next.conversationNotes === 'boolean') s.conversationNotes = next.conversationNotes;
     if (typeof next.autoUpdate === 'boolean') s.autoUpdate = next.autoUpdate;
     if (typeof next.updateIncludePrerelease === 'boolean') s.updateIncludePrerelease = next.updateIncludePrerelease;

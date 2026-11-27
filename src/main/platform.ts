@@ -186,6 +186,28 @@ export function findInPath(name: string, pathEnv: string = process.env.PATH ?? '
   return null;
 }
 
+// ---------- Variables réservées aux tests ----------
+
+/**
+ * Appli Electron packagée (version distribuée) : code chargé depuis app.asar, ou Electron lancé sans « electron . »
+ * (process.defaultApp n'existe qu'en développement). Hors Electron (selftest sous Node) : jamais packagée.
+ */
+export function isPackagedApp(dir: string = __dirname, proc: { versions: NodeJS.ProcessVersions; defaultApp?: boolean } = process as any): boolean {
+  if (/[\\/]app\.asar([\\/]|$)/i.test(dir)) return true;
+  return !!proc.versions.electron && !proc.defaultApp;
+}
+
+/**
+ * Variable d'environnement de TEST (ex. HUB_CLAUDE_BIN = faux CLI Claude, HUB_FAKE_IMAGE = images simulées) :
+ * lue uniquement hors appli packagée (développement, `npm run smoke`, selftest). Jamais active dans l'appli
+ * distribuée, même si la variable traîne dans l'environnement de l'utilisateur.
+ */
+export function testOnlyEnv(name: string, env: NodeJS.ProcessEnv = process.env, packaged: boolean = isPackagedApp()): string | undefined {
+  if (packaged) return undefined;
+  const v = env[name]?.trim();
+  return v ? v : undefined;
+}
+
 // ---------- Emplacements des outils ----------
 
 /** Emplacements connus de Claude Code (le PATH est consulté ensuite). */

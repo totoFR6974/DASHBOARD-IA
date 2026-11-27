@@ -4,6 +4,7 @@
 // Les résultats s'affichent dans la liste de gauche (#kn-results), comme la recherche par mots-clés.
 import type { HubApi, SemanticHit, SemanticStatus, SetupProgress } from '../shared/types';
 import { icon } from './icons';
+import { cachedModule, ensureModule } from './module-offer';
 
 export interface SemanticDeps {
   hub: HubApi;
@@ -79,6 +80,11 @@ async function runSearch(): Promise<void> {
   const d = sem.deps;
   const q = sem.query.trim();
   if (!d || !q) return;
+  // Au moment du besoin : modèle d'embeddings absent → proposition d'installation, puis la recherche continue.
+  if (sem.status?.ollama && !sem.status.modelInstalled) {
+    if (!(await downloadModel(document.getElementById('kn-sem-search')))) return;
+    if (!sem.status?.modelInstalled) return;
+  }
   sem.searching = true;
   sem.error = '';
   renderPanel();
@@ -112,40 +118,25 @@ async function startIndex(full = false): Promise<void> {
   if (semanticActive()) void runSearch();
 }
 
-async function downloadModel(): Promise<void> {
+/** Modèle d'embeddings absent : proposition commune des modules (taille, licence, progression), près de `anchor`. */
+async function downloadModel(anchor?: HTMLElement | null): Promise<boolean> {
   const d = sem.deps;
-  const st = sem.status;
-  if (!d || !st) return;
-  const info = st.models.find((m) => m.name === st.model);
-  const size = info ? fmtSize(info.approxBytes) : 'taille inconnue';
-  if (
-    !confirm(
-      `Télécharger le modèle d'embeddings « ${st.model} » avec Ollama ?\n\nTaille : environ ${size}\nLicence : ${info?.license ?? '?'}\n\nIl sert uniquement à la recherche par le sens, tout reste sur ce PC.`,
-    )
-  )
-    return;
-  sem.pulling = st.model;
-  sem.pull = { task: 'model', state: 'running', message: 'Préparation…' };
-  renderPanel();
-  try {
-    await d.hub.pullModel(st.model);
-  } catch (err: any) {
-    d.toast(String(err?.message ?? err).replace(/^Error invoking remote method '[^']+': (Error: )?/, ''));
-  }
-  sem.pulling = '';
-  sem.pull = null;
+  if (!d) return false;
+  const ok = await ensureModule('semantic', { anchor, need: 'La recherche par le sens a besoin d’un modèle' });
   await refreshStatus();
+  return ok;
 }
 
 /** Ligne d'état : modèle absent, Ollama arrêté, indexation en cours, ou nombre de notes et date. */
 function statusLine(st: SemanticStatus | null): HTMLElement {
-  if (sem.pulling) {
-    const p = sem.pull;
-    const pct = p?.total ? Math.round(((p.completed ?? 0) / p.total) * 100) : null;
+  const mod = cachedModule('semantic');
+  if (mod?.state === 'installing') {
+    const p = mod.progress;
+    const pct = p?.totalBytes ? Math.round((p.receivedBytes / p.totalBytes) * 100) : null;
     return el(
       'div',
       { class: 'kn-sem-status' },
-      el('span', {}, `⬇ ${sem.pulling} : ${p?.message ?? '…'}${pct !== null ? ` — ${pct} %` : ''}`),
+      el('span', {}, `⬇ ${p?.step ?? `${mod.variant} : téléchargement…`}${pct !== null ? ` — ${pct} %` : ''}`),
       pct !== null ? el('div', { class: 'kn-sem-bar' }, el('i', { style: `width:${pct}%` })) : null,
     );
   }
@@ -157,7 +148,7 @@ function statusLine(st: SemanticStatus | null): HTMLElement {
       'div',
       { class: 'kn-sem-status' },
       el('span', { class: 'muted' }, `Modèle ${st.model} absent${info ? ` (${fmtSize(info.approxBytes)}, ${info.license})` : ''}.`),
-      el('button', { type: 'button', class: 'btn small primary', id: 'kn-sem-pull', onclick: () => void downloadModel() }, 'Télécharger'),
+      el('button', { type: 'button', class: 'btn small primary', id: 'kn-sem-pull', onclick: (e: MouseEvent) => void downloadModel(e.currentTarget as HTMLElement) }, 'Télécharger'),
     );
   }
   if (st.indexing) {
@@ -345,9 +336,10 @@ export function initSemanticSearch(deps: SemanticDeps): void {
     if (ev.type === 'semantic' && ev.status.baseId === deps.getBase()) {
       sem.status = ev.status;
       renderPanel();
-    } else if (ev.type === 'setup' && ev.progress.task === 'model' && sem.pulling) {
-      sem.pull = ev.progress;
-      renderPanel();
+    } else if (ev.type === 'module' && ev.module.id === 'semantic') {
+      // Progression / fin du téléchargement du modèle (registre des modules).
+      if (ev.module.state === 'installed' && sem.status && !sem.status.modelInstalled) void refreshStatus();
+      else renderPanel();
     } else if (ev.type === 'knowledgeChanged' && sem.status && !sem.status.indexing) {
       // Notes modifiées : le compteur « à mettre à jour » suit (sans relancer de calcul).
       clearTimeout(knTimer);

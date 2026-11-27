@@ -4,6 +4,7 @@
 // chaque IA cochée en fera. Puces cliquables dans les bulles envoyées. Contient aussi la carte Réglages › Modèle vision.
 import type { AgentRole, AttachmentInfo, Conversation, HubApi, HubEvent, Participant, ProviderInfo, SetupProgress, SetupStatus } from '../shared/types';
 import { icon } from './icons';
+import { cachedModule, moduleButton, onModuleChange } from './module-offer';
 
 type H = <K extends keyof HTMLElementTagNameMap>(tag: K, attrs?: Record<string, any>, ...children: (Node | string | null | undefined | false)[]) => HTMLElementTagNameMap[K];
 
@@ -123,11 +124,7 @@ export function initAttachments(d: AttachDeps): void {
   }
 
   deps.hub.onEvent((ev: HubEvent) => {
-    if (ev.type === 'setup' && ev.progress.task === 'model') {
-      // Progression d'un téléchargement lancé depuis cette carte (pull.name), affichée en direct.
-      if (pull.name) pull.progress = ev.progress;
-      if (visionBox?.isConnected) drawVisionSettings();
-    } else if (ev.type === 'providers' && visionBox?.isConnected) drawVisionSettings();
+    if (ev.type === 'providers' && visionBox?.isConnected) drawVisionSettings();
   });
 }
 
@@ -318,7 +315,9 @@ function visionNotes(conv: Conversation): HTMLElement[] {
             'div',
             { class: 'attach-note error' },
             h('span', {}, `⚠️ ${p.model ?? 'Ce modèle'} ne voit pas les images et aucun modèle vision n'est installé : Ollama ne pourra pas répondre sur l'image.`),
-            h('button', { type: 'button', class: 'btn ghost small', onclick: () => deps.openVisionSettings() }, 'Installer un modèle vision…'),
+            // Installation en un clic (taille de la variante conseillée pour ce PC), ou la raison si ce PC est trop juste.
+            moduleButton('vision', { label: 'Installer la reconnaissance d’images', onInstalled: () => void deps.hub.listProviders(true).then(() => renderAttachStrip()) }),
+            h('button', { type: 'button', class: 'btn ghost small', onclick: () => deps.openVisionSettings() }, 'Autres tailles…'),
           ),
         );
       }
@@ -524,16 +523,20 @@ export function renderAttachStrip(): void {
 
 // ---------- Réglages › Modèle vision ----------
 
+// Options de la carte « Reconnaissance d'images » (Réglages › Modules complémentaires) : choix de la taille.
+// Installer / Supprimer / progression : en-tête de la carte (module-offer.ts), via le registre des modules.
 let visionBox: HTMLElement | null = null;
 let visionStatus: SetupStatus | null = null;
 let visionLoading = false;
-const pull = { name: '', progress: null as SetupProgress | null, error: '' };
+let visionWatch: (() => void) | null = null;
 
 const gb = (n: number) => `${String(n).replace('.', ',')} Go`;
-const fmtBytes = (b?: number) => (b ? `${(b / 1024 ** 3).toFixed(1).replace('.', ',')} Go` : '?');
 
 export function renderVisionSettings(box: HTMLElement): void {
   visionBox = box;
+  visionWatch ??= onModuleChange((m) => {
+    if (m.id === 'vision' && visionBox?.isConnected) drawVisionSettings();
+  });
   drawVisionSettings();
   if (!visionStatus && !visionLoading) {
     visionLoading = true;
@@ -553,17 +556,11 @@ async function pullVision(name: string, sizeGb: number): Promise<void> {
     `Télécharger le modèle vision ${name} dans Ollama ?\n\nTaille : environ ${gb(sizeGb)} (téléchargé une seule fois depuis ollama.com).\nLicence : Apache 2.0 (usage commercial autorisé).\n\nIl permet aux IA du hub de voir les images : captures d'écran, texte dans une image, vérification des images générées.`,
   );
   if (!ok) return;
-  pull.name = name;
-  pull.error = '';
-  pull.progress = { task: 'model', state: 'running', message: 'Démarrage…' };
-  drawVisionSettings();
   try {
-    await deps.hub.pullModel(name);
-    pull.name = '';
+    await deps.hub.installModule('vision', name);
     await deps.hub.listProviders(true);
   } catch (err: any) {
-    pull.error = err?.message ?? String(err);
-    pull.name = '';
+    if (!/annul/i.test(err?.message ?? '')) deps.toast(String(err?.message ?? err).replace(/^Error invoking remote method '[^']+': (Error: )?/, ''));
   }
   drawVisionSettings();
 }
@@ -571,12 +568,11 @@ async function pullVision(name: string, sizeGb: number): Promise<void> {
 function drawVisionSettings(): void {
   const box = visionBox;
   if (!box) return;
-  const { h, hub } = deps;
+  const { h } = deps;
   const ollama = deps.providers().find((p) => p.id === 'ollama');
   const installed = ollama?.visionModels ?? [];
   const rec = visionStatus?.recommendedVisionModel;
-  const running = !!pull.name && pull.progress?.state === 'running';
-  const pct = pull.progress?.total ? Math.min(100, ((pull.progress.completed ?? 0) / pull.progress.total) * 100) : null;
+  const running = cachedModule('vision')?.state === 'installing';
 
   const rows = VISION_CHOICES.map((c) => {
     const has = installed.some((m) => m === c.name || m === c.name.replace('-instruct', ''));
@@ -598,7 +594,6 @@ function drawVisionSettings(): void {
   });
 
   const parts: (HTMLElement | null)[] = [
-    h('p', { class: 'muted small' }, 'Un modèle vision local permet de joindre des images aux discussions (📎, glisser-déposer, Ctrl+V) et donne aux agents Claude un « Observateur » qui décrit une capture, lit le texte d’une image ou vérifie une image générée. Gratuit, tout reste sur le PC.'),
     h('div', { class: 'kv-line' }, 'Installé : ', installed.length ? h('b', {}, installed.join(', ')) : h('span', { class: 'muted' }, 'aucun modèle vision')),
     visionLoading
       ? h('div', { class: 'muted small' }, 'Analyse de la machine…')
@@ -608,15 +603,6 @@ function drawVisionSettings(): void {
           : h('div', { class: 'attach-note warn' }, 'La vision demande une carte graphique (ou au moins 8 Go de mémoire) : ce PC risque d’être trop juste.')
         : null,
     ...rows,
-    running || pull.progress?.state === 'error' || pull.error
-      ? h(
-          'div',
-          { class: `ob-progress ${pull.progress?.state ?? ''}` },
-          h('div', { class: 'ob-progress-msg' }, pull.error ? `⚠ ${pull.error}` : `${pull.progress?.message ?? ''}${pct !== null ? ` — ${fmtBytes(pull.progress?.completed)} / ${fmtBytes(pull.progress?.total)}` : ''}`),
-          running ? h('div', { class: `progress-wrap ${pct === null ? 'indeterminate' : ''}` }, h('div', { class: `progress-bar ${pct === null ? 'indeterminate' : ''}`, style: `width:${pct ?? 35}%` })) : null,
-          running ? h('button', { type: 'button', class: 'btn ghost small', onclick: () => void hub.cancelSetup() }, 'Annuler') : null,
-        )
-      : null,
   ];
   box.replaceChildren(...parts.filter((p): p is HTMLElement => !!p));
 }

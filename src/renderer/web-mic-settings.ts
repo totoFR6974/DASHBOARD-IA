@@ -21,7 +21,8 @@ function box(): HTMLElement {
     const legend = document.createElement('legend');
     legend.textContent = '🌐 Panneaux web — micro';
     set.append(legend, body);
-    const after = document.getElementById('voice-settings');
+    // Après la section des modules complémentaires (la dictée y est devenue une carte).
+    const after = document.getElementById('modules-settings') ?? document.getElementById('voice-settings');
     if (after) after.after(set);
     else document.getElementById('settings-form')?.append(set);
   }

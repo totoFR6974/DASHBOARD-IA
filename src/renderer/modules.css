@@ -1,0 +1,85 @@
+/* Modules complémentaires : cartes des Réglages, bulle « au moment du besoin », bouton intégré, page de l'assistant. */
+
+/* ---------- Cartes (Réglages › Modules complémentaires) ---------- */
+.mod-intro { margin: 0 0 4px; }
+.mod-card {
+  display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: 12px;
+  border: 1px solid var(--line); background: rgba(255, 255, 255, 0.025); transition: border-color 0.3s, box-shadow 0.3s;
+}
+.mod-card + .mod-card { margin-top: 8px; }
+.mod-card.installed { border-color: rgba(143, 220, 107, 0.28); }
+.mod-card.unavailable { opacity: 0.85; }
+.mod-card.flash { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.mod-main { display: flex; flex-direction: column; gap: 4px; }
+.mod-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mod-ico { display: inline-flex; width: 22px; justify-content: center; }
+.mod-emoji { font-size: 17px; line-height: 1; }
+.mod-name { font-size: 14px; }
+.mod-spacer { flex: 1; }
+.mod-rec { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, transparent); background: var(--accent-soft); }
+.mod-base { color: var(--ollama); border-color: color-mix(in srgb, var(--ollama) 45%, transparent); }
+.mod-state { font-size: 12px; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.mod-state.installed { color: var(--ok); border-color: rgba(143, 220, 107, 0.4); }
+.mod-state.installing { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
+.mod-state.unavailable { color: var(--warn); border-color: rgba(242, 177, 76, 0.45); }
+.mod-usage { font-size: 13px; }
+.mod-reason, .mod-inline-reason { color: var(--warn); font-size: 12.5px; }
+.mod-note { font-size: 12.5px; color: #f4dcb0; background: rgba(242, 177, 76, 0.06); border: 1px solid rgba(242, 177, 76, 0.3); border-radius: 8px; padding: 6px 9px; }
+.mod-error { color: var(--err); font-size: 12.5px; }
+.mod-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
+.mod-opts-toggle.active { color: var(--accent); }
+.mod-options { border-top: 1px dashed var(--line); padding-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.mod-options.hidden { display: none; }
+.mod-progress { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; }
+.mod-progress-msg { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+
+/* ---------- Bulle de proposition ---------- */
+.mod-offer {
+  position: fixed; z-index: 120; display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border-radius: 14px;
+  background: rgba(20, 22, 27, 0.97); border: 1px solid var(--line-strong); box-shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.85);
+  animation: menuIn 0.22s var(--ease);
+}
+.mod-offer.hidden { display: none; }
+.mod-offer-head { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.mod-offer-text { margin: 0; font-size: 13px; line-height: 1.45; }
+.mod-offer-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.mod-offer-foot { margin-top: -2px; }
+.mod-offer-done { color: var(--ok); font-weight: 500; }
+
+/* ---------- Bouton intégré (avertissements) et message d'erreur expliqué ---------- */
+.mod-inline { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.mod-inline-ok { color: var(--ok); }
+.mod-inline-progress { display: inline-flex; align-items: center; gap: 4px; color: var(--accent); }
+.mod-hint {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 8px 0; padding: 8px 10px; border-radius: 10px; font-size: 13px;
+  border: 1px solid rgba(242, 177, 76, 0.4); background: rgba(242, 177, 76, 0.07); color: #f4dcb0;
+}
+
+/* ---------- Assistant : page « Modules complémentaires » ---------- */
+.ob-mods { display: flex; flex-direction: column; gap: 6px; }
+.ob-mod-row {
+  display: flex; align-items: flex-start; gap: 10px; padding: 9px 12px; border-radius: 12px; cursor: pointer;
+  border: 1px solid var(--line); background: rgba(255, 255, 255, 0.03);
+}
+.ob-mod-row:hover { border-color: var(--line-strong); }
+.ob-mod-row.installed { border-color: rgba(143, 220, 107, 0.3); cursor: default; }
+.ob-mod-row.unavailable { opacity: 0.8; cursor: default; }
+.ob-mod-row input[type='checkbox'] { margin-top: 3px; accent-color: var(--accent); }
+.ob-mod-row.installed input[type='checkbox'], .ob-mod-row.installing input[type='checkbox'] { visibility: hidden; }
+.ob-mod-ico { display: inline-flex; width: 22px; justify-content: center; margin-top: 1px; }
+.ob-mod-text { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ob-mod-title { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.ob-mod-big { color: var(--warn); border-color: rgba(242, 177, 76, 0.45); }
+.ob-mod-note { color: #f4dcb0; }
+.ob-mod-warn { color: var(--warn); }
+.ob-mod-size { font-size: 12.5px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ob-mod-size.large { color: var(--warn); font-weight: 600; }
+.ob-mod-state { font-size: 12.5px; white-space: nowrap; color: var(--accent); }
+.ob-mod-state.ok { color: var(--ok); }
+.ob-mod-state.warn { color: var(--warn); }
+.ob-mod-progress { display: flex; flex-direction: column; gap: 4px; margin-top: 3px; }
+.ob-mod-progress .progress { display: block; height: 6px; }
+.ob-mod-progress .progress-bar { display: block; }
+.ob-mod-foot { margin-top: 4px; }
+.ob-mod-total { font-weight: 600; font-variant-numeric: tabular-nums; }
+.ob-mod-also { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }

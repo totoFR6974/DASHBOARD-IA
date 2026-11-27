@@ -22,6 +22,8 @@ export interface RegisterResult {
   /** true : Obsidian est ouvert, rien n'a été écrit (il réécrirait le fichier en se fermant). */
   needsClose: boolean;
   backup?: string;
+  /** Coffres repointés vers le nouvel emplacement de la base (déplacement par le hub). */
+  moved?: string[];
 }
 
 /** Commande winget d'installation (arguments en tableau, jamais de shell). */
@@ -35,13 +37,21 @@ export function obsidianExe(): string | null {
   return process.env.LOCALAPPDATA && existsSync(exe) ? exe : null;
 }
 
+/**
+ * Tests (smoke, scripts) : HUB_OBSIDIAN_CONFIG = faux obsidian.json, pour ne JAMAIS toucher à celui de l'utilisateur.
+ * En mode test, « Obsidian ouvert » est simulé par HUB_OBSIDIAN_RUNNING=1 (le vrai Obsidian est ignoré).
+ */
+const testConfig = () => process.env.HUB_OBSIDIAN_CONFIG?.trim() || '';
+
 export function obsidianConfigPath(): string {
+  if (testConfig()) return resolve(testConfig());
   // macOS : ~/Library/Application Support/obsidian/obsidian.json.
   if (process.platform === 'darwin') return join(homedir(), 'Library', 'Application Support', 'obsidian', 'obsidian.json');
   return join(process.env.APPDATA ?? join(process.env.USERPROFILE ?? '', 'AppData', 'Roaming'), 'obsidian', 'obsidian.json');
 }
 
 export function obsidianRunning(): boolean {
+  if (testConfig()) return process.env.HUB_OBSIDIAN_RUNNING === '1';
   if (process.platform === 'darwin') return processRunning('Obsidian');
   if (process.platform !== 'win32') return false;
   const res = spawnSync('tasklist', ['/FI', 'IMAGENAME eq Obsidian.exe', '/NH', '/FO', 'CSV'], { encoding: 'utf8', timeout: 8000, windowsHide: true });
@@ -89,14 +99,20 @@ export function registeredVaultPaths(configPath = obsidianConfigPath()): string[
  * - Sauvegarde horodatée du fichier avant écriture, écriture atomique (fichier temporaire + renommage).
  * - N'écrit rien si Obsidian est ouvert (`isRunning`), car il réécrit sa config en se fermant.
  * - Ne modifie aucune autre clé ni aucun autre coffre.
+ * - `moves` (bases déplacées par le hub) : le coffre qui pointait vers l'ancien dossier pointe vers le nouveau
+ *   (même identifiant de coffre : Obsidian garde ses réglages) ; seuls les coffres du hub sont concernés.
  */
-export function registerVaults(paths: string[], opts: { configPath?: string; isRunning?: () => boolean } = {}): RegisterResult {
+export function registerVaults(paths: string[], opts: { configPath?: string; isRunning?: () => boolean; moves?: { from: string; to: string }[] } = {}): RegisterResult {
   const configPath = opts.configPath ?? obsidianConfigPath();
-  const wanted = [...new Map(paths.filter(Boolean).map((p) => [norm(p), resolve(p)])).values()];
-  const known = new Set(registeredVaultPaths(configPath).map(norm));
+  const moves = (opts.moves ?? []).filter((m) => m.from && m.to && norm(m.from) !== norm(m.to));
+  const before = registeredVaultPaths(configPath).map(norm);
+  const toMove = moves.filter((m) => before.includes(norm(m.from)));
+  // Après déplacement : les anciens chemins sont remplacés par les nouveaux.
+  const known = new Set(before.map((p) => norm(toMove.find((m) => norm(m.from) === p)?.to ?? p)));
+  const wanted = [...new Map([...paths, ...toMove.map((m) => m.to)].filter(Boolean).map((p) => [norm(p), resolve(p)])).values()];
   const alreadyThere = wanted.filter((p) => known.has(norm(p)));
   const missing = wanted.filter((p) => !known.has(norm(p)));
-  if (missing.length === 0) return { added: [], alreadyThere, needsClose: false };
+  if (missing.length === 0 && toMove.length === 0) return { added: [], alreadyThere, needsClose: false };
   if ((opts.isRunning ?? obsidianRunning)()) return { added: [], alreadyThere, needsClose: true };
 
   let cfg: any = {};
@@ -113,6 +129,14 @@ export function registerVaults(paths: string[], opts: { configPath?: string; isR
   }
   if (!cfg || typeof cfg !== 'object') cfg = {};
   if (!cfg.vaults || typeof cfg.vaults !== 'object') cfg.vaults = {};
+  const moved: string[] = [];
+  for (const v of Object.values(cfg.vaults) as any[]) {
+    const m = v && typeof v.path === 'string' ? toMove.find((x) => norm(x.from) === norm(v.path)) : undefined;
+    if (m) {
+      v.path = resolve(m.to);
+      moved.push(v.path);
+    }
+  }
   const ids = new Set(Object.keys(cfg.vaults));
   for (const p of missing) {
     let id = randomBytes(8).toString('hex');
@@ -123,7 +147,7 @@ export function registerVaults(paths: string[], opts: { configPath?: string; isR
   const tmp = `${configPath}.tmp-hubia`;
   writeFileSync(tmp, JSON.stringify(cfg), 'utf8');
   renameSync(tmp, configPath);
-  return { added: missing, alreadyThere, needsClose: false, backup };
+  return { added: missing, alreadyThere, needsClose: false, backup, ...(moved.length ? { moved } : {}) };
 }
 
 /** Lien qui ouvre un coffre (ou une note) dans Obsidian. */

@@ -39,7 +39,13 @@ const RISKY_EXT = new Set(
   (
     'exe com bat cmd ps1 psm1 psd1 vbs vbe js jse mjs cjs wsf wsh wsc hta msi msp mst scr pif cpl lnk url reg inf ' +
     'jar py pyw pyc appref-ms application gadget msc settingcontent-ms library-ms sct xll xlam ' +
-    'sh bash zsh command tool app pkg mpkg dmg scpt applescript workflow desktop appimage deb rpm run'
+    'sh bash zsh command tool app pkg mpkg dmg scpt applescript workflow desktop appimage deb rpm run ' +
+    // Aide compilée, images disque (montées = contournent la « marque du web »), raccourcis et paquets Windows,
+    // scripts PowerShell / Monad, documents Office à macros (le hub n'y pose pas la marque du web), raccourcis macOS.
+    'chm hlp iso img vhd vhdx scf ws website diagcab search-ms searchconnector-ms xbap jnlp appx appxbundle msix msixbundle ' +
+    'ps1xml ps2 ps2xml psc1 psc2 msh msh1 msh2 mshxml msh1xml msh2xml mde ade adp shb shs vb ' +
+    'docm dotm xlsm xltm xlsb xlam pptm potm ppsm sldm ppam ' +
+    'terminal fileloc prefpane mobileconfig ksh csh'
   ).split(/\s+/),
 );
 

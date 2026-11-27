@@ -15,7 +15,7 @@ function box(): HTMLElement {
     const legend = document.createElement('legend');
     legend.textContent = '🌐 Panneaux web — comptes';
     set.append(legend, body);
-    const after = document.getElementById('webmic-settings') ?? document.getElementById('voice-settings');
+    const after = document.getElementById('webmic-settings') ?? document.getElementById('modules-settings') ?? document.getElementById('voice-settings');
     if (after) after.after(set);
     else document.getElementById('settings-form')?.append(set);
   }

@@ -326,7 +326,10 @@ async function testDelegation(HAIKU: { providerId: string; model?: string }): Pr
   check(unknown.body?.result?.isError === true && /inconnu/i.test(unknown.body?.result?.content?.[0]?.text ?? ''), 'agent inconnu → isError');
   const manual = await rpc('tools/call', { name: 'demander_a', arguments: { agent: 'chatgpt', demande: 'x' } });
   check(manual.body?.result?.isError === true && /manuel/i.test(manual.body?.result?.content?.[0]?.text ?? ''), 'agent manuel → isError');
-  const cascade = await rpc('tools/call', { name: 'demander_a', arguments: { agent: 'redacteur', demande: 'x' } }, { ...server.headers, 'x-hub-parent-task': child!.id });
+  // Cascade : la tâche enfant n'a normalement pas de jeton ; on lui en donne un pour vérifier le refus côté hub.
+  const childToken = h.mcp.issueToken(child!.id);
+  const cascade = await rpc('tools/call', { name: 'demander_a', arguments: { agent: 'redacteur', demande: 'x' } }, { Authorization: `Bearer ${childToken}` });
+  h.mcp.revokeToken(child!.id);
   check(cascade.body?.result?.isError === true && /cascade/i.test(cascade.body?.result?.content?.[0]?.text ?? ''), 'délégation en cascade → isError');
 
   // Fin de la tâche parente : contexte et fichier de config supprimés.

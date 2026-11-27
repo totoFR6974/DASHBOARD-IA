@@ -57,7 +57,17 @@ export interface GithubRelease {
   body?: string | null;
   published_at?: string | null;
   /** Fichiers joints à la release (installateurs Windows, .dmg Mac…). */
-  assets?: { name?: string; browser_download_url?: string; size?: number }[];
+  /** digest : « sha256:<hex> » (fourni par GitHub pour les fichiers envoyés depuis mi-2025). */
+  assets?: { name?: string; browser_download_url?: string; size?: number; digest?: string | null }[];
+}
+
+/** Fichier à télécharger pour une plateforme (Mac : sert à l'installation automatique). */
+export interface DownloadAsset {
+  name: string;
+  url: string;
+  size?: number;
+  /** Empreinte sha256 en hex minuscules (si GitHub la fournit). */
+  sha256?: string;
 }
 
 export interface PickedRelease {
@@ -68,6 +78,8 @@ export interface PickedRelease {
   publishedAt?: string;
   /** Lien direct du fichier à télécharger pour cette plateforme (si demandé et trouvé). */
   downloadUrl?: string;
+  /** Détails de ce fichier (taille, empreinte). */
+  download?: DownloadAsset;
 }
 
 /**
@@ -93,11 +105,23 @@ export function assetMatches(name: string, kind: DownloadKind): boolean {
 }
 
 /** Fichier de la release adapté à la plateforme (arm64 explicite préféré), sinon null. */
-export function pickDownloadAsset(assets: GithubRelease['assets'], kind: DownloadKind): { name: string; url: string; size?: number } | null {
+export function pickDownloadAsset(assets: GithubRelease['assets'], kind: DownloadKind): DownloadAsset | null {
   const ok = (Array.isArray(assets) ? assets : []).filter((a) => a?.name && a.browser_download_url && assetMatches(a.name, kind));
   if (!ok.length) return null;
   const best = kind === 'mac-arm64' ? (ok.find((a) => /arm64|aarch64/i.test(a.name!)) ?? ok[0]) : ok[0];
-  return { name: best.name!, url: best.browser_download_url!, size: best.size };
+  const sha256 = parseSha256Digest(best.digest);
+  return {
+    name: best.name!,
+    url: best.browser_download_url!,
+    size: typeof best.size === 'number' && best.size > 0 ? best.size : undefined,
+    ...(sha256 ? { sha256 } : {}),
+  };
+}
+
+/** « sha256:<64 hex> » (champ digest des assets GitHub) → empreinte hex en minuscules, sinon null. */
+export function parseSha256Digest(digest: unknown): string | null {
+  const m = /^sha256:([0-9a-f]{64})$/i.exec(String(digest ?? '').trim());
+  return m ? m[1].toLowerCase() : null;
 }
 
 /**
@@ -123,7 +147,7 @@ export function pickLatestRelease(releases: GithubRelease[], current: string, in
       url: r.html_url || `${RELEASES_PAGE}/tag/${r.tag_name}`,
       notes: r.body ?? '',
       publishedAt: r.published_at ?? undefined,
-      ...(asset ? { downloadUrl: asset.url } : {}),
+      ...(asset ? { downloadUrl: asset.url, download: asset } : {}),
     };
   }
   return best;

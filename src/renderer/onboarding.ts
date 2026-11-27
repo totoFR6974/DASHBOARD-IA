@@ -1,8 +1,9 @@
 // Assistant de premier démarrage : guide pas à pas (Ollama, modèle local, Claude Code, extras).
 // Ouvert automatiquement tant que settings.onboardingDone est faux, et depuis Réglages / Ctrl+K.
-import type { HubApi, HubEvent, SetupProgress, SetupStatus } from '../shared/types';
+import type { HubApi, HubEvent, ModuleId, ModuleInfo, SetupProgress, SetupStatus } from '../shared/types';
 import { IS_MAC, MOD } from './platform';
-import { icon } from './icons';
+import { icon, ICON_NAMES, type IconName } from './icons';
+import { fmtSize, onModuleChange, refreshModules, sizeText } from './module-offer';
 
 type H = <K extends keyof HTMLElementTagNameMap>(tag: K, attrs?: Record<string, any>, ...children: (Node | string | null | undefined | false)[]) => HTMLElementTagNameMap[K];
 
@@ -23,7 +24,9 @@ const OLLAMA_DOWNLOAD_URL = 'https://ollama.com/download';
 
 const OBSIDIAN_DOWNLOAD_URL = 'https://obsidian.md/download';
 
-const STEPS = ['Bienvenue', 'Ollama', 'Modèle local', 'Obsidian', 'Claude Code', 'Extras', 'Terminé'];
+const STEPS = ['Bienvenue', 'Ollama', 'Modèle local', 'Obsidian', 'Claude Code', 'Modules', 'Terminé'];
+/** Index de la page « Modules complémentaires ». */
+const MODULES_STEP = STEPS.indexOf('Modules');
 /** Index de l'étape Claude Code (bouton « Passer » si non installé). */
 const CLAUDE_STEP = STEPS.indexOf('Claude Code');
 
@@ -54,6 +57,13 @@ export function initOnboarding(deps: OnboardingDeps): void {
     ob.progress[ev.progress.task] = ev.progress;
     if (ob.open && !patchProgress(ev.progress.task)) render();
   });
+  // Page « Modules complémentaires » : chaque ligne suit son module (progression) sans redessiner la fenêtre.
+  onModuleChange((m) => {
+    const i = mods.list.findIndex((x) => x.id === m.id);
+    if (i >= 0) mods.list[i] = m;
+    else mods.list.push(m);
+    if (ob.open && ob.step === MODULES_STEP) patchModuleRow(m);
+  });
 }
 
 export function isOnboardingOpen(): boolean {
@@ -65,6 +75,7 @@ export async function openOnboarding(step = 0): Promise<void> {
   ob.step = step;
   ob.error = '';
   lastRenderedStep = -1;
+  mods.loaded = false;
   d().hideWeb();
   el().classList.remove('hidden');
   render();
@@ -274,46 +285,10 @@ function stepModel(): HTMLElement[] {
         ),
       );
     }
-    body.push(visionCard(s));
+    body.push(h('p', { class: 'muted small' }, 'La reconnaissance d’images, la dictée et les autres modèles facultatifs se choisissent à l’étape « Modules ».'));
   }
   body.push(progressBlock('model'), h('div', { class: 'ob-actions' }, recheckBtn()));
   return body.filter(Boolean) as HTMLElement[];
-}
-
-/** Carte facultative : modèle vision (lire les images), avec taille et licence, téléchargé après confirmation. */
-function visionCard(s: SetupStatus): HTMLElement {
-  const { h, hub } = d();
-  const rec = s.recommendedVisionModel;
-  const family = (m: string) => m.split(':')[0];
-  const has = s.ollama.models.some((m) => /(-vl|vision|llava)/i.test(family(m)));
-  if (has) return badge(true, `Modèle vision prêt : ${s.ollama.models.filter((m) => /(-vl|vision|llava)/i.test(family(m))).join(', ')} (les IA peuvent lire tes images).`);
-  if (!rec) {
-    return h('div', { class: 'ob-card' }, h('div', {}, h('b', {}, 'Facultatif : modèle vision')), h('div', { class: 'muted small' }, 'La vision (lire des images, des captures d’écran) demande une carte graphique ou au moins 8 Go de mémoire : ce PC est trop juste.'));
-  }
-  const size = String(rec.approxGb).replace('.', ',');
-  return h(
-    'div',
-    { class: 'ob-card' },
-    h('div', {}, h('b', {}, `Facultatif : modèle vision ${rec.name}`), h('span', { class: 'muted' }, ` · environ ${size} Go · licence Apache 2.0`)),
-    h('div', { class: 'muted small' }, `Pour joindre des images aux discussions (captures d’écran, texte à lire) et vérifier les images générées. Pourquoi celui-ci : ${rec.reason}.`),
-    h(
-      'div',
-      { class: 'ob-actions' },
-      h(
-        'button',
-        {
-          type: 'button',
-          class: 'btn',
-          disabled: !!ob.busy,
-          onclick: () => {
-            if (!confirm(`Télécharger le modèle vision ${rec.name} (environ ${size} Go) ?\nLicence Apache 2.0 : usage commercial autorisé.`)) return;
-            void runTask('model', () => hub.pullModel(rec.name));
-          },
-        },
-        `Télécharger ${rec.name}`,
-      ),
-    ),
-  );
 }
 
 let obsidianMsg = '';
@@ -462,40 +437,186 @@ function stepClaude(): HTMLElement[] {
   return body.filter(Boolean) as HTMLElement[];
 }
 
-function stepExtras(): HTMLElement[] {
-  const { h, goTo } = d();
-  const s = ob.status;
-  const card = (title: string, text: string | Node, btn: string, action: () => void, ok?: boolean) =>
+// ---------- Modules complémentaires (modèles facultatifs à télécharger une fois) ----------
+
+const mods = {
+  list: [] as ModuleInfo[],
+  loading: false,
+  /** Liste relue par cette page (les tailles et états à jour), une fois par ouverture de l'assistant. */
+  loaded: false,
+  /** Modules cochés (null = pas encore initialisé : recommandés pré-cochés, sauf les gros). */
+  sel: null as Set<ModuleId> | null,
+  started: false,
+  errors: {} as Partial<Record<ModuleId, string>>,
+};
+
+/** Recommandés pour ce PC pré-cochés, SAUF les gros (Images : plusieurs Go) et le modèle de base (étape précédente). */
+function ensureSelection(): void {
+  if (mods.sel || !mods.loaded) return;
+  mods.sel = new Set(mods.list.filter((m) => m.recommended && !m.large && !m.base && m.state === 'absent').map((m) => m.id));
+}
+
+async function loadModules(): Promise<void> {
+  if (mods.loading) return;
+  mods.loading = true;
+  try {
+    mods.list = await refreshModules();
+    mods.loaded = true;
+    ensureSelection();
+  } catch (err: any) {
+    ob.error = `Modules : ${err?.message ?? err}`;
+  } finally {
+    mods.loading = false;
+    if (ob.open && ob.step === MODULES_STEP) render();
+  }
+}
+
+function modIcon(m: ModuleInfo): Node {
+  return (ICON_NAMES as string[]).includes(m.icon) ? icon(m.icon as IconName, 18) : d().h('span', { class: 'mod-emoji' }, m.icon);
+}
+
+function selectable(m: ModuleInfo): boolean {
+  return m.state === 'absent' && !m.base;
+}
+
+function selectedBytes(): number {
+  return mods.list.filter((m) => selectable(m) && mods.sel?.has(m.id)).reduce((s, m) => s + m.downloadBytes, 0);
+}
+
+function moduleRow(m: ModuleInfo): HTMLElement {
+  const { h, hub } = d();
+  const checked = !!mods.sel?.has(m.id) && selectable(m);
+  const cb = h('input', { type: 'checkbox', checked, disabled: !selectable(m), 'data-module': m.id });
+  cb.addEventListener('change', () => {
+    mods.sel ??= new Set();
+    if (cb.checked) mods.sel.add(m.id);
+    else mods.sel.delete(m.id);
+    updateModulesTotal();
+  });
+  const p = m.progress;
+  const pct = p?.totalBytes ? Math.min(100, Math.round((p.receivedBytes / p.totalBytes) * 100)) : null;
+  const right =
+    m.state === 'installed'
+      ? h('span', { class: 'ob-mod-state ok' }, '✓ Installé')
+      : m.state === 'installing'
+        ? h('span', { class: 'ob-mod-state' }, pct !== null ? `${pct} %` : '…')
+        : m.state === 'unavailable'
+          ? h('span', { class: 'ob-mod-state warn' }, 'Indisponible')
+          : h('span', { class: `ob-mod-size ${m.large ? 'large' : ''}` }, m.base ? '' : sizeText(m));
+  const err = mods.errors[m.id] ?? (m.state === 'absent' ? m.error : undefined);
+  return h(
+    'label',
+    { class: `ob-mod-row ${m.state}`, 'data-module': m.id },
+    cb,
+    h('span', { class: 'ob-mod-ico' }, modIcon(m)),
     h(
-      'div',
-      { class: 'ob-card ob-extra' },
-      h('div', { class: 'ob-extra-text' }, h('b', {}, ok ? '✓ ' : '', title), h('div', { class: 'muted small' }, text)),
-      h('button', { type: 'button', class: 'btn small', onclick: action }, btn),
-    );
-  const leave = (view: 'web' | 'settings' | 'knowledge') => async () => {
+      'span',
+      { class: 'ob-mod-text' },
+      h(
+        'span',
+        { class: 'ob-mod-title' },
+        h('b', {}, m.name),
+        m.base ? h('span', { class: 'tag mod-base' }, 'De base') : m.recommended ? h('span', { class: 'tag mod-rec', title: m.recommendedWhy }, 'Recommandé') : null,
+        m.large && m.state === 'absent' ? h('span', { class: 'tag ob-mod-big' }, `gros : ${sizeText(m)}`) : null,
+      ),
+      h('span', { class: 'muted small' }, m.base ? (m.state === 'installed' ? `Réglé à l’étape « Modèle local » (${m.variantLabel}).` : 'Se règle à l’étape « Modèle local ».') : m.usage),
+      m.installLabel && m.state === 'absent' ? h('span', { class: 'small ob-mod-note' }, `${m.installLabel} — ${m.note ?? ''}`) : null,
+      m.state === 'unavailable' && m.reason ? h('span', { class: 'small ob-mod-warn' }, m.reason) : null,
+      m.state === 'unavailable' && m.link
+        ? h('button', { type: 'button', class: 'btn ghost small', onclick: (e: Event) => (e.preventDefault(), void hub.openExternal(m.link!.url).catch(() => undefined)) }, `${m.link.label} ↗`)
+        : null,
+      m.state === 'installing'
+        ? h('span', { class: 'ob-mod-progress' }, h('span', { class: 'progress' }, h('span', { class: `progress-bar ${pct === null ? 'indeterminate' : ''}`, style: pct === null ? undefined : `width:${pct}%` })), h('span', { class: 'muted small' }, p?.step ?? 'Préparation…'))
+        : null,
+      err ? h('span', { class: 'small ob-mod-warn' }, `⚠ ${err}`) : null,
+    ),
+    right,
+  );
+}
+
+function patchModuleRow(m: ModuleInfo): void {
+  const row = el().querySelector<HTMLElement>(`.ob-mod-row[data-module="${m.id}"]`);
+  if (row) row.replaceWith(moduleRow(m));
+  updateModulesTotal();
+}
+
+function updateModulesTotal(): void {
+  const total = el().querySelector<HTMLElement>('#ob-mod-total');
+  const btn = el().querySelector<HTMLButtonElement>('#ob-mod-download');
+  const n = mods.list.filter((m) => selectable(m) && mods.sel?.has(m.id)).length;
+  if (total) total.textContent = n ? `À télécharger : ${fmtSize(selectedBytes())} (${n} module${n > 1 ? 's' : ''})` : 'Rien de coché';
+  if (btn) btn.disabled = !n;
+}
+
+async function downloadSelection(): Promise<void> {
+  const { hub } = d();
+  const chosen = mods.list.filter((m) => selectable(m) && mods.sel?.has(m.id));
+  if (!chosen.length) return;
+  const big = chosen.filter((m) => m.large || m.downloadBytes >= 5 * 1024 ** 3);
+  if (big.length && !confirm(`Gros téléchargement : ${big.map((m) => `${m.name} (${sizeText(m)})`).join(', ')}.\n\nTotal de la sélection : ${fmtSize(selectedBytes())}. Continuer ?`)) return;
+  mods.started = true;
+  mods.errors = {};
+  // Tous lancés ensemble (le hub fait passer les modèles Ollama l'un après l'autre) ; l'assistant reste utilisable.
+  for (const m of chosen) {
+    mods.sel?.delete(m.id);
+    void hub.installModule(m.id).catch((err: any) => {
+      const msg = String(err?.message ?? err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+      if (!/annul/i.test(msg)) mods.errors[m.id] = msg;
+      const cur = mods.list.find((x) => x.id === m.id);
+      if (cur && ob.open && ob.step === MODULES_STEP) patchModuleRow(cur);
+    });
+  }
+  render();
+}
+
+function stepModules(): HTMLElement[] {
+  const { h, goTo } = d();
+  if (!mods.loaded && !mods.loading) void loadModules();
+  ensureSelection();
+  const leave = (view: 'web' | 'knowledge') => async () => {
     await closeOnboarding(true);
     goTo(view);
   };
+  const busy = mods.list.some((m) => m.state === 'installing');
   return [
-    h('h2', {}, 'Extras (facultatifs)'),
-    h('p', { class: 'ob-lead' }, 'À faire maintenant ou plus tard : tout reste accessible depuis l’appli.'),
-    card('ChatGPT et Gemini', 'Connecte-toi à tes comptes dans l’onglet IA web : les sites s’affichent dans l’appli et ta connexion est mémorisée.', 'Ouvrir IA web', leave('web')),
-    card(
-      'Images locales (ComfyUI)',
-      s?.comfyInstalled
-        ? 'Installé : l’agent Illustrateur peut générer des images.'
-        : IS_MAC
-          ? 'Génère des images sur ton Mac avec ComfyUI Desktop (à installer à part, plus lent que sur PC). Réglages › Images locales.'
-          : 'Génère des images sur ton PC (carte NVIDIA conseillée). Environ 9 Go à télécharger, depuis Réglages.',
-      s?.comfyInstalled ? 'Voir' : 'Réglages',
-      leave('settings'),
-      s?.comfyInstalled,
+    h('h2', {}, 'Modules complémentaires'),
+    h('p', { class: 'ob-lead' }, 'Choisis ce dont tu as besoin : chaque module se télécharge une seule fois, puis tout reste sur ton PC. Les recommandés pour ce PC sont déjà cochés.'),
+    mods.loaded
+      ? h('div', { class: 'ob-mods', id: 'ob-mods' }, ...mods.list.map(moduleRow))
+      : badge(null, 'Analyse de ce PC…'),
+    h(
+      'div',
+      { class: 'ob-actions ob-mod-foot' },
+      h('span', { class: 'ob-mod-total', id: 'ob-mod-total' }, ''),
+      h('span', { class: 'ob-spacer' }),
+      h('button', { type: 'button', class: 'btn primary', id: 'ob-mod-download', onclick: () => void downloadSelection() }, 'Télécharger la sélection'),
+      h(
+        'button',
+        {
+          type: 'button',
+          class: 'btn ghost',
+          id: 'ob-mod-later',
+          onclick: () => {
+            ob.step += 1;
+            render();
+          },
+        },
+        'Plus tard',
+      ),
     ),
-    card(
-      'Base de connaissances',
-      h('span', {}, 'Tes notes Markdown (compatibles Obsidian) que les IA peuvent consulter quand tu actives ', icon('books'), ' dans une discussion.'),
-      'Ouvrir',
-      leave('knowledge'),
+    h(
+      'p',
+      { class: 'muted small' },
+      busy || mods.started
+        ? 'Les téléchargements continuent pendant que tu termines l’assistant (et même après). Tu retrouveras tous les modules dans Réglages › Modules complémentaires.'
+        : 'Plus tard ? Tu les retrouveras dans Réglages › Modules complémentaires, et le hub te les proposera au moment où tu en auras besoin (par exemple en cliquant sur le micro).',
+    ),
+    h(
+      'div',
+      { class: 'ob-mod-also muted small' },
+      'Aussi : ',
+      h('button', { type: 'button', class: 'btn ghost small', onclick: leave('web') }, 'ChatGPT et Gemini (onglet IA web)'),
+      h('button', { type: 'button', class: 'btn ghost small', onclick: leave('knowledge') }, icon('books'), ' Base de connaissances'),
     ),
   ];
 }
@@ -513,13 +634,21 @@ function stepDone(): HTMLElement[] {
           'div',
           { class: 'ob-recaps' },
           row(s.ollama.running, s.ollama.running ? 'Ollama prêt' : 'Ollama non disponible'),
-          row(s.ollama.models.length > 0, s.ollama.models.length ? `Modèle local : ${s.ollama.models[0]}` : 'Aucun modèle local'),
+          (() => {
+            // Modèle de DISCUSSION (le registre des modules écarte les modèles d'embeddings et de vision).
+            const chat = mods.list.find((m) => m.id === 'chat');
+            const ok = chat ? chat.state === 'installed' : s.ollama.models.length > 0;
+            return row(ok, ok ? `Modèle local : ${chat?.state === 'installed' ? chat.variant : s.ollama.models[0]}` : 'Aucun modèle local de discussion');
+          })(),
           row(!!s.obsidian?.installed, s.obsidian?.installed ? 'Obsidian prêt' : 'Obsidian non installé (conseillé)'),
           row(
             s.claude.installed && s.claude.loggedIn,
             s.claude.installed ? (s.claude.loggedIn ? 'Claude Code prêt' : 'Claude Code installé mais pas connecté') : 'Claude Code non installé (facultatif)',
           ),
-          row(s.comfyInstalled, s.comfyInstalled ? 'Images locales prêtes' : 'Images locales non installées (facultatif)'),
+          ...mods.list
+            .filter((m) => !m.base && m.state !== 'unavailable')
+            .map((m) => row(m.state === 'installed', m.state === 'installed' ? `${m.name} : module prêt` : m.state === 'installing' ? `${m.name} : téléchargement en cours (il continue en arrière-plan)` : `${m.name} : module non installé (facultatif)`)),
+          mods.list.length ? null : row(s.comfyInstalled, s.comfyInstalled ? 'Images locales prêtes' : 'Images locales non installées (facultatif)'),
         )
       : badge(null, 'Vérification…'),
     h('p', { class: 'muted small' }, `Tu peux relancer cet assistant à tout moment : Réglages › Assistant d’installation, ou ${MOD}${IS_MAC ? '' : '+'}K.`),
@@ -533,7 +662,7 @@ let lastRenderedStep = -1;
 function render(): void {
   if (!ob.deps || !ob.open) return;
   const { h } = d();
-  const steps = [stepWelcome, stepOllama, stepModel, stepObsidian, stepClaude, stepExtras, stepDone];
+  const steps = [stepWelcome, stepOllama, stepModel, stepObsidian, stepClaude, stepModules, stepDone];
   const last = ob.step === STEPS.length - 1;
   const enter = ob.step !== lastRenderedStep;
   // Animation d'apparition de la fenêtre : seulement à l'ouverture de l'assistant, jamais aux rendus suivants.
@@ -589,4 +718,5 @@ function render(): void {
       ),
     ),
   );
+  if (ob.step === MODULES_STEP) updateModulesTotal();
 }

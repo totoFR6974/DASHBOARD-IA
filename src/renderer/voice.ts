@@ -3,6 +3,7 @@
 import { VOICE_MODELS, VOICE_VARIANTS, type HubApi, type HubSettings, type VoiceLanguage, type VoiceModelId, type VoiceStatus, type VoiceVariant } from '../shared/types';
 import { IS_MAC } from './platform';
 import { iconSvg } from './icons';
+import { ensureModule, refreshModules } from './module-offer';
 
 /** Raccourci de la dictée affiché à l'utilisateur. */
 const VOICE_KEYS = IS_MAC ? '⌘⇧Espace' : 'Ctrl+Maj+Espace';
@@ -93,13 +94,16 @@ async function ensureReady(ask: boolean, forceVariant?: VoiceVariant): Promise<{
     status = await deps.hub.voiceStatus();
     const st = status.models.find((m) => m.id === model);
     if (!st?.installedVariants.includes(variant)) {
-      const bytes = await deps.hub.voicePlannedBytes(model, variant);
-      const where = VOICE_VARIANTS[variant].device === 'webgpu' ? 'carte graphique' : 'processeur';
-      if (ask && !confirm(`Dictée vocale : télécharger le modèle « ${VOICE_MODELS[model].label} » pour ${where} (≈ ${mb(bytes)}) ?\n\nUne seule fois : ensuite tout se fait sur ton PC, ta voix n'est envoyée nulle part.`)) {
-        throw new Error('Téléchargement du modèle de dictée annulé');
+      if (ask) {
+        // Proposition commune des modules (taille, progression) ; l'enregistrement reprend tout seul une fois prêt.
+        setButtonsState('busy', 'Module à installer…');
+        const ok = await ensureModule('voice', { anchor: activeBtn, variant: `${model}/${variant}`, need: 'La dictée vocale a besoin d’un modèle' });
+        if (!ok) throw new Error('Téléchargement du modèle de dictée annulé');
+      } else {
+        setButtonsState('busy', 'Téléchargement…');
+        await deps.hub.downloadVoiceModel(model, variant);
       }
-      setButtonsState('busy', 'Téléchargement…');
-      await deps.hub.downloadVoiceModel(model, variant);
+      continue; // revérifie la variante (installée ailleurs entre-temps, repli…)
     }
     if (loaded && loaded.model === model && loaded.variant === variant) return loaded;
     setButtonsState('busy', 'Chargement…');
@@ -358,7 +362,7 @@ export async function renderVoiceSettings(box: HTMLElement): Promise<void> {
   };
   const machine = variant === 'wasm' ? 'processeur (pas de carte graphique compatible WebGPU)' : `carte graphique (WebGPU${variant === 'webgpu-f16' ? ', fp16' : ''})`;
   const lines: HTMLElement[] = [];
-  lines.push(el('p', 'muted small', `Reconnaissance vocale locale (Whisper) : ta voix ne quitte jamais ce PC. Cette machine utilisera : ${machine}. Raccourci : ${VOICE_KEYS}, Échap pour annuler.`));
+  lines.push(el('p', 'muted small', `Cette machine utilisera : ${machine}. Raccourci : ${VOICE_KEYS}, Échap pour annuler.`));
 
   const mkSelect = (name: string, opts: [string, string][], value: string) => {
     const sel = document.createElement('select');
@@ -374,9 +378,25 @@ export async function renderVoiceSettings(box: HTMLElement): Promise<void> {
   };
   const row = el('div', 'voice-row');
   const lm = el('label', '', 'Modèle ');
-  lm.append(mkSelect('voiceModel', [['auto', `Automatique (${variant === 'wasm' ? 'Rapide' : 'Précis'} sur cette machine)`], ['base', VOICE_MODELS.base.label], ['small', VOICE_MODELS.small.label]], s?.voiceModel ?? 'auto'));
+  const selModel = mkSelect('voiceModel', [['auto', `Automatique (${variant === 'wasm' ? 'Rapide' : 'Précis'} sur cette machine)`], ['base', VOICE_MODELS.base.label], ['small', VOICE_MODELS.small.label]], s?.voiceModel ?? 'auto');
+  lm.append(selModel);
   const ll = el('label', '', 'Langue ');
-  ll.append(mkSelect('voiceLanguage', [['fr', 'Français'], ['en', 'Anglais'], ['auto', 'Détection automatique']], s?.voiceLanguage ?? 'fr'));
+  const selLang = mkSelect('voiceLanguage', [['fr', 'Français'], ['en', 'Anglais'], ['auto', 'Détection automatique']], s?.voiceLanguage ?? 'fr');
+  ll.append(selLang);
+  // Enregistré tout de suite (la carte du module affiche alors la taille du modèle choisi).
+  const saveNow = async () => {
+    try {
+      const cur = await deps.hub.getSettings();
+      const next = await deps.hub.saveSettings({ ...cur, voiceModel: selModel.value as HubSettings['voiceModel'], voiceLanguage: selLang.value as VoiceLanguage });
+      const live = deps.getSettings();
+      if (live) Object.assign(live, { voiceModel: next.voiceModel, voiceLanguage: next.voiceLanguage });
+      void refreshModules().catch(() => undefined);
+    } catch (err: any) {
+      deps.toast(err?.message ?? String(err));
+    }
+  };
+  selModel.addEventListener('change', () => void saveNow());
+  selLang.addEventListener('change', () => void saveNow());
   row.append(lm, ll);
   lines.push(row);
 
@@ -416,19 +436,7 @@ export async function renderVoiceSettings(box: HTMLElement): Promise<void> {
     r.append(actions);
     lines.push(r);
   }
-  if (status.downloading && status.progress) {
-    const p = status.progress;
-    const pct = p.totalBytes ? Math.round((p.receivedBytes / p.totalBytes) * 100) : 0;
-    const bar = el('div', 'progress-wrap');
-    const inner = el('div', 'progress-bar');
-    inner.style.width = `${pct}%`;
-    bar.append(inner);
-    const cancel = el('button', 'btn ghost small', 'Annuler') as HTMLButtonElement;
-    cancel.type = 'button';
-    cancel.onclick = () => void deps.hub.cancelVoiceDownload();
-    lines.push(el('div', 'muted small', `${p.step} — ${pct} % (${mb(p.receivedBytes)} / ${mb(p.totalBytes)})`), bar, cancel);
-  }
-  if (status.error) lines.push(el('div', 'wf-error small', status.error));
+  // Progression, erreurs et bouton Installer : dans l'en-tête de la carte du module (module-offer.ts).
   box.replaceChildren(...lines);
 }
 

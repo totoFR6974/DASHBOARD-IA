@@ -36,7 +36,46 @@ Coche au fur et à mesure ; pour ce qui coince, une capture (⌘⇧4) + une phra
 - [ ] Données rangées dans `~/Library/Application Support/Hub IA`
 
 ## 5. Mise à jour
-- [ ] À la prochaine version, la bannière apparaît et « Télécharger » ouvre le nouveau .dmg
+Installer l'alpha.10 **à la main** (dmg → glisser dans Applications), puis attendre la publication de l'alpha.11.
+
+Installation automatique (alpha.10 → alpha.11) :
+- [ ] Réglages › Mises à jour indique « version Mac : téléchargement et installation sur demande »
+- [ ] « Vérifier les mises à jour » trouve l'alpha.11 ; la bannière propose **Télécharger et installer**
+- [ ] Clic : barre de progression (%), puis « Vérification de la mise à jour… » (quelques secondes)
+- [ ] Aucune fenêtre Finder ne s'ouvre et aucun volume « Hub IA » ne reste dans le Finder (dmg démonté)
+- [ ] Le hub se ferme puis se relance tout seul (≈ 5 s), Réglages affiche **0.1.0-alpha.11**
+- [ ] Pas de demande « Ouvrir quand même » de Gatekeeper au relancement
+- [ ] Dans le Terminal : `ls -la /Applications | grep "Hub IA"` → seulement `Hub IA.app` (ni `.Hub IA.app.old` ni `.Hub IA.app.update`, au plus 20 s après le relancement)
+- [ ] `cat ~/Library/Application\ Support/Hub\ IA/data/updates/update.log` → se termine par « Résultat : ok »
+- [ ] `xattr "/Applications/Hub IA.app"` → pas de `com.apple.quarantine`
+- [ ] `codesign --verify --deep --strict "/Applications/Hub IA.app" && echo OK` → OK
+- [ ] `plutil -p "/Applications/Hub IA.app/Contents/Info.plist" | grep -E "CFBundleShortVersionString|CFBundleIdentifier"` → `0.1.0-alpha.11` et `local.hubia.app`
+- [ ] Après la mise à jour : panneaux ChatGPT / Gemini toujours connectés (macOS peut redemander l'accès au **Trousseau** : « Toujours autoriser ») ; dictée : le micro peut être redemandé
+- [ ] Si macOS affiche « Hub IA a été empêché de modifier des apps » : le noter, autoriser dans Réglages Système › Confidentialité et sécurité › Gestion des apps, puis « Réessayer l'installation »
+
+Tâches en cours / annulation :
+- [ ] Lancer une réponse longue de Claude, puis « Télécharger et installer » : à la fin du téléchargement, question « Une tâche est en cours, installer quand même ? » ; « Plus tard » → la bannière affiche « Installer maintenant » et rien n'est remplacé
+- [ ] Pendant le téléchargement, « Annuler » : la bannière revient à « Télécharger et installer », aucun fichier `.dmg` ne reste dans `…/data/updates`
+
+Cas où l'installation automatique est refusée (bouton « Télécharger » manuel + raison affichée) :
+- [ ] Hub IA lancé directement depuis le dmg monté : message « Hub IA tourne depuis l'image disque (.dmg). Déplace Hub IA dans le dossier Applications… »
+- [ ] Hub IA lancé depuis Téléchargements sans l'avoir déplacé (translocation) : message « macOS fait tourner Hub IA depuis un emplacement temporaire… »
+- [ ] Hors ligne pendant le téléchargement : message clair, repli sur « Télécharger » + « Réessayer l'installation »
 
 ## 6. Images locales (facultatif, déconseillé avec 16 Go)
 - [ ] Sans ComfyUI Desktop : message clair, rien ne plante
+- [ ] Réglages › Modules complémentaires › Images locales : bouton **Installer ComfyUI Desktop (≈ 214 Mo)**, la confirmation affiche la taille
+- [ ] Téléchargement avec barre de progression, puis « Vérification de la signature… », puis « Copie dans Applications… » ; aucune fenêtre Finder ne s'ouvre, aucun volume ne reste monté
+- [ ] `ls /Applications | grep -i comfy` → l'appli est là (nom exact à noter : `ComfyUI.app` ?)
+- [ ] **Relever l'éditeur** : `codesign -dv --verbose=2 /Applications/ComfyUI.app 2>&1 | grep -E "Authority=Developer ID|TeamIdentifier"` → noter le nom et le TeamIdentifier (à figer dans `COMFY_TEAM_IDS`, src/main/comfy-desktop-mac.ts)
+- [ ] `spctl -a -vv -t exec /Applications/ComfyUI.app` → « accepted », « source=Notarized Developer ID »
+- [ ] Si le hub refuse l'installation (« signée par … et non par Comfy Org ») : noter le message exact (ComfyUI Desktop est peut-être signé par son outil de publication)
+- [ ] ComfyUI Desktop s'ouvre tout seul ; la carte indique « termine sa configuration (emplacement, GPU Apple), puis reviens ici installer un modèle »
+- [ ] Après la configuration, la carte passe d'elle-même (≤ 5 s) à « Installer » avec **SDXL** conseillé (« 16 Go : SDXL conseillé, Z-Image très lent ou impossible ») ; sinon « ↻ Revérifier »
+- [ ] Installer SDXL (≈ 6,5 Go) : progression dans la carte, puis une image générée dans une discussion « Images »
+
+## 7. Modules complémentaires
+- [ ] Assistant › étape **Modules** : dictée et détourage cochés (recommandés), Images décochée avec sa taille, total « À télécharger » qui suit les cases, « Plus tard » possible
+- [ ] Clic sur le micro sans modèle : bulle « La dictée vocale a besoin d'un modèle (≈ … Mo) », « Télécharger maintenant » → progression → l'enregistrement démarre tout seul
+- [ ] Image jointe à Ollama sans modèle vision : bouton « Installer la reconnaissance d'images (… Go) » dans l'avertissement (16 Go → variante 8B conseillée)
+- [ ] Détourage (✂) sans modèle : même bulle ; sans WebGPU, la bulle explique pourquoi c'est impossible

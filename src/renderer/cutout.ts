@@ -2,6 +2,7 @@
 // BiRefNet (WebGPU ou WASM) calcule le masque et renvoie un PNG à fond transparent, que le hub enregistre à côté
 // de l'original. Le modèle (licence MIT) est téléchargé une fois, avec confirmation ; ensuite tout reste sur le PC.
 import { CUTOUT_MODEL, CUTOUT_SUFFIX, type AgentRole, type CutoutStatus, type CutoutVariant, type HubApi } from '../shared/types';
+import { ensureModule } from './module-offer';
 
 interface CutoutDeps {
   hub: HubApi;
@@ -81,23 +82,19 @@ let loaded: Plan | null = null;
 let workerDevice: Plan['device'] | null = null;
 
 /** Vérifie le modèle (propose de le télécharger), le charge dans le worker ; repli processeur si WebGPU échoue. */
-async function ensureReady(ask: boolean, force?: Plan): Promise<Plan> {
+async function ensureReady(ask: boolean, force?: Plan, anchor?: HTMLElement | null): Promise<Plan> {
   let plan = force ?? (await detectPlan());
   // BiRefNet à 1024² dépasse les 4 Go adressables du moteur WASM (std::bad_alloc, vérifié) : carte graphique requise.
   if (plan.device === 'wasm' && !force) throw new Error(NO_GPU);
   for (;;) {
     status = await deps.hub.cutoutStatus();
     if (!status.installedVariants.includes(plan.variant)) {
-      const bytes = await deps.hub.cutoutPlannedBytes(plan.variant);
-      if (
-        ask &&
-        !confirm(
-          `Détourage (fond transparent) : télécharger le modèle « ${CUTOUT_MODEL.label} » (licence ${CUTOUT_MODEL.license}, ≈ ${mb(bytes)}) ?\n\nUne seule fois : ensuite le détourage se fait sur ton PC, aucune image n'est envoyée nulle part.`,
-        )
-      ) {
-        throw new Error('Téléchargement du modèle de détourage annulé');
-      }
-      await deps.hub.downloadCutoutModel(plan.variant);
+      if (ask) {
+        // Proposition commune des modules (taille, licence, progression) : rien n'est téléchargé sans un clic.
+        const ok = await ensureModule('cutout', { anchor, variant: plan.variant, need: 'Le détourage a besoin d’un modèle' });
+        if (!ok) throw new Error('Téléchargement du modèle de détourage annulé');
+      } else await deps.hub.downloadCutoutModel(plan.variant);
+      continue;
     }
     if (loaded && loaded.device === plan.device && loaded.variant === plan.variant && loaded.opt === plan.opt) return loaded;
     // Changement d'appareil : worker neuf (un moteur WebGPU en échec laisse ONNX Runtime inutilisable dans ce worker).
@@ -185,7 +182,12 @@ export function cutoutButton(path: string): HTMLButtonElement {
     btn.disabled = true;
     btn.textContent = '… Détourage';
     try {
-      await ensureReady(!smoke); // confirmation du téléchargement ici (pas pendant l'appel au hub)
+      // Pas de carte graphique compatible : la bulle des modules explique pourquoi (au lieu d'une erreur brute).
+      if ((await detectPlan()).device === 'wasm' && !smoke) {
+        await ensureModule('cutout', { anchor: btn });
+        throw new Error('Détourage annulé');
+      }
+      await ensureReady(!smoke, undefined, btn); // proposition de téléchargement ici (pas pendant l'appel au hub)
       await deps.hub.cutoutImage(path);
     } catch (err: any) {
       if (!/annulé/.test(err?.message ?? '')) deps.toast(`Détourage impossible : ${err?.message ?? err}`);
@@ -223,51 +225,8 @@ export async function renderCutoutSettings(box: HTMLElement): Promise<void> {
       `Détoure les images en local (PNG à fond transparent, l'original est conservé). Modèle ${CUTOUT_MODEL.label} — licence ${CUTOUT_MODEL.license}, utilisable commercialement. Cette machine utilisera : ${machine}.`,
     ),
   );
-  const has = status.installedVariants.includes(plan.variant);
-  const r = el('div', 'voice-model');
-  r.append(
-    el('span', `dot ${has ? 'on' : 'off'}`),
-    el('b', '', CUTOUT_MODEL.label),
-    el('span', 'muted small', has ? `téléchargé (${mb(status.diskBytes)})` : status.diskBytes ? `autre variante présente (${mb(status.diskBytes)})` : 'non téléchargé'),
-  );
-  const actions = el('span', 'voice-actions');
-  if (!has && plan.device === 'webgpu') {
-    const b = el('button', 'btn small', 'Télécharger') as HTMLButtonElement;
-    b.type = 'button';
-    b.id = 'cutout-download';
-    b.disabled = status.downloading;
-    b.onclick = async () => {
-      const bytes = await deps.hub.cutoutPlannedBytes(plan.variant);
-      if (!confirm(`Télécharger le modèle de détourage « ${CUTOUT_MODEL.label} » (licence ${CUTOUT_MODEL.license}, ≈ ${mb(bytes)}) ?`)) return;
-      try {
-        await deps.hub.downloadCutoutModel(plan.variant);
-      } catch (err: any) {
-        deps.toast(err?.message ?? String(err));
-      }
-      void renderCutoutSettings(box);
-    };
-    actions.append(b);
-  }
-  if (status.diskBytes) {
-    const d = el('button', 'btn ghost small', 'Supprimer') as HTMLButtonElement;
-    d.type = 'button';
-    d.disabled = status.downloading;
-    d.onclick = async () => {
-      if (!confirm(`Supprimer le modèle de détourage (${mb(status!.diskBytes)}) ? Il sera retéléchargé au prochain détourage.`)) return;
-      worker?.terminate();
-      worker = null;
-      loaded = null;
-      try {
-        await deps.hub.deleteCutoutModel();
-      } catch (err: any) {
-        deps.toast(err?.message ?? String(err));
-      }
-      void renderCutoutSettings(box);
-    };
-    actions.append(d);
-  }
-  r.append(actions);
-  lines.push(r);
+  // Installer / Supprimer / progression : en-tête de la carte du module (module-offer.ts). Modèle supprimé là-bas :
+  // le worker est libéré au prochain événement (onCutoutStatus).
 
   // Agents d'images : détourage automatique de toutes leurs images (workflows, délégations de Claude).
   const imageIds = new Set(deps.imageProviders());
@@ -290,25 +249,18 @@ export async function renderCutoutSettings(box: HTMLElement): Promise<void> {
   }
   lines.push(el('p', 'muted small', 'Dans une discussion avec les images (ComfyUI), le bouton ◩ du composer active le fond transparent ; sous chaque image, « ✂ Détourer » crée la version transparente.'));
 
-  if (status.downloading && status.progress) {
-    const p = status.progress;
-    const pct = p.totalBytes ? Math.round((p.receivedBytes / p.totalBytes) * 100) : 0;
-    const bar = el('div', 'progress-wrap');
-    const inner = el('div', 'progress-bar');
-    inner.style.width = `${pct}%`;
-    bar.append(inner);
-    const cancel = el('button', 'btn ghost small', 'Annuler') as HTMLButtonElement;
-    cancel.type = 'button';
-    cancel.onclick = () => void deps.hub.cancelCutoutDownload();
-    lines.push(el('div', 'muted small', `${p.step} — ${pct} % (${mb(p.receivedBytes)} / ${mb(p.totalBytes)})`), bar, cancel);
-  }
-  if (status.error) lines.push(el('div', 'wf-error small', status.error));
   box.replaceChildren(...lines);
 }
 
 /** Progression du téléchargement (événement 'cutout') : met à jour la section des Réglages si elle est affichée. */
 export function onCutoutStatus(st: CutoutStatus): void {
   status = st;
+  // Modèle supprimé (carte des modules) : le worker qui le gardait en mémoire est libéré.
+  if (loaded && !st.installedVariants.includes(loaded.variant)) {
+    worker?.terminate();
+    worker = null;
+    loaded = null;
+  }
   const box = document.getElementById('cutout-settings-body');
   if (box && box.offsetParent !== null) void renderCutoutSettings(box);
 }

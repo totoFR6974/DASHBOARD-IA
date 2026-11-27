@@ -200,6 +200,71 @@ export interface CutoutStatus {
   error?: string;
 }
 
+// ---------- Modules complémentaires (modèles à télécharger une fois) ----------
+
+/**
+ * Registre unique des modules (src/main/modules.ts) : dictée, reconnaissance d'images, détourage, recherche par le
+ * sens, images locales, et le modèle local de discussion (« de base », traité par l'assistant).
+ */
+export type ModuleId = 'chat' | 'voice' | 'vision' | 'cutout' | 'semantic' | 'images';
+/** absent : pas installé · installing : téléchargement en cours · installed : prêt · unavailable : impossible sur ce PC (voir reason). */
+export type ModuleState = 'absent' | 'installing' | 'installed' | 'unavailable';
+
+export interface ModuleProgress {
+  step: string;
+  receivedBytes: number;
+  /** 0 = taille inconnue (barre indéterminée). */
+  totalBytes: number;
+}
+
+export interface ModuleInfo {
+  id: ModuleId;
+  name: string;
+  /** Icône : nom d'icône du hub (icons.ts, ex. 'mic') ou emoji. */
+  icon: string;
+  /** Description courte (ce que c'est). */
+  description: string;
+  /** À quoi il sert, en une phrase concrète. */
+  usage: string;
+  state: ModuleState;
+  /** Pourquoi le module est indisponible (ou ce qu'il faut faire avant). */
+  reason?: string;
+  /** Information complémentaire affichée sous la carte (ex. configuration de ComfyUI Desktop à terminer). */
+  note?: string;
+  recommended: boolean;
+  /** Pourquoi il est (ou n'est pas) conseillé pour ce PC. */
+  recommendedWhy: string;
+  /** Octets à télécharger pour la variante prévue (0 si déjà installé). */
+  downloadBytes: number;
+  /** Taille estimée (la taille exacte n'est pas encore connue). */
+  approx?: boolean;
+  /** Place occupée sur le disque (installé), sinon place prévue après installation. */
+  diskBytes: number;
+  license: string;
+  /** Variante prévue ou installée (ex. 'small/webgpu-f16', 'qwen3-vl:8b-instruct', 'fp16'). */
+  variant?: string;
+  variantLabel?: string;
+  /** Libellé du bouton d'installation quand il diffère de « Installer » (ex. « Installer ComfyUI Desktop »). */
+  installLabel?: string;
+  /** Gros module (plusieurs Go) : jamais pré-coché dans l'assistant. */
+  large?: boolean;
+  /** Module de base (modèle de discussion) : traité par l'étape « Modèle local » de l'assistant. */
+  base?: boolean;
+  canRemove: boolean;
+  progress?: ModuleProgress;
+  error?: string;
+  /** Lien officiel utile (ex. ComfyUI Desktop). */
+  link?: { label: string; url: string };
+  /** Bouton « Revérifier » (détection à refaire après une action hors du hub). */
+  recheck?: boolean;
+}
+
+/** Capacités graphiques vues par l'interface (WebGPU), envoyées au hub pour choisir les variantes. */
+export interface ModuleEnv {
+  webgpu: boolean;
+  shaderF16: boolean;
+}
+
 /** Accès supplémentaires donnés à Claude, valables même en mode « Prudent ». */
 export interface ClaudeAccess {
   /** Serveurs MCP vus par Claude (relevés au démarrage de ses sessions). */
@@ -367,6 +432,11 @@ export interface HubSettings {
   workflowAutoStart: boolean;
   /** Les agents Claude peuvent confier des sous-tâches aux autres agents (outil MCP demander_a). */
   delegationEnabled: boolean;
+  /**
+   * Outil chercher_notes : true = un agent peut chercher dans TOUTES les bases de connaissances ; false / absent
+   * (défaut) = seulement les bases liées à sa tâche (base de la discussion, base du dossier de travail).
+   */
+  notesSearchAllBases?: boolean;
   /** Serveurs MCP utilisables par Claude sans confirmation, même en mode « Prudent ». */
   claudeAllowedMcp: string[];
   /** Dossiers que Claude peut lire en plus de son dossier de travail. */
@@ -379,8 +449,16 @@ export interface HubSettings {
    * Chemin relatif = relatif au dossier de l'appli (portable). Idem pour workspaceDir.
    */
   vaultDir: string;
-  /** Dossier de travail (chemin normalisé) → id de sa base de connaissances (créée automatiquement). */
+  /**
+   * Dossier de travail (chemin normalisé, propre à cet appareil) → nom de sa base de connaissances (= nom de son
+   * dossier, identique sur tous les appareils). Sur un autre appareil, le lien est retrouvé grâce au .hub-base.json.
+   */
   knowledgeBaseMap: Record<string, string>;
+  /**
+   * Emplacement des bases de connaissances (chemin absolu, ex. un dossier Google Drive) ; vide = <données>/vaults.
+   * Modifié uniquement par moveKnowledgeBases (déplacement vérifié), jamais par le formulaire des réglages.
+   */
+  knowledgeRoot?: string;
   /** Une note par discussion, créée et tenue à jour dans la base liée. */
   conversationNotes: boolean;
   /** Recherche par le sens : modèle d'embeddings Ollama (défaut : bge-m3, nomic-embed-text sur un petit PC). */
@@ -455,6 +533,84 @@ export interface ObsidianRegisterResult {
   /** Obsidian est ouvert : rien n'a été écrit, il faut le fermer puis réessayer. */
   needsClose: boolean;
   installed: boolean;
+}
+
+// ---------- Synchronisation des bases entre appareils ----------
+
+/** Dossier synchronisé détecté sur la machine (proposé comme emplacement des bases). */
+export interface CloudFolderInfo {
+  kind: 'gdrive' | 'onedrive' | 'icloud' | 'dropbox';
+  label: string;
+  path: string;
+  /** Emplacement proposé : sous-dossier « Hub IA - bases ». */
+  suggested: string;
+}
+
+export interface KnowledgeLocationInfo {
+  /** Dossier qui contient les bases (hors base Hub à l'emplacement par défaut). */
+  root: string;
+  isDefault: boolean;
+  defaultRoot: string;
+  /** Dossier de la base Hub. */
+  hubDir: string;
+  /** false : dossier choisi absent (Google Drive pas lancé, disque débranché…) ; rien n'est écrit ailleurs. */
+  available: boolean;
+  /** Libellé du dossier synchronisé qui contient l'emplacement actuel (ex. « Google Drive »). */
+  cloudLabel?: string;
+  cloud: CloudFolderInfo[];
+}
+
+export interface KnowledgeMoveItem {
+  id: string;
+  hub: boolean;
+  from: string;
+  to: string;
+  /** move : copiée dans un nouveau dossier ; merge : même base déjà présente, fusion sans écraser ; same : rien à faire. */
+  action: 'move' | 'merge' | 'same';
+  /** Nouveau nom si le nom est pris à la destination par un dossier étranger au hub. */
+  newId?: string;
+  notes: number;
+  files: number;
+  bytes: number;
+}
+
+export interface KnowledgeMovePlan {
+  dest: string;
+  isDefault: boolean;
+  items: KnowledgeMoveItem[];
+  /** Bases déjà présentes à la destination (2e appareil), reconnues grâce à leur .hub-base.json. */
+  adopted: { id: string; dir: string; hub: boolean; notes: number }[];
+  totals: { notes: number; files: number; bytes: number };
+  /** Raisons qui empêchent le déplacement (vide = possible). */
+  problems: string[];
+  obsidianRunning: boolean;
+}
+
+export interface KnowledgeMoveResult {
+  ok: boolean;
+  root: string;
+  moved: number;
+  merged: number;
+  adopted: number;
+  /** Fichiers gardés en double (contenus différents à la destination) : signalés comme conflits. */
+  conflicts: number;
+  problems: string[];
+  /** Anciens dossiers qui n'ont pas pu être supprimés (les données sont aux deux endroits). */
+  removeErrors: string[];
+  obsidian?: { moved: number; added: number; needsClose: boolean; backup?: string };
+}
+
+/** Fichier en double laissé par un outil de synchronisation (rien n'est fusionné automatiquement). */
+export interface SyncConflictInfo {
+  baseId: string;
+  baseName: string;
+  /** Chemin relatif à la base (« / »). */
+  path: string;
+  original?: string;
+  abs: string;
+  originalAbs?: string;
+  kind: string;
+  label: string;
 }
 
 export interface KnowledgeNote {
@@ -714,6 +870,8 @@ export type HubEvent =
   | { type: 'cutout'; status: CutoutStatus }
   /** Le hub demande à l'interface de détourer une image (octets fournis) ; réponse par cutoutDone(id, …). */
   | { type: 'cutoutRequest'; id: string; path: string; data: Uint8Array }
+  /** Modules complémentaires : état / progression d'un module (même événement pour tous). */
+  | { type: 'module'; module: ModuleInfo }
   | { type: 'update'; state: UpdateState }
   | { type: 'setup'; progress: SetupProgress }
   /** Une session Claude Code est apparue ou a changé (surveillance de ~/.claude/projects). */
@@ -725,8 +883,9 @@ export type HubEvent =
 
 /**
  * État des mises à jour. mode : installed = version installée (téléchargement + installation automatiques),
- * portable = notification + lien de téléchargement, mac = comme portable (Squirrel.Mac exige une appli signée
- * Developer ID : bannière + téléchargement du .dmg), dev = vérification manuelle seulement.
+ * portable = notification + lien de téléchargement, mac = installeur maison (Squirrel.Mac exige une appli signée
+ * Developer ID) : « Télécharger et installer » si l'appli peut se remplacer elle-même, sinon lien du .dmg,
+ * dev = vérification manuelle seulement.
  */
 export interface UpdateState {
   mode: 'installed' | 'portable' | 'mac' | 'dev';
@@ -738,9 +897,16 @@ export interface UpdateState {
   notes?: string;
   /** Page de la release sur GitHub (Mac : lien direct du .dmg arm64 de la release). */
   url?: string;
-  /** Téléchargement en cours (version installée), 0–100. */
+  /** Téléchargement en cours (version installée, Mac), 0–100. */
   percent?: number;
   error?: string;
+  /** Mac : l'installation automatique est possible (sinon autoInstallReason explique pourquoi). */
+  autoInstall?: boolean;
+  autoInstallReason?: string;
+  /** Mac : l'installation automatique a échoué → repli sur « Télécharger » (lien manuel). */
+  installError?: string;
+  /** Mac, pendant status 'downloading' : téléchargement du .dmg puis vérification / copie de l'appli. */
+  step?: 'download' | 'verify';
   /** Dernière vérification (ms). */
   checkedAt?: number;
   includePrerelease: boolean;
@@ -826,6 +992,17 @@ export interface HubApi {
   registerObsidianVaults(): Promise<ObsidianRegisterResult>;
   /** Installe Obsidian avec winget (progression : événements 'setup', task 'obsidian'). */
   installObsidian(): Promise<void>;
+  // Synchronisation des bases entre appareils
+  /** Emplacement actuel des bases et dossiers synchronisés détectés sur la machine. */
+  knowledgeLocation(): Promise<KnowledgeLocationInfo>;
+  /** Choix d'un dossier (boîte de dialogue système) pour l'emplacement des bases. */
+  pickKnowledgeFolder(): Promise<string | null>;
+  /** Prépare le déplacement (nombre de notes, taille, bases déjà présentes à la destination) sans rien modifier. */
+  planKnowledgeMove(dest: string): Promise<KnowledgeMovePlan>;
+  /** Déplace (copie vérifiée, puis suppression de l'ancien) ou adopte les bases à `dest`, puis les réinscrit dans Obsidian. */
+  moveKnowledgeBases(dest: string): Promise<KnowledgeMoveResult>;
+  /** Fichiers en double laissés par un outil de synchronisation, dans toutes les bases. */
+  knowledgeSyncConflicts(): Promise<SyncConflictInfo[]>;
   // Modèles de workflows
   listTemplates(): Promise<WorkflowTemplate[]>;
   /** Enregistre le plan d'un workflow comme modèle réutilisable. */
@@ -857,8 +1034,10 @@ export interface HubApi {
   getUpdateState(): Promise<UpdateState>;
   /** Vérifie maintenant (version installée : télécharge en arrière-plan si une mise à jour existe). */
   checkForUpdates(): Promise<UpdateState>;
-  /** Version installée : redémarre et installe la mise à jour téléchargée. */
+  /** Version installée : redémarre et installe la mise à jour téléchargée. Mac : télécharge, vérifie, installe et relance. */
   installUpdateNow(): Promise<void>;
+  /** Mac : annule le téléchargement / la préparation de la mise à jour. */
+  cancelUpdateDownload(): Promise<void>;
   getClaudeAccess(): Promise<ClaudeAccess>;
   /** Ouvre une fenêtre de terminal qui lance « claude auth login » (connexion au compte Claude dans le navigateur). */
   claudeLogin(): Promise<void>;
@@ -896,6 +1075,16 @@ export interface HubApi {
   unarchiveClaudeSessions(ids: string[]): Promise<ClaudeArchiveResult>;
   /** Supprime les copies archivées (dans le hub uniquement) et le marquage. */
   deleteClaudeArchive(ids: string[]): Promise<ClaudeArchiveResult>;
+  // Modules complémentaires (registre unique : src/main/modules.ts)
+  listModules(): Promise<ModuleInfo[]>;
+  /** État d'un module ; variant = variante précise (ex. dictée 'base/wasm' après un repli sur le processeur). */
+  moduleInfo(id: ModuleId, variant?: string): Promise<ModuleInfo>;
+  /** Installe (télécharge) un module, après accord de l'utilisateur ; progression : événements 'module'. */
+  installModule(id: ModuleId, variant?: string): Promise<ModuleInfo>;
+  cancelModule(id: ModuleId): Promise<void>;
+  removeModule(id: ModuleId): Promise<ModuleInfo>;
+  /** Capacités graphiques de l'interface (WebGPU / fp16), pour choisir les variantes. */
+  setModuleEnv(env: ModuleEnv): Promise<void>;
   // Assistant de premier démarrage
   setupStatus(): Promise<SetupStatus>;
   /** Installe Ollama via winget (progression : événements 'setup'). */
@@ -1020,6 +1209,11 @@ export const HUB_METHODS = [
   'setConversationKnowledgeBase',
   'registerObsidianVaults',
   'installObsidian',
+  'knowledgeLocation',
+  'pickKnowledgeFolder',
+  'planKnowledgeMove',
+  'moveKnowledgeBases',
+  'knowledgeSyncConflicts',
   'getUsage',
   'getLimits',
   'refreshLimits',
@@ -1046,6 +1240,12 @@ export const HUB_METHODS = [
   'archiveClaudeSessions',
   'unarchiveClaudeSessions',
   'deleteClaudeArchive',
+  'listModules',
+  'moduleInfo',
+  'installModule',
+  'cancelModule',
+  'removeModule',
+  'setModuleEnv',
   'setupStatus',
   'installOllama',
   'pullModel',
@@ -1055,5 +1255,6 @@ export const HUB_METHODS = [
   'getUpdateState',
   'checkForUpdates',
   'installUpdateNow',
+  'cancelUpdateDownload',
 ] as const;
 export type HubMethod = (typeof HUB_METHODS)[number];

@@ -3,10 +3,24 @@
 // Ne dépend pas d'Electron (testable avec selftest).
 import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync } from 'node:fs';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { AgentRole, KnowledgeInfo, KnowledgeNote, KnowledgeSearchHit, WorkflowRun, WorkflowTemplate } from '../shared/types';
 import { macAppPath } from './platform';
+import { writeFileAtomic } from './atomic-write';
+
+/** Emplacement des bases choisi (dossier synchronisé) mais absent : on n'écrit rien ailleurs. */
+export const KNOWLEDGE_UNAVAILABLE = 'Emplacement des bases de connaissances indisponible (dossier synchronisé non monté ?) : vérifie Réglages › Base de connaissances.';
+
+/** Copie une image dans une base, sauf si elle y est déjà (même taille) : pas de réécriture inutile pour la synchro. */
+function copyIfChanged(from: string, to: string): void {
+  try {
+    if (statSync(to).size === statSync(from).size) return;
+  } catch {
+    /* absente : on copie */
+  }
+  copyFileSync(from, to);
+}
 
 const TRASH = '.corbeille';
 const TEMPLATES_DIR = 'Modèles';
@@ -77,9 +91,11 @@ Ce dossier se trouve dans le dossier de l'application : il est copié avec elle 
 export class Knowledge {
   private obsidianCache: { at: number; value: boolean } | null = null;
 
+  /** `canWrite` : false quand l'emplacement des bases (dossier synchronisé) est absent → aucune écriture ailleurs. */
   constructor(
     private getVault: () => string,
     private onChange: (kind: 'notes' | 'templates') => void,
+    private canWrite: () => boolean = () => true,
   ) {
     this.ensureVault();
   }
@@ -88,14 +104,19 @@ export class Knowledge {
     return this.getVault();
   }
 
-  /** Crée le vault (Accueil.md + dossiers) s'il n'existe pas encore. */
+  private guardWrite(): void {
+    if (!this.canWrite()) throw new Error(KNOWLEDGE_UNAVAILABLE);
+  }
+
+  /** Crée le vault (Accueil.md + dossiers) s'il n'existe pas encore. Ne réécrit rien s'il existe déjà. */
   ensureVault(): void {
+    if (!this.canWrite()) return;
     const dir = this.dir;
     const fresh = !existsSync(dir);
     mkdirSync(dir, { recursive: true });
     for (const sub of ['Notes', RESULTS_DIR, TEMPLATES_DIR]) mkdirSync(join(dir, sub), { recursive: true });
     if (fresh || !existsSync(join(dir, 'Accueil.md'))) {
-      if (fresh || readdirSync(dir).filter((f) => f.endsWith('.md')).length === 0) writeFileSync(join(dir, 'Accueil.md'), WELCOME, 'utf8');
+      if (fresh || readdirSync(dir).filter((f) => f.endsWith('.md')).length === 0) writeFileAtomic(join(dir, 'Accueil.md'), WELCOME);
     }
   }
 
@@ -164,8 +185,9 @@ export class Knowledge {
 
   writeNote(path: string, content: string): KnowledgeNote {
     const { abs, rel } = this.resolveNote(path);
-    mkdirSync(dirname(abs), { recursive: true });
-    writeFileSync(abs, String(content ?? ''), 'utf8');
+    this.guardWrite();
+    // Atomique (temporaire + renommage) et rien d'écrit si le contenu n'a pas changé : sûr pour les outils de synchro.
+    writeFileAtomic(abs, String(content ?? ''));
     const st = statSync(abs);
     this.onChange('notes');
     return { path: rel, title: this.titleOf(abs, String(content ?? '')), updatedAt: st.mtimeMs, size: st.size };
@@ -180,6 +202,7 @@ export class Knowledge {
   }
 
   private toTrash(abs: string, rel: string): void {
+    this.guardWrite();
     const d = new Date();
     const tag = `${stamp(d).replace(' ', '_')}${String(d.getSeconds()).padStart(2, '0')}`;
     const target = join(this.dir, TRASH, `${tag} ${rel.replace(/\//g, ' - ')}`);
@@ -273,6 +296,7 @@ export class Knowledge {
     const roleName = (id: string) => roles.find((r) => r.id === id)?.name ?? id;
     const rel = run.resultNote ?? `${RESULTS_DIR}/${stamp(new Date(run.createdAt))} ${safeFileName(run.title, 70)}.md`;
     const { abs } = this.resolveNote(rel);
+    this.guardWrite();
     const imagesDir = join(this.dir, RESULTS_DIR, 'images');
     const agents = [...new Set(run.steps.map((s) => roleName(s.roleId)))];
     const lines: string[] = [
@@ -298,7 +322,7 @@ export class Knowledge {
         try {
           mkdirSync(imagesDir, { recursive: true });
           const name = `${run.id.slice(0, 8)}-${basename(img)}`;
-          copyFileSync(img, join(imagesDir, name));
+          copyIfChanged(img, join(imagesDir, name));
           lines.push(`![](images/${encodeURI(name)})`, '');
         } catch {
           /* image introuvable : on continue */
@@ -306,8 +330,7 @@ export class Knowledge {
       }
     }
     lines.push(`_Dossier partagé du workflow : ${run.runDir}_`, '');
-    mkdirSync(dirname(abs), { recursive: true });
-    writeFileSync(abs, lines.join('\n'), 'utf8');
+    writeFileAtomic(abs, lines.join('\n'));
     this.onChange('notes');
     return this.relOf(abs);
   }
@@ -346,8 +369,8 @@ export class Knowledge {
       '',
     ].join('\n');
     const { abs } = this.resolveNote(rel);
-    mkdirSync(dirname(abs), { recursive: true });
-    writeFileSync(abs, content, 'utf8');
+    this.guardWrite();
+    writeFileAtomic(abs, content);
     this.onChange('templates');
     return { id, name: cleanName, description: String(description ?? '').trim(), goal: run.goal, steps, path: rel };
   }

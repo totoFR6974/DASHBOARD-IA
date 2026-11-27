@@ -7,6 +7,11 @@ import type { ImageEngine } from '../image-engine';
 import { imagePreset } from '../image-models';
 import { promptForCutout } from '../cutout';
 import { CancelledError, type Provider, type RunContext, type RunResult } from './provider';
+import { testOnlyEnv } from '../platform';
+import { fakeIllustration } from '../fake-image';
+
+/** Images simulées (HUB_FAKE_IMAGE=1) : tests uniquement, ignoré dans l'appli packagée. Lu à chaque appel. */
+const fakeImages = (): boolean => testOnlyEnv('HUB_FAKE_IMAGE') === '1';
 
 /** Connecteurs qui produisent des images (le prompt doit être une description d'image, pas un gabarit d'agent). */
 export const IMAGE_PROVIDERS = new Set(['comfyui']);
@@ -25,6 +30,9 @@ export class ComfyUIProvider implements Provider {
   ) {}
 
   async describe(): Promise<ProviderInfo> {
+    if (fakeImages()) {
+      return { id: this.id, name: this.name, kind: 'local', available: true, detail: 'Images SIMULÉES (tests, HUB_FAKE_IMAGE=1)', models: ['simule'], defaultModel: 'simule', keepsOwnHistory: false, usesWorkspace: false };
+    }
     const models = this.engine.models();
     const installed = this.engine.installed();
     const active = imagePreset(this.engine.activeModel());
@@ -44,6 +52,7 @@ export class ComfyUIProvider implements Provider {
   }
 
   async run(ctx: RunContext): Promise<RunResult> {
+    if (fakeImages()) return this.runFake(ctx);
     const started = Date.now();
     // Modèle demandé s'il est installé (ancien format « fichier checkpoint » accepté), sinon le modèle actif.
     const requested = imagePreset(ctx.model);
@@ -129,6 +138,26 @@ export class ComfyUIProvider implements Provider {
       ctx.signal.removeEventListener('abort', onAbort);
       this.engine.scheduleIdleStop();
     }
+  }
+
+  /** Génération SIMULÉE (tests uniquement) : même contrat que la vraie (fichier PNG, sortie, annulation). */
+  private async runFake(ctx: RunContext): Promise<RunResult> {
+    const started = Date.now();
+    if (!ctx.prompt.trim()) throw new Error("Décris l'image à générer");
+    const prompt = ctx.transparent ? promptForCutout(ctx.prompt) : ctx.prompt.trim();
+    ctx.onActivity({ kind: 'info', text: 'Génération de l’image (SIMULÉE pour les tests)…' });
+    const delay = Number(process.env.HUB_FAKE_IMAGE_MS ?? 2500) || 0;
+    await new Promise<void>((res, rej) => {
+      const t = setTimeout(res, delay);
+      ctx.signal.addEventListener('abort', () => (clearTimeout(t), rej(new CancelledError())), { once: true });
+    });
+    const destDir = ctx.addDirs?.[0] ?? this.imagesDir();
+    mkdirSync(destDir, { recursive: true });
+    const file = join(destDir, `image-${new Date().toISOString().replace(/[:.]/g, '-')}-1.png`);
+    writeFileSync(file, fakeIllustration(randomInt(0, 3)));
+    const output = `Image générée (simulée) :\n- ${file}\n\nPrompt : ${prompt}`;
+    ctx.onDelta(output);
+    return { output, images: [file], usage: { durationMs: Date.now() - started } };
   }
 
   /** Décharge les modèles Ollama de la carte graphique (mémoire partagée avec le modèle d'image). */

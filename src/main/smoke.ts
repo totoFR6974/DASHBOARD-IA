@@ -10,7 +10,10 @@ import { smokeWebLogout } from './smoke-weblogout';
 import { smokeFiles } from './smoke-files';
 import { smokeViewer } from './smoke-viewer';
 import { smokeIcons } from './smoke-icons';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { smokeModules } from './smoke-modules';
+import { smokeFakeClaude } from './smoke-fakeclaude';
+import { smokeVaultSync } from './smoke-vaultsync';
+import { cpSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -479,6 +482,9 @@ async function smokeVision(win: BrowserWindow, outDir: string, shot: (name: stri
     document.querySelector('.tabs button[data-view="settings"]').click();
     for (let i = 0; i < 60 && !document.querySelector('#vision-settings-body .vision-row'); i++) await new Promise((r) => setTimeout(r, 150));
     await new Promise((r) => setTimeout(r, 6000)); // analyse de la machine (setupStatus)
+    // Carte « Reconnaissance d'images » des modules complémentaires : options (choix de la taille) dépliées.
+    if (document.getElementById('vision-settings-body')?.classList.contains('hidden')) document.querySelector('#vision-settings .mod-opts-toggle')?.click();
+    await new Promise((r) => setTimeout(r, 300));
     document.getElementById('vision-settings')?.scrollIntoView({ block: 'center' });
     await new Promise((r) => setTimeout(r, 400));
     return document.getElementById('vision-settings-body')?.innerText.replace(/\\s+/g, ' ').slice(0, 600);
@@ -496,6 +502,7 @@ export async function runSmoke(win: BrowserWindow, outDir: string, getWeb: () =>
 
   await wait(2000);
   if (only === 'onboarding') return smokeOnboarding(shot, js);
+  if (only === 'modules') return smokeModules(win, outDir, shot, js);
   if (only === 'obprogress') {
     // Anti-clignotement de l'assistant : des événements de progression (téléchargement d'Ollama simulé) ne doivent PAS
     // recréer la fenêtre ni la barre (sinon les animations d'entrée se rejouent à chaque événement).
@@ -557,6 +564,7 @@ export async function runSmoke(win: BrowserWindow, outDir: string, getWeb: () =>
   if (only === 'weblogout') return smokeWebLogout(win, outDir, getWeb, shot, js);
   if (only === 'workflow') return smokeWorkflow(shot, js);
   if (only === 'knowledge') return smokeKnowledge(shot, js);
+  if (only === 'vaultsync') return smokeVaultSync(win, outDir, shot, js);
   if (only === 'search') return smokeSearch(shot, js);
   if (only === 'ui') return smokeShell(shot, js);
   if (only === 'vision') return smokeVision(win, outDir, shot, js);
@@ -608,9 +616,12 @@ export async function runSmoke(win: BrowserWindow, outDir: string, getWeb: () =>
   if (only === 'cutout') return smokeCutout(win, outDir, shot, js);
   if (only === 'viewer') return smokeViewer(win, outDir, shot, js);
   if (only === 'icons') return smokeIcons(win, outDir, shot, js);
+  if (only === 'fakeclaude') return smokeFakeClaude(win, outDir, shot, js);
   if (only === 'voice') {
     // Dictée vocale sans micro : HUB_VOICE_WAV = WAV de test (synthèse vocale Windows). Même pipeline que le micro.
     const wav = process.env.HUB_VOICE_WAV ? readFileSync(process.env.HUB_VOICE_WAV).toString('base64') : '';
+    // HUB_VOICE_CACHE = dossier « whisper » déjà téléchargé (ex. data/all-voice/models/whisper) : pas de nouveau téléchargement.
+    if (process.env.HUB_VOICE_CACHE && existsSync(process.env.HUB_VOICE_CACHE)) cpSync(process.env.HUB_VOICE_CACHE, join(outDir, 'models', 'whisper'), { recursive: true });
     const r = await js(`(async () => {
       const t = window.__hubVoiceTest;
       if (!t) return { error: 'crochets de test absents' };
@@ -687,6 +698,17 @@ export async function runSmoke(win: BrowserWindow, outDir: string, getWeb: () =>
     })()`);
     console.log(`Anti-clignotement : ${JSON.stringify(blink)}`);
     if (!blink.running || !blink.sameCard || !blink.sameOptions || blink.freshLeft) throw new Error('Onglet Tâches : éléments recréés à chaque seconde (clignotement)');
+    // Regroupement par discussion (les sous-tâches suivent la discussion de leur tâche parente).
+    const grp = await js(`(async () => {
+      const sel = document.getElementById('tf-group');
+      sel.value = 'conversation';
+      sel.dispatchEvent(new Event('change'));
+      await new Promise((r) => setTimeout(r, 400));
+      return [...document.querySelectorAll('#tasks-table tr.group td')].map((td) => td.textContent);
+    })()`);
+    console.log(`Groupes par discussion : ${JSON.stringify(grp)}`);
+    await shot('29b-taches-par-discussion');
+    if (!Array.isArray(grp) || !grp.length || !grp.some((g: string) => g.startsWith('Discussion') || g.startsWith('Sans discussion'))) throw new Error('Regroupement par discussion absent');
     const r3 = await js(`(async () => {
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       document.querySelector('.tabs button[data-view="claude"]')?.click();
@@ -757,6 +779,24 @@ export async function runSmoke(win: BrowserWindow, outDir: string, getWeb: () =>
     await js(`document.querySelector('.view.active')?.scrollTo(0, 0)`);
     await wait(300);
     await shot('26-mise-a-jour');
+    // Bannière Mac (états simulés envoyés à l'interface ; rien n'est téléchargé ni installé).
+    const base = { mode: 'mac', currentVersion: '0.1.0-alpha.10', version: '0.1.0-alpha.11', url: 'https://github.com/totoFR6974/DASHBOARD-IA/releases', includePrerelease: true, autoCheck: true };
+    const macStates: [string, Record<string, unknown>][] = [
+      ['auto', { ...base, status: 'available', autoInstall: true }],
+      ['dmg', { ...base, status: 'available', autoInstall: false, autoInstallReason: 'Hub IA tourne depuis l’image disque (.dmg). Déplace Hub IA dans le dossier Applications pour activer l’installation automatique.' }],
+      ['download', { ...base, status: 'downloading', step: 'download', percent: 42, autoInstall: true }],
+      ['verify', { ...base, status: 'downloading', step: 'verify', percent: 100, autoInstall: true }],
+      ['echec', { ...base, status: 'available', autoInstall: true, installError: 'Installation automatique impossible : Fichier téléchargé incorrect : empreinte sha256 différente de celle publiée sur GitHub. Utilise « Télécharger ».' }],
+      ['prete', { ...base, status: 'ready', percent: 100, autoInstall: true }],
+    ];
+    const seen: Record<string, unknown> = {};
+    for (const [name, state] of macStates) {
+      win.webContents.send('hub:event', { type: 'update', state });
+      await wait(250);
+      seen[name] = await js(`(() => { const b = document.getElementById('update-banner'); return b.classList.contains('hidden') ? null : { text: b.querySelector('.update-text')?.textContent, reason: b.querySelector('.update-reason')?.textContent ?? null, buttons: [...b.querySelectorAll('button')].map((x) => x.textContent) }; })()`);
+      if (name === 'dmg' || name === 'download') await shot(`26-mise-a-jour-mac-${name}`);
+    }
+    console.log(`Mise à jour Mac (simulée) : ${JSON.stringify(seen)}`);
     return;
   }
   if (only === 'delegation') return smokeDelegation(shot, js);

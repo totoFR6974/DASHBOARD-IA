@@ -11,6 +11,7 @@ import { dirname, join, resolve } from 'node:path';
 import type { ImageEngineStatus, ImageModelInfo, PlannedDownload } from '../shared/types';
 import { IMAGE_PRESETS, imagePreset, presetSize, type ImageModelFile, type ImageModelPreset } from './image-models';
 import { killProcessTree, macAppPath } from './platform';
+import { comfyDesktopApp } from './comfy-desktop-mac';
 
 const PORT = 8188;
 export const COMFY_URL = `http://127.0.0.1:${PORT}`;
@@ -443,7 +444,7 @@ export class ImageEngine {
    * considère pas comme « son » process : il ne l'arrête jamais (l'utilisateur ferme ComfyUI Desktop lui-même).
    */
   private async startMacServer(onInfo: (text: string) => void, signal?: AbortSignal): Promise<void> {
-    const app = macAppPath('ComfyUI');
+    const app = macAppPath('ComfyUI') ?? comfyDesktopApp();
     if (!app) throw new Error('Aucun serveur ComfyUI ne répond : ouvre ComfyUI Desktop (ou lance ton serveur ComfyUI local), puis réessaie.');
     onInfo('Ouverture de ComfyUI Desktop…');
     spawn('open', ['-g', app], { detached: true, stdio: 'ignore' }).unref();

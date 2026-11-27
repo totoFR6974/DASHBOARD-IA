@@ -1,9 +1,12 @@
 // Serveur MCP local du hub (transport « streamable HTTP », réponses JSON) : expose aux agents Claude les outils
 // `lister_agents` et `demander_a` pour confier une sous-tâche à un autre agent du hub, et `chercher_notes`
 // (recherche par le sens dans les bases de connaissances).
-// Sécurité : écoute uniquement 127.0.0.1, port aléatoire, jeton secret par lancement (Bearer, comparaison à temps
-// constant), contrôle des en-têtes Host/Origin (anti DNS rebinding). Sans Electron : testable par le selftest.
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+// Sécurité : écoute uniquement 127.0.0.1, port aléatoire, contrôle des en-têtes Host/Origin (anti DNS rebinding),
+// et UN JETON PAR TÂCHE (Bearer, 32 octets aléatoires, comparaison à temps constant) : la tâche appelante se déduit
+// du jeton, jamais d'un en-tête déclaratif (une tâche ne peut pas se faire passer pour une autre, par exemple une
+// tâche en « Accès total » dont les délégations héritent des droits). Jeton révoqué à la fin de la tâche.
+// Sans Electron : testable sous Node (scripts/test-fakeclaude.ts, selftest).
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
@@ -11,6 +14,10 @@ export const MCP_SERVER_NAME = 'hub';
 export const DELEGATION_TOOLS = [`mcp__${MCP_SERVER_NAME}__demander_a`, `mcp__${MCP_SERVER_NAME}__lister_agents`];
 /** Recherche par le sens dans les bases de connaissances (lecture seule). */
 export const KNOWLEDGE_TOOLS = [`mcp__${MCP_SERVER_NAME}__chercher_notes`];
+/**
+ * Ancien en-tête déclaratif de la tâche appelante : il n'est plus écrit dans la config MCP et il est IGNORÉ par le
+ * serveur (la tâche se déduit du jeton). Gardé pour les tests qui vérifient qu'il ne permet pas d'usurpation.
+ */
 export const PARENT_HEADER = 'x-hub-parent-task';
 
 const SUPPORTED_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
@@ -80,7 +87,7 @@ const TOOLS = [
       type: 'object',
       properties: {
         question: { type: 'string', description: 'Ce que tu cherches, en langage naturel.' },
-        base: { type: 'string', description: 'Id ou nom de la base (facultatif ; par défaut celle de la discussion ou du dossier de travail).' },
+        base: { type: 'string', description: "Id ou nom de la base (facultatif ; par défaut celle de la discussion ou du dossier de travail ; les autres bases ne sont accessibles que si l'utilisateur l'a autorisé)." },
         nombre: { type: 'integer', minimum: 1, maximum: 20, description: 'Nombre de passages (défaut 6).' },
       },
       required: ['question'],
@@ -98,7 +105,8 @@ interface RpcMessage {
 }
 
 export class McpServer {
-  readonly token = randomBytes(32).toString('hex');
+  /** Tâche → empreinte SHA-256 de son jeton (le jeton en clair n'est gardé que dans la config MCP de la tâche). */
+  private tokens = new Map<string, Buffer>();
   private server: Server | null = null;
   private starting: Promise<void> | null = null;
   port = 0;
@@ -134,13 +142,42 @@ export class McpServer {
     this.server = null;
   }
 
-  private authorized(req: IncomingMessage): boolean {
+  /**
+   * Nouveau jeton (32 octets aléatoires, en hexadécimal) pour une tâche ; un éventuel jeton précédent de la même
+   * tâche est révoqué. À écrire dans la config MCP de la tâche, puis révoquer avec revokeToken à sa fin.
+   */
+  issueToken(taskId: string): string {
+    if (!taskId) throw new Error('issueToken : tâche manquante');
+    const token = randomBytes(32).toString('hex');
+    this.tokens.set(taskId, digest(token));
+    return token;
+  }
+
+  /** Révoque le jeton d'une tâche (fin de tâche) : toute requête qui le présente est ensuite refusée (401). */
+  revokeToken(taskId: string): void {
+    this.tokens.delete(taskId);
+  }
+
+  /** Nombre de jetons actifs (tests). */
+  get activeTokenCount(): number {
+    return this.tokens.size;
+  }
+
+  /**
+   * Tâche propriétaire du jeton présenté (en-tête Authorization: Bearer), sinon null.
+   * Comparaison à temps constant : les empreintes SHA-256 (longueur fixe) sont toutes comparées avec
+   * timingSafeEqual, sans sortie anticipée, pour ne rien laisser deviner du jeton ni de la tâche trouvée.
+   */
+  private taskForRequest(req: IncomingMessage): string | null {
     const header = req.headers.authorization ?? '';
-    const m = /^Bearer\s+(.+)$/i.exec(header);
-    if (!m) return false;
-    const given = Buffer.from(m[1].trim());
-    const expected = Buffer.from(this.token);
-    return given.length === expected.length && timingSafeEqual(given, expected);
+    const m = /^Bearer\s+(\S+)\s*$/i.exec(header);
+    if (!m) return null;
+    const given = digest(m[1]);
+    let found: string | null = null;
+    for (const [taskId, expected] of this.tokens) {
+      if (timingSafeEqual(given, expected) && found === null) found = taskId;
+    }
+    return found;
   }
 
   /** Anti DNS rebinding : seuls les hôtes locaux sont acceptés, et aucune page web d'une autre origine. */
@@ -168,7 +205,9 @@ export class McpServer {
       const path = (req.url ?? '').split('?')[0];
       if (path !== '/mcp') return this.send(res, 404, { error: 'introuvable' });
       if (!this.localRequest(req)) return this.send(res, 403, { error: 'origine refusée' });
-      if (!this.authorized(req)) return this.send(res, 401, { error: 'jeton invalide' }, { 'WWW-Authenticate': 'Bearer' });
+      // La tâche appelante = propriétaire du jeton (l'en-tête x-hub-parent-task éventuel est ignoré).
+      const parent = this.taskForRequest(req);
+      if (!parent) return this.send(res, 401, { error: 'jeton invalide' }, { 'WWW-Authenticate': 'Bearer' });
       if (req.method !== 'POST') return this.send(res, 405, undefined, { Allow: 'POST' });
 
       const raw = await readBody(req);
@@ -178,7 +217,6 @@ export class McpServer {
       } catch {
         return this.send(res, 400, rpcError(null, -32700, 'JSON invalide'));
       }
-      const parent = String(req.headers[PARENT_HEADER] ?? '');
       const batch = Array.isArray(payload);
       const messages = batch ? (payload as RpcMessage[]) : [payload as RpcMessage];
       const replies = (await Promise.all(messages.map((m) => this.dispatch(m, parent)))).filter((r) => r !== null);
@@ -235,7 +273,7 @@ export class McpServer {
         const demande = String(args?.demande ?? '').trim();
         const contexte = typeof args?.contexte === 'string' && args.contexte.trim() ? args.contexte.trim() : undefined;
         if (!agent || !demande) return text('Paramètres manquants : « agent » et « demande » sont obligatoires.', true);
-        if (!parent) return text("Délégation impossible : tâche appelante inconnue (en-tête manquant).", true);
+        if (!parent) return text('Délégation impossible : tâche appelante inconnue.', true);
         // fond_transparent : booléen (ou "true"/"false" envoyé en texte par certains clients).
         const ft = args?.fond_transparent;
         const transparent = ft === true || ft === 'true' ? true : ft === false || ft === 'false' ? false : undefined;
@@ -262,6 +300,37 @@ export class McpServer {
       return text(err?.message ?? String(err), true);
     }
   }
+}
+
+/**
+ * Outil chercher_notes : base où chercher. `linked` = bases liées à la tâche appelante (discussion, dossier de
+ * travail ; la première est la base par défaut) ; `searchAll` = réglage « chercher dans toutes les bases ».
+ * Une base demandée hors de celles permises est refusée, avec la liste de celles qui le sont (jamais les autres).
+ */
+export function chooseNotesBase(
+  requested: string | undefined,
+  linked: string[],
+  bases: { id: string; name: string }[],
+  searchAll: boolean,
+): { baseId: string; allowed: string[] } | { error: string } {
+  const allowed = searchAll ? bases.map((b) => b.id) : linked.filter((id, i) => linked.indexOf(id) === i && bases.some((b) => b.id === id));
+  if (!requested) return allowed.length ? { baseId: allowed[0], allowed } : { error: 'Aucune base de notes liée à cette tâche.' };
+  const ref = requested.trim().toLowerCase();
+  const found = bases.find((b) => b.id.toLowerCase() === ref || b.name.toLowerCase() === ref);
+  if (found && allowed.includes(found.id)) return { baseId: found.id, allowed };
+  const list = allowed.join(', ') || 'aucune';
+  if (searchAll) return { error: `Base inconnue : « ${requested} ». Bases accessibles : ${list}.` };
+  // Même réponse que la base existe ou non : rien n'est révélé des bases non liées.
+  return {
+    error:
+      `Base « ${requested} » inconnue ou non accessible : par défaut, chercher_notes ne fouille que les bases liées à la tâche (discussion, dossier de travail) — ici : ${list}. ` +
+      "L'utilisateur peut autoriser la recherche dans toutes les bases (Réglages › Agents).",
+  };
+}
+
+/** Empreinte SHA-256 d'un jeton (32 octets : longueur fixe pour timingSafeEqual). */
+function digest(token: string): Buffer {
+  return createHash('sha256').update(token, 'utf8').digest();
 }
 
 function rpcResult(id: string | number, result: object): object {
