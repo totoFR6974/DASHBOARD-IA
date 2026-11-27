@@ -22,7 +22,7 @@
     "test:platform": "esbuild scripts/test-platform.ts --bundle --platform=node --format=cjs --outfile=dist/test-platform.js --external:7zip-bin --log-level=warning && node dist/test-platform.js",
     "test:vaults": "esbuild scripts/test-vaults.ts --bundle --platform=node --format=cjs --outfile=dist/test-vaults.js --external:7zip-bin --log-level=warning && node dist/test-vaults.js",
     "release:assets": "node scripts/release-assets.mjs",
-    "test:fakeclaude": "esbuild scripts/test-fakeclaude.ts --bundle --platform=node --format=cjs --outfile=dist/test-fakeclaude.js --log-level=warning && node dist/test-fakeclaude.js",
+    "test:fakeclaude": "esbuild scripts/test-fakeclaude.ts --bundle --platform=node --format=cjs --outfile=dist/test-fakeclaude.js --external:7zip-bin --log-level=warning && node dist/test-fakeclaude.js",
     "smoke:fakeclaude": "node scripts/fake-claude/smoke.mjs"
   },
   "build": {

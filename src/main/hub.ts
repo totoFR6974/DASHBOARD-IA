@@ -62,7 +62,7 @@ import type { KnowledgeLocationInfo, KnowledgeMovePlan, KnowledgeMoveResult, Syn
 import { spawn } from 'node:child_process';
 import { installObsidian as runObsidianInstall, obsidianStatus, registerVaults } from './obsidian';
 import { ClaudeProvider, ClaudeSessionLostError } from './providers/claude';
-import type { SpontaneousTurn } from './providers/claude-live';
+import { readLiveMetas, type SpontaneousInfo, type SpontaneousTurn } from './providers/claude-live';
 import { ComfyUIProvider, IMAGE_PROVIDERS } from './providers/comfyui';
 import { OllamaProvider } from './providers/ollama';
 import { CodexProvider } from './providers/codex';
@@ -252,6 +252,8 @@ interface DelegationContext {
 }
 const MAX_CONTEXT_CHARS = 30000;
 const CANCELLED_TEXT = '_(réponse annulée)_';
+/** Activité d'une réponse Claude écrite pendant que le hub était fermé. */
+const RECOVERED_NOTE = 'Rattrapé au redémarrage du hub : Claude a continué pendant que le hub était fermé.';
 
 /** Compare deux chemins (insensible à la casse sous Windows, sans barre finale). */
 export function samePath(a: string, b: string): boolean {
@@ -291,6 +293,10 @@ export class Hub {
   private liveTask = new Map<string, string>();
   /** Agents Claude d'arrière-plan en cours, par discussion. */
   private claudeBackground = new Map<string, number>();
+  /** Réponses Claude restées en cours à la fermeture précédente, en attente de reprise (recoverLiveSessions). */
+  private pendingLiveTags = new Set<string>();
+  /** Discussions dont une session Claude est en cours de reprise : leurs messages attendent dans la file. */
+  private pendingLiveKeys = new Set<string>();
   /** Demandes d'autorisation de Claude en attente de réponse. */
   private permissions = new Map<string, { request: PermissionRequest; resolve: (d: PermissionDecision) => void }>();
   readonly knowledge: Knowledge;
@@ -462,9 +468,14 @@ export class Hub {
       this.settingsFile.save();
     }
 
-    // Tâches restées "en cours" lors d'une fermeture brutale : on les marque comme interrompues.
+    // Tâches restées "en cours" lors d'une fermeture brutale : on les marque comme interrompues. Sauf les réponses
+    // d'une session Claude laissée travailler seule à la fermeture du hub : reprises juste après (recoverLiveSessions).
+    const liveMetas = readLiveMetas(join(dataDir, 'live'));
+    const liveTags = new Set(liveMetas.flatMap((m) => m.tags));
+    this.pendingLiveTags = liveTags;
+    this.pendingLiveKeys = new Set(liveMetas.map((m) => m.key));
     for (const t of this.db.data.tasks) {
-      if (t.status === 'running' || t.status === 'queued') {
+      if ((t.status === 'running' || t.status === 'queued') && !liveTags.has(t.id)) {
         t.status = 'error';
         t.error = "Interrompue (l'application a été fermée)";
         t.finishedAt ??= Date.now();
@@ -480,9 +491,12 @@ export class Hub {
       this.db.data.claudeMcpServers = [...known.values()].sort((a, b) => a.name.localeCompare(b.name));
       this.db.save();
     };
-    // Sessions persistantes : réponse spontanée (agent d'arrière-plan terminé), compteur d'agents, fermeture.
+    // Sessions persistantes : réponse spontanée (agent d'arrière-plan terminé, message envoyé pendant un tour),
+    // reprise après redémarrage, compteur d'agents, fermeture. Fichiers de sortie et d'état dans <données>/live.
+    claude.live.dir = join(dataDir, 'live');
     claude.liveHooks = {
-      spontaneous: (convId) => this.startClaudeFollowUp(convId),
+      spontaneous: (convId, info) => this.startClaudeFollowUp(convId, info),
+      reattach: (convId, taskId) => this.resumeClaudeTurn(convId, taskId),
       background: (convId, count) => {
         if (count) this.claudeBackground.set(convId, count);
         else this.claudeBackground.delete(convId);
@@ -490,7 +504,11 @@ export class Hub {
       },
       // Session fermée (redémarrage, plantage, terminal) : sa config MCP est gardée pour la suivante ; elle n'est
       // révoquée qu'à la suppression de la discussion ou à l'arrêt du hub. Ses demandes d'autorisation tombent.
-      closed: (convId) => this.dropPermissions(convId),
+      // Session reprise après redémarrage qui vient de finir : les messages qui l'attendaient partent.
+      closed: (convId, info) => {
+        this.dropPermissions(convId);
+        if (info.attached) setTimeout(() => this.drainQueue(convId), 0);
+      },
       // Demande d'autorisation de Claude : montrée dans le hub (et sur le téléphone) jusqu'à la réponse.
       permission: (convId, r) =>
         new Promise((resolve) => {
@@ -508,6 +526,8 @@ export class Hub {
       new ComfyUIProvider(this.images, () => this.settings.ollamaUrl, () => join(this.workspaceDir, 'images')),
     ];
     this.providers = new Map(list.map((p) => [p.id, p]));
+    // Sessions Claude laissées travailler seules à la fermeture précédente : reprises (rattrapage + suivi).
+    setImmediate(() => void this.recoverLiveSessions());
 
     const host: WorkflowHost = {
       settings: () => this.settings,
@@ -1174,7 +1194,7 @@ export class Hub {
           ...(run.transparent ? { transparent: true } : {}),
           ...(allowedTools.length ? { allowedTools } : {}),
           ...(mcp ? { mcpConfigPath: mcp.configPath, extraEnv: { MCP_TOOL_TIMEOUT: String(DELEGATION_TIMEOUT_MS) } } : {}),
-          ...(liveKey ? { liveKey } : {}),
+          ...(liveKey ? { liveKey, liveTag: task.id } : {}),
           signal: controller.signal,
           onDelta: (delta) => {
             task.output += delta;
@@ -1786,14 +1806,16 @@ export class Hub {
   }
 
   /**
-   * Réponse que Claude commence de lui-même dans une session persistante (résultat d'un agent d'arrière-plan) :
-   * nouvelle tâche « suite » dans la discussion, affichée comme une réponse.
+   * Réponse que Claude commence de lui-même dans une session persistante : résultat d'un agent d'arrière-plan, ou
+   * réponse à un message envoyé pendant un tour (« Envoyer maintenant » arrivé trop tard pour ce tour). Nouvelle
+   * tâche « suite » dans la discussion, affichée comme une réponse. recovered : écrite pendant que le hub était fermé.
    */
-  private startClaudeFollowUp(convId: string): SpontaneousTurn | null {
+  private startClaudeFollowUp(convId: string, info: SpontaneousInfo = { reason: 'background', recovered: false }): SpontaneousTurn | null {
     const conv = this.db.data.conversations.find((c) => c.id === convId);
     if (!conv) return null;
     const now = Date.now();
     const participant = conv.participants.find((p) => p.providerId === 'claude');
+    const injected = info.reason === 'injected';
     const task: Task = {
       id: randomUUID(),
       conversationId: conv.id,
@@ -1801,18 +1823,45 @@ export class Hub {
       providerId: 'claude',
       ...(participant?.model ? { model: participant.model } : {}),
       agent: conv.agent,
-      title: 'Suite : résultat d’un agent d’arrière-plan',
-      prompt: '(Claude reprend la main : un agent lancé en arrière-plan a terminé)',
+      title: injected ? 'Réponse au message envoyé pendant le travail' : 'Suite : résultat d’un agent d’arrière-plan',
+      prompt: injected ? '(Claude répond au message envoyé pendant sa réponse précédente)' : '(Claude reprend la main : un agent lancé en arrière-plan a terminé)',
       status: 'running',
       createdAt: now,
       startedAt: now,
       output: '',
-      activity: [{ at: now, kind: 'info', text: 'Un agent d’arrière-plan a terminé : Claude reprend la main' }],
+      activity: [
+        { at: now, kind: 'info', text: injected ? 'Claude répond au message envoyé pendant sa réponse précédente' : 'Un agent d’arrière-plan a terminé : Claude reprend la main' },
+        ...(info.recovered ? [{ at: now, kind: 'info' as const, text: RECOVERED_NOTE }] : []),
+      ],
     };
     this.db.data.tasks.push(task);
+    return this.liveTurnSink(conv, task, info.recovered);
+  }
+
+  /**
+   * Redémarrage du hub : réponse `taskId` restée en cours à la fermeture précédente. Claude l'a continuée seul ; elle
+   * est relue depuis son début dans le fichier de la session (le texte se réaffiche, puis la suite).
+   */
+  private resumeClaudeTurn(convId: string, taskId: string): SpontaneousTurn | null {
+    this.pendingLiveTags.delete(taskId);
+    const conv = this.db.data.conversations.find((c) => c.id === convId);
+    const task = this.db.data.tasks.find((t) => t.id === taskId && t.conversationId === convId);
+    if (!conv || !task || this.running.has(task.id) || (task.status !== 'running' && task.status !== 'queued')) return null;
+    task.status = 'running';
+    task.output = '';
+    delete task.error;
+    delete task.finishedAt;
+    task.activity.push({ at: Date.now(), kind: 'info', text: RECOVERED_NOTE });
+    return this.liveTurnSink(conv, task, true);
+  }
+
+  /** Suivi d'une réponse Claude sans appelant (tour spontané ou repris) : flux, activité, message final, file d'attente. */
+  private liveTurnSink(conv: Conversation, task: Task, recovered: boolean): SpontaneousTurn {
     const controller = new AbortController();
+    const startedAt = task.startedAt ?? Date.now();
     this.running.set(task.id, controller);
     this.liveTask.set(conv.id, task.id);
+    this.db.save();
     this.emit({ type: 'task', task });
     const end = (status: Task['status'], result?: RunResult, error?: string) => {
       this.running.delete(task.id);
@@ -1822,14 +1871,17 @@ export class Hub {
       if (result) {
         task.output = result.output || task.output;
         task.usage = result.usage;
-        if (result.sessionId) conv.providerSessions.claude = result.sessionId;
+        if (result.sessionId) {
+          if (conv.claudeForkPending && status === 'done' && result.sessionId !== conv.providerSessions.claude) delete conv.claudeForkPending;
+          conv.providerSessions.claude = result.sessionId;
+        }
       }
       if (error) task.error = error;
-      task.usage = { ...task.usage, durationMs: task.usage?.durationMs ?? task.finishedAt - now };
+      task.usage = { ...task.usage, durationMs: task.usage?.durationMs ?? task.finishedAt - startedAt };
       if (this.db.data.conversations.includes(conv)) {
         const content = status === 'done' ? task.output : status === 'cancelled' ? (task.output ? `${CANCELLED_TEXT}\n\n${task.output}` : CANCELLED_TEXT) : `⚠️ ${error ?? 'Erreur inconnue'}`;
-        const images = uniquePaths([...this.delegatedImages(task.id), ...(task.output ? this.citedImages(conv, task.output) : [])]);
-        conv.messages.push({ role: 'assistant', content, at: task.finishedAt, taskId: task.id, providerId: 'claude', model: task.model, turnId: task.turnId, ...(images.length ? { images } : {}) });
+        const images = uniquePaths([...(task.images ?? []), ...this.delegatedImages(task.id), ...(task.output ? this.citedImages(conv, task.output) : [])]);
+        conv.messages.push({ role: 'assistant', content, at: task.finishedAt, taskId: task.id, providerId: 'claude', model: task.model, turnId: task.turnId, ...(images.length ? { images } : {}), ...(recovered ? { recovered: true } : {}) });
         conv.updatedAt = task.finishedAt;
         this.emit({ type: 'conversation', conversation: conv });
       }
@@ -1839,6 +1891,7 @@ export class Hub {
       setTimeout(() => this.drainQueue(conv.id, task), 0);
     };
     return {
+      tag: task.id,
       signal: controller.signal,
       onDelta: (delta) => {
         task.output += delta;
@@ -1852,6 +1905,34 @@ export class Hub {
       done: (result) => end('done', result),
       fail: (err) => end(controller.signal.aborted || err instanceof CancelledError ? 'cancelled' : 'error', undefined, err.message),
     };
+  }
+
+  /**
+   * Démarrage : sessions Claude laissées travailler seules à la fermeture précédente. Ce qu'elles ont écrit est
+   * rattrapé ; celles qui travaillent encore sont suivies jusqu'à leur arrêt (les messages attendent dans la file).
+   */
+  private async recoverLiveSessions(): Promise<void> {
+    const claude = this.providers.get('claude') as ClaudeProvider | undefined;
+    try {
+      if (claude) await claude.live.recover((key) => this.db.data.conversations.some((c) => c.id === key));
+    } catch (err) {
+      console.error('Reprise des sessions Claude impossible', err);
+    }
+    // Réponses notées en cours mais impossibles à reprendre (discussion supprimée, fichier perdu…) : interrompues.
+    for (const id of this.pendingLiveTags) {
+      const t = this.db.data.tasks.find((x) => x.id === id);
+      if (t && (t.status === 'running' || t.status === 'queued') && !this.running.has(t.id)) {
+        t.status = 'error';
+        t.error = "Interrompue (l'application a été fermée)";
+        t.finishedAt ??= Date.now();
+        this.emit({ type: 'task', task: t });
+      }
+    }
+    this.pendingLiveTags.clear();
+    const keys = [...this.pendingLiveKeys];
+    this.pendingLiveKeys.clear();
+    this.db.save();
+    for (const k of keys) setTimeout(() => this.drainQueue(k), 0);
   }
 
   listPermissions(): PermissionRequest[] {
@@ -2120,8 +2201,13 @@ export class Hub {
     return `Contexte — ta session précédente de cette discussion est introuvable ; voici les échanges déjà eus (tes réponses comprises) :\n\n${transcript}\n\n---\nNouveau message de l'utilisateur :\n${text}`;
   }
 
-  /** Une réponse (tâche d'une IA de la discussion) est en cours. */
+  /**
+   * Une réponse (tâche d'une IA de la discussion) est en cours — ou une session Claude restée ouverte pendant la
+   * fermeture du hub travaille encore / est en cours de reprise (les messages attendent alors dans la file).
+   */
   private convBusy(conversationId: string): boolean {
+    if (this.pendingLiveKeys.has(conversationId)) return true;
+    if ((this.providers.get('claude') as ClaudeProvider | undefined)?.live.attachedAlive(conversationId)) return true;
     return this.db.data.tasks.some((t) => t.conversationId === conversationId && this.running.has(t.id));
   }
 
@@ -2129,10 +2215,10 @@ export class Hub {
    * Après une réponse : envoie le 1er message en attente si la discussion est libre. File EN PAUSE si la réponse
    * a été arrêtée (bouton Arrêter) : l'utilisateur reprend la main (« Envoyer maintenant » ou nouveau message).
    */
-  private drainQueue(conversationId: string, finished: Task): void {
+  private drainQueue(conversationId: string, finished?: Task): void {
     const conv = this.db.data.conversations.find((c) => c.id === conversationId);
     if (!conv?.queue?.length || this.convBusy(conv.id)) return;
-    const turn = finished.turnId ? this.db.data.tasks.filter((t) => t.turnId === finished.turnId) : [finished];
+    const turn = !finished ? [] : finished.turnId ? this.db.data.tasks.filter((t) => t.turnId === finished.turnId) : [finished];
     if (turn.some((t) => t.status === 'cancelled')) return;
     const next = conv.queue.shift()!;
     this.sendMessage(conv.id, next.text, next.images).catch((err: Error) => {
@@ -2153,13 +2239,33 @@ export class Hub {
     return item;
   }
 
-  /** « Envoyer maintenant » : arrête la réponse en cours (et ses sous-tâches), puis envoie ce message. */
+  /**
+   * « Envoyer maintenant ». Réponse de Claude en cours (session persistante) et message sans pièce jointe : le
+   * message est glissé dans le tour en cours, comme dans le terminal — Claude le lit à sa prochaine étape, rien
+   * n'est interrompu (agents d'arrière-plan compris). Sinon : la réponse en cours est arrêtée (et ses sous-tâches,
+   * ou la session restée ouverte pendant la fermeture du hub), puis le message part.
+   */
   async sendQueuedNow(conversationId: string, id: string): Promise<Task[]> {
     const conv = this.conversation(conversationId);
     const item = conv.queue?.find((q) => q.id === id);
     if (!item) throw new Error('Ce message n’est plus en attente');
+    const claude = this.providers.get('claude') as ClaudeProvider | undefined;
     const running = this.db.data.tasks.filter((t) => t.conversationId === conv.id && this.running.has(t.id));
+    const live = running.length === 1 && running[0].providerId === 'claude' && this.liveTask.get(conv.id) === running[0].id ? running[0] : null;
+    if (live && claude && item.text.trim() && !item.images?.length && claude.live.inject(conv.id, item.text)) {
+      this.removeQueuedMessage(conv.id, id);
+      const now = Date.now();
+      // Même tour que la réponse en cours : affiché juste avant elle (la réponse tient compte des deux messages).
+      conv.messages.push({ role: 'user', content: item.text, at: now, ...(live.turnId ? { turnId: live.turnId } : {}), injected: true });
+      conv.updatedAt = now;
+      live.activity.push({ at: now, kind: 'info', text: 'Message envoyé pendant la réponse : Claude en tient compte à sa prochaine étape (rien n’est interrompu).' });
+      this.db.save();
+      this.emit({ type: 'conversation', conversation: conv });
+      this.emit({ type: 'task', task: live });
+      return [live];
+    }
     for (const t of running) this.cancelTask(t.id);
+    if (claude?.live.attachedAlive(conv.id)) claude.live.close(conv.id);
     for (let i = 0; i < 150 && this.convBusy(conv.id); i++) await new Promise((r) => setTimeout(r, 100));
     if (this.convBusy(conv.id)) throw new Error('La réponse en cours ne s’arrête pas : réessaie dans un instant');
     this.removeQueuedMessage(conv.id, id);
@@ -2859,8 +2965,9 @@ export class Hub {
   }
 
   shutdown(): void {
-    // Sessions Claude persistantes : fermées seulement ici (arrêt du hub).
-    (this.providers.get('claude') as ClaudeProvider | undefined)?.live.closeAll();
+    // Sessions Claude persistantes : jamais coupées à l'arrêt du hub.
+    // Elles continuent SEULES (fin du tour en cours, agents d'arrière-plan) et sont reprises au prochain démarrage.
+    (this.providers.get('claude') as ClaudeProvider | undefined)?.live.detachAll();
     for (const c of this.running.values()) c.abort();
     for (const id of [...this.delegation.keys()]) this.endDelegation(id);
     this.cutout.shutdown();

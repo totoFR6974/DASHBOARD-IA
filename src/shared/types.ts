@@ -364,6 +364,10 @@ export interface ChatMessage {
   files?: string[];
   /** Message repris de l'historique d'une session Claude Code (affiché seulement : Claude l'a déjà dans sa session). */
   imported?: boolean;
+  /** Message envoyé pendant la réponse de Claude (« Envoyer maintenant ») : Claude l'a lu à sa prochaine étape. */
+  injected?: boolean;
+  /** Réponse écrite par Claude pendant que le hub était fermé (rattrapée au redémarrage). */
+  recovered?: boolean;
   at: number;
 }
 

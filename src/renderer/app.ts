@@ -1840,8 +1840,8 @@ function blockTitleCopy(title: string, getText: () => string, style?: string): H
   return h('div', { class: 'block-title block-title-row', style }, h('span', {}, title), copyButton(getText));
 }
 
-/** Bulle utilisateur avec bouton Copier (visible au survol). */
-function userBubble(text: string, images?: string[], files?: string[]): HTMLElement {
+/** Bulle utilisateur avec bouton Copier (visible au survol). `note` : petite mention sous le texte. */
+function userBubble(text: string, images?: string[], files?: string[], note?: string): HTMLElement {
   // Pièces jointes de l'utilisateur : miniatures des images (cliquer pour ouvrir, sans « Détourer » dans la bulle
   // orange) et puces des autres fichiers (ouvrir / afficher dans le dossier).
   const all = [...(images ?? []), ...(files ?? [])];
@@ -1852,6 +1852,7 @@ function userBubble(text: string, images?: string[], files?: string[]): HTMLElem
     text,
     thumbs(images, false, false),
     attachmentChips(files),
+    note ? h('div', { class: 'msg-note' }, note) : null,
   );
 }
 
@@ -1878,6 +1879,7 @@ function replyEl(m: ChatMessage): HTMLElement {
     { class: `msg assistant ${t?.status === 'error' ? 'error' : ''}` },
     copyButton(() => withImages(m.content, images), undefined, 'msg-copy'),
     replyHead(m.providerId ?? t?.providerId, m.model ?? t?.model),
+    m.recovered ? h('div', { class: 'msg-note recovered', title: 'Le hub était fermé : Claude a continué seul, ce texte a été rattrapé au redémarrage.' }, icon('hourglass', 12), ' Rattrapé : écrit pendant que le hub était fermé') : null,
     activityEl(t),
     delegationChips(t),
     h('div', { class: 'msg-body', html: md(m.content) }),
@@ -1914,7 +1916,7 @@ function turnEl(conv: Conversation, turn: Turn): HTMLElement {
   ].sort((a, b) => a.rank - b.rank || a.at - b.at);
 
   const block = h('div', { class: 'turn' });
-  if (turn.user) block.append(userBubble(turn.user.content, turn.user.images, turn.user.files));
+  if (turn.user) block.append(userBubble(turn.user.content, turn.user.images, turn.user.files, turn.user.injected ? 'Envoyé pendant la réponse : Claude l’a lu à sa prochaine étape' : undefined));
   if (items.length) {
     const multi = items.length > 1;
     block.append(h('div', { class: `replies ${multi ? 'multi' : ''}`, style: multi ? `--cols:${Math.min(items.length, 3)}` : undefined }, ...items.map((x) => x.el())));
@@ -2419,7 +2421,11 @@ function renderQueueStrip(conv: Conversation | undefined, running: boolean): voi
           {
             type: 'button',
             class: 'btn small primary',
-            title: running ? 'Arrête la réponse en cours et envoie ce message tout de suite' : 'Envoie ce message tout de suite',
+            title: !running
+              ? 'Envoie ce message tout de suite'
+              : participantsOf(conv).length === 1 && participantsOf(conv)[0].providerId === 'claude' && !q.images.length
+                ? 'Glisse ce message dans la réponse en cours : Claude le lit à sa prochaine étape, sans rien interrompre'
+                : 'Arrête la réponse en cours et envoie ce message tout de suite',
             onclick: () => void hub.sendQueuedNow(conv.id, q.id).catch(fail),
           },
           '↑ Envoyer maintenant',

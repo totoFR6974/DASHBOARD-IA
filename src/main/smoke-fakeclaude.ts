@@ -403,23 +403,62 @@ export async function smokeFakeClaude(win: BrowserWindow, outDir: string, shot: 
     await js(`[...document.querySelectorAll('#queue-strip button')].find((b) => b.textContent.includes('Envoyer maintenant'))?.click()`);
     check('Q2 interface : « Mettre en attente » pendant la réponse, file affichée au-dessus de la saisie', ui?.sendLabel === 'Mettre en attente' && ui?.stripShown === true, ui);
     check('Q2 agents en cours : pastille dans la barre du haut, panneau qui liste l’agent et sa discussion', ui?.pillShown === true && ui?.rows >= 1 && /FC · file d’attente/.test(ui?.rowText ?? ''), ui);
+    // Session Claude : le message est glissé dans la réponse en cours (comme dans le terminal), rien n'est annulé.
+    await wait(800);
+    const q2a = await conv(qc.id);
+    const longNow = (await convTasks()).find((t) => t.id === long[0]);
+    const injUi = await js(`[...document.querySelectorAll('#messages .msg.user .msg-note')].some((n) => /Envoyé pendant la réponse/.test(n.textContent))`);
+    check(
+      'Q2 « Envoyer maintenant » : message glissé dans la réponse en cours de Claude (rien d’annulé), file vide, mention dans la bulle',
+      longNow?.status === 'running' && !q2a?.queue?.length && !!q2a?.messages?.some((m: any) => m.injected && m.turnId === longNow?.turnId && /urgent/.test(m.content)) && injUi === true,
+      { long: longNow?.status, queue: q2a?.queue, injUi },
+    );
+    await shot('fc-q-message-glisse');
+    // Puis Arrêter : le tour est interrompu (même session, même process) ; le message glissé reçoit sa réponse à part.
+    const longPid = logFor().filter((e) => e.scenario === 'long').pop()?.pid;
+    await js(`window.hub.cancelTask(${JSON.stringify(long[0])})`);
     let after: any[] = [];
     for (let i = 0; i < 60; i++) {
       after = await convTasks();
-      if (after.length >= 4 && after.every((t) => t.status !== 'running' && t.status !== 'queued')) break;
+      if (after.some((t) => /message envoyé pendant/.test(t.title)) && after.every((t) => t.status !== 'running' && t.status !== 'queued')) break;
       await wait(500);
     }
     await wait(400);
     const longTask = after.find((t) => t.id === long[0]);
-    const urgent = after.find((t) => /urgent/.test(t.prompt ?? t.title));
+    const urgent = after.find((t) => /message envoyé pendant/.test(t.title));
+    const urgentStart = logFor().filter((e) => /urgent/.test(e.prompt ?? '')).pop();
     const q2 = await conv(qc.id);
     check(
-      'Q2 « Envoyer maintenant » : longue réponse arrêtée, message urgent envoyé et répondu, file vide',
-      longTask?.status === 'cancelled' && urgent?.status === 'done' && !q2?.queue?.length,
-      { long: longTask?.status, urgent: urgent?.status, queue: q2?.queue, tasks: after.map((t) => `${t.title}:${t.status}`) },
+      'Q2 Arrêter : longue réponse interrompue (même process), le message glissé reçoit sa réponse, file vide',
+      longTask?.status === 'cancelled' && urgent?.status === 'done' && !q2?.queue?.length && !!longPid && urgentStart?.pid === longPid && readLog().some((e) => e.event === 'interrupt'),
+      { long: longTask?.status, urgent: urgent?.status, queue: q2?.queue, pids: [longPid, urgentStart?.pid], tasks: after.map((t) => `${t.title}:${t.status}`) },
     );
     const pillAfter = await js(`document.getElementById('agents-btn').classList.contains('hidden')`);
     check('Q2 agents en cours : pastille masquée quand plus rien ne tourne', pillAfter === true || (await tasks()).some((t) => t.status === 'running'), pillAfter);
+  }
+
+  // ---------- M. « Envoyer maintenant » pendant une réponse à étapes : lu par Claude à l'étape suivante ----------
+  {
+    const title = 'FC · envoyer maintenant';
+    const mc = await newConv(title);
+    const first = await send(mc.id, '[fake:steps] étapes : 4');
+    await wait(300);
+    await send(mc.id, 'ajoute aussi POMME');
+    await select(title);
+    await wait(300);
+    await js(`[...document.querySelectorAll('#queue-strip button')].find((b) => b.textContent.includes('Envoyer maintenant'))?.click()`);
+    const [m1] = await waitDone(first, 30);
+    await wait(300);
+    const c = await conv(mc.id);
+    const replies = (c?.messages ?? []).filter((m: any) => m.role === 'assistant');
+    check(
+      'M « Envoyer maintenant » : lu par Claude à l’étape suivante, une seule réponse qui en tient compte',
+      m1?.status === 'done' && replies.length === 1 && /message reçu en cours de route : ajoute aussi POMME/.test(replies[0]?.content ?? '') && (c?.messages ?? []).filter((m: any) => m.role === 'user').length === 2 && !c?.queue?.length,
+      { status: m1?.status, replies: replies.map((r: any) => r.content.slice(-90)) },
+    );
+    const order = await js(`[...document.querySelectorAll('#messages .msg')].map((m) => (m.classList.contains('user') ? 'U' : 'A')).join('')`);
+    check('M affichage : les deux messages de l’utilisateur, puis la réponse', order === 'UUA', order);
+    await shot('fc-m-envoyer-maintenant');
   }
 
   // ---------- CL. Liste des discussions : clic droit, Ctrl / Maj, épingler, glisser-déposer, archiver ----------
@@ -1138,10 +1177,11 @@ export async function smokeFakeClaude(win: BrowserWindow, outDir: string, shot: 
     let gone = false;
     for (let i = 0; i < 20 && !gone; i++) {
       await wait(250);
-      gone = !alive(fake?.pid) && !alive(grand?.grandchildPid);
+      gone = !alive(grand?.grandchildPid);
     }
     check('G annulation : tâche « annulée »', t?.status === 'cancelled', { status: t?.status, error: t?.error });
-    check('G annulation : faux Claude ET son sous-process arrêtés (aucun orphelin)', gone, { fake: fake?.pid, fakeAlive: alive(fake?.pid), grandchild: grand?.grandchildPid, grandAlive: alive(grand?.grandchildPid) });
+    // Arrêter interrompt le tour (control_request « interrupt ») : ses outils s'arrêtent, la session reste ouverte.
+    check('G annulation : tour interrompu, son sous-process arrêté, session Claude gardée ouverte', gone && alive(fake?.pid) && readLog().some((e) => e.event === 'interrupt' && e.during), { fake: fake?.pid, fakeAlive: alive(fake?.pid), grandchild: grand?.grandchildPid, grandAlive: alive(grand?.grandchildPid) });
     const ui = await lastTurn('FC · annulation');
     check('G annulation : bulle « réponse annulée » avec le texte déjà reçu', /réponse annulée/.test(ui.text) && ui.text.includes(SIGNATURE), ui.text.slice(0, 200));
     await shot('fc-07-annulation');

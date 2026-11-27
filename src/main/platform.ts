@@ -76,6 +76,84 @@ export function killProcessTree(pid: number | undefined, platform: Platform = pr
   t.unref?.();
 }
 
+/** Process encore vivant ? (EPERM = il existe mais appartient à un autre utilisateur.) */
+export function processAlive(pid: number | undefined): boolean {
+  if (!pid || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err: any) {
+    return err?.code === 'EPERM';
+  }
+}
+
+/** Sortie d'une petite commande système (null si elle échoue ou dépasse le délai). */
+function runQuiet(cmd: string, args: string[], timeoutMs: number): Promise<string | null> {
+  return new Promise((done) => {
+    let out = '';
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(cmd, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch {
+      return done(null);
+    }
+    const timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {
+        /* déjà arrêté */
+      }
+      done(null);
+    }, timeoutMs);
+    child.stdout!.setEncoding('utf8');
+    child.stdout!.on('data', (d: string) => (out += d));
+    child.on('error', () => {
+      clearTimeout(timer);
+      done(null);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      done(code === 0 ? out : null);
+    });
+  });
+}
+
+/**
+ * Nom de l'exécutable d'un process (« claude.exe », « claude », « node »…), null s'il n'existe plus. Sert à vérifier
+ * qu'un pid noté avant la fermeture du hub désigne toujours le même programme (les pid sont réutilisés).
+ */
+export async function processImageName(pid: number, platform: Platform = process.platform): Promise<string | null> {
+  if (!processAlive(pid)) return null;
+  if (platform === 'win32') {
+    const out = await runQuiet('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], 8000);
+    const m = out && /^"([^"]+)","(\d+)"/m.exec(out);
+    return m && Number(m[2]) === pid ? m[1] : null;
+  }
+  const out = await runQuiet('ps', ['-p', String(pid), '-o', 'comm='], 5000);
+  const name = out?.trim();
+  return name ? posix.basename(name) : null;
+}
+
+/** Même programme (comparaison sans casse ni extension .exe). */
+export function sameImageName(a: string, b: string): boolean {
+  const n = (s: string) => s.toLowerCase().replace(/\.exe$/, '');
+  return n(a) === n(b);
+}
+
+/**
+ * Windows : premier descendant « utile » d'un process lanceur cmd.exe (conhost ignoré, cmd.exe imbriqué traversé),
+ * avec son nom. Sert à retrouver le pid de Claude lancé par l'intermédiaire de cmd.exe (voir claude-live.ts).
+ */
+export async function findWindowsDescendant(wrapperPid: number): Promise<{ pid: number; name: string } | null> {
+  const script =
+    `$p = ${Math.floor(wrapperPid)}; for ($i = 0; $i -lt 4; $i++) { ` +
+    `$c = Get-CimInstance Win32_Process -Filter "ParentProcessId=$p" | Where-Object { $_.Name -ne 'conhost.exe' } | Select-Object -First 1; ` +
+    `if (-not $c) { break }; if ($c.Name -ieq 'cmd.exe') { $p = $c.ProcessId; continue }; "$($c.ProcessId)|$($c.Name)"; break }`;
+  const out = await runQuiet('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], 20000);
+  const m = out && /^(\d+)\|(.+)$/m.exec(out.trim());
+  return m ? { pid: Number(m[1]), name: m[2].trim() } : null;
+}
+
 /** Commande qui ouvre un lien dans le navigateur par défaut (sans shell). */
 export function openUrlCommand(href: string, platform: Platform = process.platform): { cmd: string; args: string[] } {
   if (platform === 'win32') return { cmd: 'explorer.exe', args: [href] };

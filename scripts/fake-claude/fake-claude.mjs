@@ -30,6 +30,17 @@
 //   echo              répète le texte qui suit le mot-clé
 //   perm              (session persistante, --permission-prompt-tool stdio) demande l'autorisation d'écrire un
 //                     fichier (control_request can_use_tool) et attend la réponse du hub (control_response)
+//   steps             trois étapes avec outil (~0,5 s chacune, « étapes : <n> » pour en changer le nombre) : un message
+//                     reçu PENDANT le tour est lu à l'étape suivante et pris en compte dans le même tour, comme le vrai
+// Session persistante, comme le vrai Claude (vérifié avec Claude Code 2.1) :
+//   - control_request {subtype:'interrupt'} → control_response success, le tour en cours se termine par
+//     result error_during_execution (terminal_reason aborted_streaming), les agents d'arrière-plan sont arrêtés
+//     (task_notification status stopped) ; la session continue ;
+//   - message reçu pendant un tour : lu à la prochaine étape d'outil (scénario steps), sinon traité ensuite comme
+//     un tour à part ;
+//   - fin de l'entrée standard : le tour en cours et les agents d'arrière-plan finissent, les lignes « result »
+//     des tours finis pendant ce temps n'arrivent qu'à la toute fin, puis le process s'arrête.
+//   - --append-system-prompt-file <fichier> : consigne lue dans le fichier (journal : comme --append-system-prompt).
 // Autres variables :
 //   HUB_FAKE_CLAUDE_AUTH=loggedout|old   état renvoyé par « auth status » (défaut : connecté)
 //   HUB_FAKE_CLAUDE_LOG=<fichier>        journal JSONL de chaque appel (arguments, session, pid, résultats)
@@ -103,7 +114,7 @@ if (argv[0] === 'agents') {
 
 // ---------- Arguments du mode -p ----------
 
-const VALUE = new Set(['--output-format', '--input-format', '--permission-mode', '--model', '--resume', '--append-system-prompt', '--effort', '--session-id', '--permission-prompt-tool']);
+const VALUE = new Set(['--output-format', '--input-format', '--permission-mode', '--model', '--resume', '--append-system-prompt', '--append-system-prompt-file', '--effort', '--session-id', '--permission-prompt-tool']);
 const MULTI = new Set(['--mcp-config', '--allowedTools', '--add-dir']);
 const FLAGS = new Set(['-p', '--print', '--verbose', '--include-partial-messages', '--fork-session']);
 const opts = { print: false, verbose: false, partial: false, fork: false, mcpConfig: [], allowedTools: [], addDir: [] };
@@ -139,6 +150,14 @@ if (opts.fork && !opts.resume) die('Error: --fork-session requires --resume or -
 const PERMISSIONS = ['default', 'acceptEdits', 'plan', 'bypassPermissions', 'dontAsk', 'auto'];
 if (opts['permission-mode'] && !PERMISSIONS.includes(opts['permission-mode'])) die(`error: option '--permission-mode <mode>' argument '${opts['permission-mode']}' is invalid.`);
 for (const d of opts.addDir) if (!existsSync(d)) process.stderr.write(`Warning: Path ${d} does not exist\n`);
+if (opts['append-system-prompt-file']) {
+  if (opts['append-system-prompt']) die('Error: --append-system-prompt and --append-system-prompt-file cannot be used together');
+  try {
+    opts['append-system-prompt'] = readFileSync(opts['append-system-prompt-file'], 'utf8');
+  } catch {
+    die(`Error: cannot read --append-system-prompt-file ${opts['append-system-prompt-file']}`);
+  }
+}
 
 // ---------- Sessions connues (facultatif) ----------
 
@@ -336,6 +355,7 @@ async function assistantMessage(text, toolUse = null, delay = DELAY) {
     if (opts.partial) {
       out({ type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }, session_id: sessionId });
       for (const w of words(text)) {
+        checkInterrupt();
         out({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: w } }, session_id: sessionId });
         if (delay) await sleep(delay);
       }
@@ -391,9 +411,15 @@ async function runTool(block) {
   return { text, isError };
 }
 
+/** Lignes « result » retenues après la fin de l'entrée standard (écrites à la toute fin, comme le vrai). */
+const deferredResults = [];
 function finish(isError = false, resultText = lastText, subtype = 'success') {
   usageIn += Math.ceil(prompt.length / 4);
-  out({
+  const emit = LIVE && inputEnded && pendingBg > 0 ? (o) => deferredResults.push(o) : (o) => {
+    while (deferredResults.length) out(deferredResults.shift());
+    out(o);
+  };
+  emit({
     type: 'result',
     subtype,
     is_error: isError,
@@ -482,8 +508,11 @@ async function long() {
   log({ event: 'long', grandchildPid: child.pid });
   rateLimit();
   const text = Array.from({ length: 400 }, (_, i) => `mot${i}`).join(' ');
-  await assistantMessage(`${SIGNATURE} Longue réponse : ${text}`, null, 150);
-  child.kill();
+  try {
+    await assistantMessage(`${SIGNATURE} Longue réponse : ${text}`, null, 150);
+  } finally {
+    child.kill(); // interruption comprise : les outils du tour sont arrêtés
+  }
   finish();
 }
 
@@ -491,17 +520,41 @@ async function long() {
 let chain = Promise.resolve();
 let pendingBg = 0;
 let inputEnded = false;
+// Revérifié au moment de sortir : un tour en cours peut avoir lancé un agent d'arrière-plan entre-temps (le vrai
+// Claude l'attend avant de s'arrêter).
 const maybeExit = () => {
-  if (inputEnded && pendingBg === 0) chain = chain.then(() => process.exit(0));
+  if (inputEnded && pendingBg === 0) chain = chain.then(() => (pendingBg === 0 ? process.exit(0) : undefined));
 };
-function later(fn, ms) {
+/** Agents d'arrière-plan en cours (arrêtés par une interruption). */
+const bgTasks = new Map();
+function later(fn, ms, taskId = randomUUID()) {
   pendingBg++;
-  setTimeout(() => {
-    chain = chain.then(fn).finally(() => {
-      pendingBg--;
-      maybeExit();
-    });
+  const timer = setTimeout(() => {
+    bgTasks.delete(taskId);
+    // Agent terminé : son tour spontané écrit aussi les « result » retenus (fin d'entrée), puis le sien.
+    pendingBg--;
+    chain = chain.then(fn).finally(maybeExit);
   }, ms);
+  bgTasks.set(taskId, timer);
+}
+
+/** Interruption demandée par l'hôte (control_request interrupt) : vérifiée aux étapes du tour en cours. */
+class Interrupted extends Error {}
+let interruptRequested = false;
+let turnRunning = false;
+/** Messages reçus pendant un tour (lus à l'étape suivante par le scénario steps). */
+const injected = [];
+function checkInterrupt() {
+  if (interruptRequested) throw new Interrupted('interrupted');
+}
+function stopBackground() {
+  for (const [taskId, timer] of bgTasks) {
+    clearTimeout(timer);
+    pendingBg--;
+    out({ type: 'system', subtype: 'task_notification', task_id: taskId, status: 'stopped', session_id: sessionId });
+    log({ event: 'bg-stopped', taskId });
+  }
+  bgTasks.clear();
 }
 
 /** Réponses du hub aux demandes (control_response), par identifiant de demande. */
@@ -538,13 +591,15 @@ async function bgAgent() {
   rateLimit();
   const block = await assistantMessage('Je lance un agent en arrière-plan.', { name: 'Agent', input: { description: 'Agent de test', prompt: 'travaille', run_in_background: true } });
   const taskId = `bgtask_${randomUUID().slice(0, 8)}`;
-  out({ type: 'system', subtype: 'task_started', task_id: taskId, tool_use_id: block.id, description: 'Agent de test', session_id: sessionId });
+  out({ type: 'system', subtype: 'task_started', task_id: taskId, tool_use_id: block.id, description: 'Agent de test', is_backgrounded: true, task_type: 'local_agent', session_id: sessionId });
+  // Commande Bash ordinaire (premier plan) : signalée aussi par task_started, mais ce n'est PAS un agent d'arrière-plan.
+  out({ type: 'system', subtype: 'task_started', task_id: `${taskId}-bash`, description: 'commande au premier plan', is_backgrounded: false, task_type: 'local_bash', session_id: sessionId });
   out({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: block.id, content: [{ type: 'text', text: 'Async agent launched successfully.' }] }] }, session_id: sessionId });
   // Message interne du sous-agent : il ne doit PAS apparaître dans la réponse affichée.
   out({ type: 'assistant', parent_tool_use_id: block.id, message: { id: 'msg_sub', role: 'assistant', model: MODEL, content: [{ type: 'text', text: 'TEXTE INTERNE DU SOUS-AGENT' }, { type: 'tool_use', id: 'toolu_sub', name: 'Bash', input: { command: 'sleep 1' } }] }, session_id: sessionId });
   await assistantMessage(`${SIGNATURE} Agent lancé en arrière-plan.`);
-  finish();
-  if (!LIVE) return;
+  out({ type: 'system', subtype: 'task_notification', task_id: `${taskId}-bash`, status: 'completed', session_id: sessionId });
+  if (!LIVE) return finish();
   const delay = Number(/délai\s*:\s*(\d+)/.exec(prompt)?.[1] ?? 1500);
   later(async () => {
     out({ type: 'system', subtype: 'task_notification', task_id: taskId, tool_use_id: block.id, status: 'completed', session_id: sessionId });
@@ -555,7 +610,28 @@ async function bgAgent() {
     await assistantMessage(`${SIGNATURE} Résultat de l'agent d'arrière-plan reçu.`);
     log({ event: 'spontaneous', taskId });
     finish();
-  }, delay);
+  }, delay, taskId);
+  finish();
+}
+
+/** Plusieurs étapes avec outil : un message reçu pendant le tour est lu à l'étape suivante (même tour). */
+async function steps() {
+  rateLimit();
+  const n = Number(/étapes\s*:\s*(\d+)/.exec(prompt)?.[1] ?? 3);
+  const seen = [];
+  for (let i = 1; i <= n; i++) {
+    const block = await assistantMessage(i === 1 ? 'Je commence.' : '', { name: 'Bash', input: { command: `echo étape ${i}` } });
+    await sleep(500);
+    checkInterrupt();
+    out({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: block.id, content: `étape ${i}` }] }, session_id: sessionId });
+    while (injected.length) {
+      const text = injected.shift();
+      seen.push(text);
+      log({ event: 'injected', text, step: i });
+    }
+  }
+  await assistantMessage(`${SIGNATURE} ${n} étapes faites${seen.length ? ` · message reçu en cours de route : ${seen.join(' | ')}` : ''}.`);
+  finish();
 }
 
 async function runScenario() {
@@ -623,6 +699,9 @@ switch (scenario) {
   case 'perm':
     await perm();
     break;
+  case 'steps':
+    await steps();
+    break;
   default:
     die(`Faux Claude : scénario inconnu « ${scenario} »`, 2);
 }
@@ -659,9 +738,21 @@ if (!LIVE) {
         }
         continue;
       }
+      if (msg.type === 'control_request' && msg.request?.subtype === 'interrupt') {
+        log({ event: 'interrupt', during: turnRunning });
+        if (turnRunning) interruptRequested = true;
+        stopBackground();
+        out({ type: 'control_response', response: { subtype: 'success', request_id: msg.request_id, response: { still_queued: [] } } });
+        continue;
+      }
       if (msg.type !== 'user') continue;
       const c = msg.message?.content;
       const text = typeof c === 'string' ? c : Array.isArray(c) ? c.filter((b) => b?.type === 'text').map((b) => b.text).join('\n') : '';
+      // Tour en cours d'un scénario à étapes : le message est lu à l'étape suivante (même tour).
+      if (turnRunning && scenario === 'steps') {
+        injected.push(text);
+        continue;
+      }
       chain = chain.then(async () => {
         turn++;
         prompt = text;
@@ -672,7 +763,24 @@ if (!LIVE) {
         lastText = '';
         logStart(turn);
         systemInit();
-        await runScenario();
+        turnRunning = true;
+        interruptRequested = false;
+        try {
+          await runScenario();
+        } catch (err) {
+          if (!(err instanceof Interrupted)) throw err;
+          out({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] }, session_id: sessionId });
+          out({ type: 'result', subtype: 'error_during_execution', is_error: true, terminal_reason: 'aborted_streaming', duration_ms: Date.now() - started, session_id: sessionId, usage: { input_tokens: 0, output_tokens: 0 } });
+          log({ event: 'end', scenario, interrupted: true });
+        } finally {
+          turnRunning = false;
+          interruptRequested = false;
+          // Messages arrivés trop tard pour ce tour : traités ensuite, chacun comme un tour à part.
+          while (injected.length) {
+            const late = injected.shift();
+            process.stdin.emit('data', `${JSON.stringify({ type: 'user', message: { role: 'user', content: late } })}\n`);
+          }
+        }
       });
     }
   });

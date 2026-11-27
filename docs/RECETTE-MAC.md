@@ -125,4 +125,12 @@ Cas où l'installation automatique est refusée (bouton « Télécharger » manu
 - [ ] Demander à Claude de lancer un agent en arrière-plan : sa réponse se termine tout de suite, bandeau « 1 agent Claude en arrière-plan », on peut écrire ; le résultat de l'agent arrive seul comme nouvelle réponse
 - [ ] Mode « Prudent » : Claude veut créer un fichier → carte « Claude demande l'autorisation » (Autoriser / Toujours / Refuser), aussi sur le téléphone
 - [ ] Menu « ⋯ » › « Continuer dans un terminal » : le Terminal s'ouvre dans le dossier de la discussion avec la même session (`claude --resume`) ; revenir dans le hub et écrire : la session reprend
-- [ ] Menu « ⋯ » › « Redémarrer la session Claude » ; quitter le hub : plus aucun process `claude` dans le Moniteur d'activité
+- [ ] Menu « ⋯ » › « Redémarrer la session Claude » : la session repart (process `claude` remplacé)
+
+## 15. Sessions Claude qui survivent à la fermeture du hub
+- [ ] Demander à Claude une tâche longue (ex. « lance un agent en arrière-plan qui attend 60 s puis réponds ») et quitter le hub pendant la réponse : le process `claude` reste dans le Moniteur d'activité, puis disparaît tout seul une fois son travail fini
+- [ ] Rouvrir le hub : la réponse en cours se réaffiche en entier, avec la mention « Rattrapé : écrit pendant que le hub était fermé » ; le résultat de l'agent arrive comme nouvelle réponse rattrapée
+- [ ] Rouvrir le hub alors que Claude travaille encore : la réponse continue de s'écrire en direct, bandeau « agent en arrière-plan » ; un message écrit pendant ce temps attend dans la file et part dès que Claude a fini (même session)
+- [ ] Quitter le hub sans rien en cours : au redémarrage, aucun doublon, rien de bloqué
+- [ ] Pendant une réponse de Claude à plusieurs étapes, écrire un message puis « ↑ Envoyer maintenant » : il s'affiche avec « Envoyé pendant la réponse », Claude en tient compte à l'étape suivante, la réponse n'est PAS arrêtée, un agent d'arrière-plan continue
+- [ ] Bouton ■ « Arrêter » : la réponse s'arrête tout de suite, le message suivant part sans redémarrer Claude (pas de nouvelle « Session démarrée » dans l'activité)

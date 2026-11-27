@@ -41,6 +41,8 @@ export interface RunContext {
    * (tâches déléguées, étapes de workflow, relevés de limites).
    */
   liveKey?: string;
+  /** Session persistante : identifiant de la réponse du hub (tâche), noté sur disque pour la reprendre après un redémarrage. */
+  liveTag?: string;
   signal: AbortSignal;
   onDelta(text: string): void;
   onActivity(activity: Omit<TaskActivity, 'at'>): void;
