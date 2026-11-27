@@ -105,11 +105,11 @@
           <button type="button" id="usage-btn" class="usage-pill" title="Limites restantes — cliquer pour le détail"></button>
           <div id="usage-menu" class="usage-menu hidden"></div>
         </div>
-        <div class="folder-picker">
-          <button id="folder-btn" class="folder-btn" title="Dossier de travail : filtre les discussions et sert aux nouvelles"><span data-icon="folder"></span> Tous les dossiers ▾</button>
-          <div id="folder-menu" class="folder-menu hidden"></div>
+        <!-- « ● N IA ▾ » : état des IA connectées et des sites web, détail dans le panneau (remplace les pastilles d'IA) -->
+        <div class="ia-picker">
+          <button type="button" id="ia-btn" class="usage-pill ia-pill" title="IA connectées et sites web — cliquer pour le détail"></button>
+          <div id="ia-menu" class="usage-menu ia-menu hidden"></div>
         </div>
-        <div id="provider-pills" class="pills"></div>
       </header>
 
       <!-- Mise à jour disponible / en cours / prête (releases GitHub) -->
@@ -120,6 +120,12 @@
       <section id="view-chat" class="view active">
         <aside class="sidebar">
           <button id="new-conv-btn" class="btn primary block">+ Nouvelle discussion</button>
+          <!-- Filtre de dossier, en tête de la liste qu'il filtre (le dossier choisi sert aussi aux nouvelles discussions) -->
+          <div class="folder-picker list-folder-picker">
+            <button type="button" id="folder-btn" class="folder-btn" data-folder-btn title="Dossier de travail : filtre les discussions et sert aux nouvelles"></button>
+            <div id="folder-menu" class="folder-menu hidden" data-folder-menu></div>
+          </div>
+          <div id="conv-folder-hint" class="folder-hint hidden"></div>
           <div id="conv-list" class="conv-list"></div>
         </aside>
         <div class="chat">
@@ -155,6 +161,12 @@
       <section id="view-workflows" class="view">
         <aside class="sidebar">
           <button id="new-wf-btn" class="btn primary block">+ Nouveau workflow</button>
+          <!-- Même filtre de dossier que les discussions (même dossier actif) -->
+          <div class="folder-picker list-folder-picker">
+            <button type="button" id="wf-folder-btn" class="folder-btn" data-folder-btn title="Dossier de travail : filtre les workflows et sert aux nouveaux"></button>
+            <div id="wf-folder-menu" class="folder-menu hidden" data-folder-menu></div>
+          </div>
+          <div id="wf-folder-hint" class="folder-hint hidden"></div>
           <div id="wf-list" class="conv-list"></div>
         </aside>
         <div id="wf-main" class="wf-main"></div>
@@ -324,7 +336,7 @@
             <span id="settings-status" class="muted"></span>
             <button type="submit" class="btn primary">Enregistrer</button>
           </div>
-          <h2>IA connectées</h2>
+          <h2 id="settings-providers">IA connectées</h2>
           <div id="providers-detail" class="providers-detail"></div>
           <div class="row" style="justify-content: flex-start">
             <button type="button" id="providers-refresh" class="btn ghost">Revérifier</button>

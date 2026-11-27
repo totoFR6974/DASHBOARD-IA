@@ -30,8 +30,8 @@ export async function smokeAgents(shot: (name: string) => Promise<void>, js: (co
   check(!info(providers, 'codex')?.available && !info(providers, 'antigravity')?.available, 'Sans CLI : Codex et Antigravity indisponibles');
   check(info(providers, 'codex')?.setup?.installed === false && !!info(providers, 'antigravity')?.setup?.installCommand, 'Commandes d’installation fournies');
   await wait(400);
-  let pills: string[] = await js(`[...document.querySelectorAll('#provider-pills .pill:not(.web-pill)')].map((p) => p.textContent.trim())`);
-  check(!pills.some((p) => /Codex|Antigravity/.test(p)), `Barre du haut sans Codex ni Antigravity (${pills.join(', ')})`);
+  let pills: string[] = await js(`[...document.querySelectorAll('#ia-menu .ia-row[data-provider] .ia-name')].map((p) => p.textContent.trim())`);
+  check(!pills.some((p) => /Codex|Antigravity/.test(p)), `Barre du haut (panneau « IA ») sans Codex ni Antigravity (${pills.join(', ')})`);
   await js(`(async () => {
     document.querySelector('.tabs button[data-view="settings"], [data-view="settings"]')?.click();
     await new Promise((r) => setTimeout(r, 600));
@@ -50,8 +50,8 @@ export async function smokeAgents(shot: (name: string) => Promise<void>, js: (co
   check(!!info(providers, 'antigravity')?.available, `Antigravity disponible (${info(providers, 'antigravity')?.detail})`);
   check(!!info(providers, 'antigravity')?.models.includes('gemini-3.1-pro-high'), `Modèles d’Antigravity lus (${info(providers, 'antigravity')?.models.join(', ')})`);
   await wait(400);
-  pills = await js(`[...document.querySelectorAll('#provider-pills .pill:not(.web-pill)')].map((p) => p.textContent.trim())`);
-  check(pills.includes('Codex') && pills.includes('Antigravity'), `Barre du haut : Codex et Antigravity (${pills.join(', ')})`);
+  pills = await js(`[...document.querySelectorAll('#ia-menu .ia-row[data-provider] .ia-name')].map((p) => p.textContent.trim())`);
+  check(pills.includes('Codex') && pills.includes('Antigravity'), `Barre du haut (panneau « IA ») : Codex et Antigravity (${pills.join(', ')})`);
 
   const conv: Conversation = await hub.createConversation({ participants: [{ providerId: 'codex' }, { providerId: 'antigravity' }], permission: 'default' });
   const replies = async (n: number) => {

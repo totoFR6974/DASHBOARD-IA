@@ -1189,9 +1189,9 @@ async function smokeWeb(
       console.log(`Panneau ${id} : capture impossible (${err.message})`);
     }
   };
-  // Pastilles de connexion dans la barre du haut (vert = connecté, gris = non connecté).
+  // Sites web du panneau « N IA » de la barre du haut (vert = connecté, gris = non connecté).
   const pills = await js(
-    `[...document.querySelectorAll('.web-pill')].map((p) => p.dataset.web + ':' + (p.querySelector('.dot.on') ? 'connecté' : 'non connecté')).join(', ')`,
+    `[...document.querySelectorAll('#ia-menu .ia-row[data-web]')].map((p) => p.dataset.web + ':' + (p.querySelector('.dot.on') ? 'connecté' : 'non connecté')).join(', ')`,
   );
   console.log(`Pastilles web : ${pills || 'aucune'}`);
   await js(`document.querySelector('[data-view="web"]').click()`);
@@ -1204,11 +1204,25 @@ async function smokeWeb(
     console.log(`${ok ? '  ✔' : '  ✘'} ${label}`);
     if (!ok) failures++;
   };
+  // Panneau « N IA » ouvert dans l'onglet IA web : les sites (vues natives, toujours au-dessus de la page) sont
+  // masqués le temps du panneau, sinon ils le recouvriraient ; Échap le ferme et les sites reviennent.
+  const viewVisible = (id: string): boolean => !!(getWeb() as unknown as { views: Map<string, { getVisible(): boolean }> } | null)?.views.get(id)?.getVisible();
+  const before = viewVisible('chatgpt');
+  await js(`document.getElementById('ia-btn').click()`);
+  await wait(400);
+  const ia = await js(`({ open: !document.getElementById('ia-menu').classList.contains('hidden'), sites: document.querySelectorAll('#ia-menu .ia-row[data-web]').length, label: document.getElementById('ia-btn').textContent.trim() })`);
+  const hiddenWhileOpen = !viewVisible('chatgpt');
+  await shot('6-web-panneau-ia');
+  await js(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))`);
+  await wait(500);
+  const back = viewVisible('chatgpt');
+  console.log(`Panneau IA (onglet IA web) : ${JSON.stringify({ ...ia, before, hiddenWhileOpen, back })}`);
+  check(ia.open && ia.sites === 3 && before && hiddenWhileOpen && back, 'Panneau « IA » au-dessus des sites web (vues masquées pendant le panneau, rétablies après Échap)');
   const layout = () =>
     js(`(() => {
       const area = document.getElementById('web-area');
       const slots = [...document.querySelectorAll('.web-slot')].map((s) => { const r = s.getBoundingClientRect(); return { id: s.dataset.id, x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width) }; });
-      return { tabs: [...document.querySelectorAll('[data-web-tab]')].map((b) => b.dataset.webTab + (b.classList.contains('active') ? '*' : '')), slots, cols: getComputedStyle(area).gridTemplateColumns.split(' ').length, split: !!document.getElementById('web-split'), pills: [...document.querySelectorAll('.web-pill')].map((p) => p.dataset.web) };
+      return { tabs: [...document.querySelectorAll('[data-web-tab]')].map((b) => b.dataset.webTab + (b.classList.contains('active') ? '*' : '')), slots, cols: getComputedStyle(area).gridTemplateColumns.split(' ').length, split: !!document.getElementById('web-split'), pills: [...document.querySelectorAll('#ia-menu .ia-row[data-web]')].map((p) => p.dataset.web) };
     })()`);
   let l = await layout();
   console.log(`IA web : ${JSON.stringify(l)}`);

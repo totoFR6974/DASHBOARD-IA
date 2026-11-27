@@ -127,8 +127,41 @@
 .agents-actions { display: flex; gap: 6px; margin-top: 4px; }
 .agents-foot { border-top: 1px solid var(--line); padding-top: 10px; }
 
-/* ---------- Filtre de dossier visible dans la liste des discussions ---------- */
-.conv-filter-bar { display: flex; align-items: center; gap: 8px; justify-content: space-between; padding: 7px 10px; margin-bottom: 6px; border-radius: 10px; background: rgba(111, 208, 230, 0.08); border: 1px solid rgba(111, 208, 230, 0.25); font-size: 12.5px; }
+/* ---------- Pastille « ● N IA ▾ » et son panneau (barre du haut) ---------- */
+.ia-picker { position: relative; }
+.ia-pill { gap: 8px; }
+.ia-pill.warn { border-color: rgba(242, 177, 76, 0.5); }
+.ia-caret { color: var(--muted); font-size: 11px; }
+.dot.warn { background: var(--warn); box-shadow: 0 0 0 3px rgba(242, 177, 76, 0.16); }
+.ia-menu { width: 330px; gap: 2px; padding: 10px 8px; max-height: 75vh; overflow-y: auto; }
+.ia-section { padding: 6px 8px 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); }
+.ia-sep { height: 1px; background: var(--line); margin: 6px 4px; }
+.ia-row {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-height: 32px; padding: 0 8px; border: 0; border-radius: 9px;
+  background: transparent; color: var(--text); font: inherit; font-size: 13px; text-align: left; cursor: pointer;
+}
+.ia-row:hover, .ia-row:focus-visible { background: rgba(255, 255, 255, 0.06); outline: none; }
+.ia-name { white-space: nowrap; flex-shrink: 0; }
+.ia-detail { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; }
+.ia-settings svg { flex-shrink: 0; }
+
+/* ---------- Filtre de dossier en tête des listes (Discussions, Workflows) ---------- */
+.list-folder-picker { flex-shrink: 0; }
+.list-folder-picker .folder-btn {
+  display: flex; align-items: center; gap: 8px; width: 100%; max-width: none; height: 36px; padding: 0 12px; color: var(--text); font: inherit; font-size: 13px; font-weight: 500;
+}
+.list-folder-picker .folder-btn svg { flex-shrink: 0; }
+.folder-btn-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; }
+.folder-btn-caret { color: var(--muted); font-size: 11px; flex-shrink: 0; }
+.list-folder-picker .folder-btn.filtering { border-color: rgba(243, 122, 50, 0.45); background: var(--accent-soft); }
+.list-folder-picker .folder-btn.open { border-color: rgba(243, 122, 50, 0.6); }
+/* Menu sous le bouton, à la largeur de la colonne ; la colonne passe au premier plan quand il est ouvert
+   (chaque panneau en verre a son propre contexte d'empilement : sans ça, le panneau voisin le recouvrirait). */
+.list-folder-picker .folder-menu { left: 0; right: 0; width: auto; max-height: min(420px, 60vh); overflow-y: auto; transform-origin: top center; }
+.sidebar:has(.folder-menu:not(.hidden)) { position: relative; z-index: 20; }
+.folder-hint { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: -4px; padding: 0 4px; font-size: 12px; color: var(--muted); flex-shrink: 0; }
+.folder-hint-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder-hint .link-btn { flex-shrink: 0; white-space: nowrap; }
 /* Zone de saisie jamais écrasée par les boutons (« Arrêter » + « Mettre en attente » pendant une réponse) : les boutons passent à la ligne. */
 .composer textarea { min-width: 320px; flex: 1 1 320px; }
 .composer-actions { margin-left: auto; }

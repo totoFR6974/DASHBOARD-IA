@@ -141,11 +141,9 @@ body.nav-collapsed .nav-brand { padding: 2px 4px 18px; justify-content: center; 
   font-weight: 500; transition: border-color 0.2s, background 0.2s;
 }
 .folder-btn:hover { border-color: rgba(243, 122, 50, 0.5); background: rgba(255, 255, 255, 0.06); }
-.pills { margin-left: 0; flex-shrink: 0; }
-.pill, .usage-pill, .folder-btn, .search-pill { white-space: nowrap; flex-shrink: 0; }
+.usage-pill, .search-pill { white-space: nowrap; flex-shrink: 0; }
 .search-pill { width: 260px; }
 .search-pill:hover { width: 276px; }
-.folder-btn { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
 .topbar { gap: 8px; }
 /* Barre de titre intégrée : on déplace la fenêtre en faisant glisser les zones vides de la barre du haut (et le logo),
    les boutons natifs de Windows (réduire / agrandir / fermer) sont dessinés à droite : on leur laisse la place. */
@@ -163,16 +161,11 @@ body.platform-mac .topbar { padding-right: 20px; }
 body.platform-mac .nav { position: relative; padding-top: 50px; }
 body.platform-mac.nav-collapsed .nav { padding-top: 50px; }
 body.platform-mac .nav::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 44px; -webkit-app-region: drag; }
-.pills { gap: 6px; }
-.pill { padding: 0 9px; }
 @media (max-width: 1560px) {
   .search-pill { width: 140px; } .search-pill:hover { width: 150px; } .search-pill .kbd-hint { display: none; }
-  .folder-btn { max-width: 170px; }
   .lim-mini-track { width: 28px; }
 }
 @media (max-width: 1280px) { .search-pill span:not(.kbd-hint) { display: none; } .search-pill, .search-pill:hover { width: 38px; padding: 0; justify-content: center; } }
-.pill { height: 30px; padding: 0 11px; border-radius: 10px; background: rgba(255, 255, 255, 0.03); border-color: var(--line); transition: all 0.2s; }
-.pill:hover { border-color: var(--line-strong); background: rgba(255, 255, 255, 0.06); }
 /* Pastille « connecté » : halo fixe (une pulsation permanente sur chaque IA = des repeints sans fin au repos). */
 .dot.on { background: var(--ok); box-shadow: 0 0 0 3px rgba(143, 220, 107, 0.16); }
 @keyframes pulseOk { 0% { box-shadow: 0 0 0 0 rgba(143, 220, 107, 0.5); } 70% { box-shadow: 0 0 0 6px rgba(143, 220, 107, 0); } 100% { box-shadow: 0 0 0 0 rgba(143, 220, 107, 0); } }

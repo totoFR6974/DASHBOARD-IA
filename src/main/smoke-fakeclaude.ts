@@ -464,6 +464,181 @@ export async function smokeFakeClaude(win: BrowserWindow, outDir: string, shot: 
     void hc;
   }
 
+  // ---------- T. Barre du haut : une pastille « N IA », filtre de dossier en tête des listes ----------
+  {
+    // Un agent qui tourne, pour que la pastille « agents en cours » soit là aussi (cas le plus chargé), à 1280 px.
+    const tc = await newConv('FC · barre du haut');
+    const [longId] = await send(tc.id, '[fake:long] réponse longue pendant le test de la barre du haut');
+    const [w0, h0] = win.getContentSize();
+    win.setContentSize(1280, h0);
+    await wait(700);
+    const bar = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      document.querySelector('.tabs button[data-view="chat"]').click();
+      await sleep(400);
+      const top = document.querySelector('.topbar');
+      const tb = top.getBoundingClientRect();
+      const shown = [...top.children].filter((c) => getComputedStyle(c).display !== 'none' && c.getBoundingClientRect().width > 0);
+      const rects = shown.map((c) => c.getBoundingClientRect());
+      const mids = rects.filter((r) => r.height > 0).map((r) => r.top + r.height / 2);
+      const overlaps = rects.some((a, i) => rects.some((b, j) => j > i && a.right > b.left + 1 && b.right > a.left + 1));
+      const right = [...top.querySelectorAll('.agents-picker, .usage-picker, .ia-picker')].filter((c) => c.getBoundingClientRect().width > 0 && !c.querySelector(':scope > button.hidden')).map((c) => c.className);
+      const btn = document.getElementById('ia-btn');
+      const res = {
+        width: innerWidth,
+        oneLine: Math.max(...mids) - Math.min(...mids) <= 4 && tb.height <= 70,
+        inside: rects.every((r) => r.right <= tb.right + 1 && r.left >= tb.left - 1),
+        overlaps,
+        right,
+        agentsShown: !document.getElementById('agents-btn').classList.contains('hidden'),
+        iaPills: top.querySelectorAll('#ia-btn').length,
+        oldPills: document.querySelectorAll('#provider-pills, .pill, .web-pill').length,
+        folderInTop: !!top.querySelector('.folder-picker, #folder-btn'),
+        label: btn.textContent.trim(),
+        dot: btn.querySelector('.dot')?.className,
+      };
+      btn.click();
+      await sleep(350);
+      const menu = document.getElementById('ia-menu');
+      const mr = menu.getBoundingClientRect();
+      res.menuOpen = !menu.classList.contains('hidden');
+      res.menuInside = mr.right <= innerWidth && mr.left >= 0 && mr.bottom <= innerHeight;
+      res.sections = [...menu.querySelectorAll('.ia-section')].map((s) => s.textContent.trim());
+      res.providers = [...menu.querySelectorAll('.ia-row[data-provider]')].map((r) => r.dataset.provider + ':' + r.querySelector('.ia-detail').textContent.trim());
+      res.sites = [...menu.querySelectorAll('.ia-row[data-web]')].map((r) => r.dataset.web + ':' + r.querySelector('.ia-detail').textContent.trim());
+      res.settings = !!menu.querySelector('#ia-settings svg') && /Réglages des IA/.test(menu.querySelector('#ia-settings').textContent);
+      const p = await window.hub.listProviders();
+      res.expected = p.filter((x) => x.available || !x.optional).length;
+      return res;
+    })()`);
+    await shot('fc-barre-haut');
+    const esc = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      await sleep(200);
+      const closedByEscape = document.getElementById('ia-menu').classList.contains('hidden');
+      // Clic ailleurs : ferme aussi.
+      document.getElementById('ia-btn').click();
+      await sleep(200);
+      const reopened = !document.getElementById('ia-menu').classList.contains('hidden');
+      document.getElementById('messages').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      await sleep(200);
+      const closedByClick = document.getElementById('ia-menu').classList.contains('hidden');
+      // « Réglages des IA… » : ouvre Réglages sur la section des IA connectées, panneau fermé.
+      document.getElementById('ia-btn').click();
+      await sleep(200);
+      document.getElementById('ia-settings').click();
+      await sleep(1500);
+      const h2 = document.getElementById('settings-providers').getBoundingClientRect();
+      const settings = document.querySelector('#view-settings.active') !== null && document.getElementById('ia-menu').classList.contains('hidden') && h2.top >= 0 && h2.top < innerHeight;
+      document.querySelector('.tabs button[data-view="chat"]').click();
+      await sleep(400);
+      return { closedByEscape, reopened, closedByClick, settings };
+    })()`);
+    const nRows = (bar?.providers?.length ?? 0) + (bar?.sites?.length ?? 0);
+    check(
+      'T barre du haut : une seule pastille « N IA », plus aucune pastille d’IA ni filtre de dossier en haut',
+      bar?.iaPills === 1 && bar?.oldPills === 0 && bar?.folderInTop === false && new RegExp(`^${nRows} IA`).test(bar?.label ?? ''),
+      bar,
+    );
+    check('T pastille « IA » : point vert (faux Claude, Ollama ou ComfyUI simulé sans souci) ou ambre si une IA a un souci', /dot (on|warn)/.test(bar?.dot ?? ''), bar?.dot);
+    check(
+      'T panneau « IA » : IA connectées (dont Claude) + sites web (ChatGPT, Gemini, Claude) + « Réglages des IA… »',
+      bar?.menuOpen === true &&
+        bar?.menuInside === true &&
+        bar?.sections?.join('|') === 'IA connectées|Sites web' &&
+        bar?.providers?.length === bar?.expected &&
+        bar?.providers?.some((x: string) => x.startsWith('claude:')) &&
+        ['chatgpt', 'gemini', 'claude'].every((id) => bar?.sites?.some((x: string) => x.startsWith(id + ':'))) &&
+        bar?.settings === true,
+      { providers: bar?.providers, sites: bar?.sites, sections: bar?.sections, inside: bar?.menuInside },
+    );
+    check('T barre du haut à 1280 px : une seule ligne, rien ne déborde ni ne se chevauche (agents en cours, limites, IA)', Math.abs((bar?.width ?? 0) - 1280) <= 24 && bar?.oneLine === true && bar?.inside === true && bar?.overlaps === false && bar?.agentsShown === true && bar?.right?.length === 3, bar);
+    check('T panneau « IA » : fermé par Échap et par un clic ailleurs ; « Réglages des IA… » ouvre la section des IA', esc?.closedByEscape === true && esc?.reopened === true && esc?.closedByClick === true && esc?.settings === true, esc);
+
+    // Filtre de dossier en tête de la liste des discussions (et des workflows), fonctionnel.
+    const dirT = join(outDir, 'dossier-barre-haut');
+    mkdirSync(dirT, { recursive: true });
+    const ft = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const f = await window.hub.addFolder(${JSON.stringify(dirT)});
+      const c = await window.hub.createConversation({ cwd: ${JSON.stringify(dirT)} });
+      await window.hub.updateConversation(c.id, { title: 'FC · discussion du dossier T' });
+      await window.hub.setActiveFolder('');
+      await sleep(400);
+      const side = document.querySelector('#view-chat .sidebar');
+      const kids = [...side.children].filter((e) => getComputedStyle(e).display !== 'none');
+      const picker = side.querySelector('.folder-picker');
+      const btn = document.getElementById('folder-btn');
+      const res = {
+        order: kids.map((e) => e.id || e.className),
+        fullWidth: Math.abs(btn.getBoundingClientRect().width - document.getElementById('new-conv-btn').getBoundingClientRect().width) <= 2,
+        wfPicker: !!document.querySelector('#view-workflows .sidebar .folder-picker #wf-folder-btn'),
+        before: document.querySelectorAll('#conv-list .conv-item').length,
+        label0: btn.textContent.trim(),
+      };
+      res.headOfList = kids.indexOf(picker) === kids.findIndex((e) => e.id === 'new-conv-btn') + 1 && kids.indexOf(picker) < kids.findIndex((e) => e.id === 'conv-list');
+      btn.click();
+      await sleep(300);
+      const menu = document.getElementById('folder-menu');
+      const mr = menu.getBoundingClientRect();
+      const br = btn.getBoundingClientRect();
+      res.menuBelow = !menu.classList.contains('hidden') && mr.top >= br.bottom && mr.top - br.bottom < 16 && Math.abs(mr.left - br.left) <= 2;
+      // Pas recouvert : le point au centre de la 1re entrée du menu est bien le menu (pas la liste ni un autre panneau).
+      const first = menu.querySelector('.folder-item');
+      const fr = first.getBoundingClientRect();
+      res.menuOnTop = menu.contains(document.elementFromPoint(fr.left + fr.width / 2, fr.top + fr.height / 2));
+      const item = [...menu.querySelectorAll('.folder-item')].find((e) => e.title === ${JSON.stringify(dirT)});
+      item?.click();
+      await sleep(600);
+      res.filtered = [...document.querySelectorAll('#conv-list .conv-item .conv-title')].map((e) => e.textContent);
+      res.label1 = btn.textContent.trim();
+      res.wfLabel = document.getElementById('wf-folder-btn').textContent.trim();
+      res.hint = document.getElementById('conv-folder-hint').classList.contains('hidden') ? '' : document.getElementById('conv-folder-hint').textContent.trim();
+      res.hintHeight = Math.round(document.getElementById('conv-folder-hint').getBoundingClientRect().height);
+      res.menuClosed = menu.classList.contains('hidden');
+      return res;
+    })()`);
+    await shot('fc-filtre-dossier');
+    const ft2 = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      document.getElementById('folder-btn').click();
+      await sleep(250);
+      [...document.querySelectorAll('#folder-menu .folder-item')].find((e) => e.textContent.includes('Tous les dossiers'))?.click();
+      await sleep(600);
+      return {
+        after: document.querySelectorAll('#conv-list .conv-item').length,
+        label: document.getElementById('folder-btn').textContent.trim(),
+        hintHidden: document.getElementById('conv-folder-hint').classList.contains('hidden'),
+        filterBar: document.querySelectorAll('.conv-filter-bar').length,
+      };
+    })()`);
+    check(
+      'T filtre de dossier : en tête de la liste des discussions (sous « + Nouvelle discussion »), pleine largeur, aussi en tête des workflows',
+      ft?.headOfList === true && ft?.fullWidth === true && ft?.wfPicker === true && /Tous les dossiers/.test(ft?.label0 ?? ''),
+      ft,
+    );
+    check('T filtre de dossier : menu ouvert juste sous le bouton, au premier plan', ft?.menuBelow === true && ft?.menuOnTop === true, ft);
+    check(
+      'T filtre de dossier : choisir un dossier filtre la liste (et les deux boutons), avec « N discussions masquées · Tout afficher » sous le filtre',
+      ft?.menuClosed === true &&
+        ft?.filtered?.length === 1 &&
+        ft?.filtered?.[0] === 'FC · discussion du dossier T' &&
+        /dossier-barre-haut/.test(ft?.label1 ?? '') &&
+        /dossier-barre-haut/.test(ft?.wfLabel ?? '') &&
+        /^\d+ discussions? masquées?\s*Tout afficher$/.test(ft?.hint ?? '') &&
+        ft?.hintHeight > 0 &&
+        ft?.hintHeight < 22,
+      ft,
+    );
+    check('T filtre de dossier : « Tous les dossiers » rétablit toute la liste', ft?.before > 1 && ft2?.after === ft?.before && /Tous les dossiers/.test(ft2?.label ?? '') && ft2?.hintHidden === true && ft2?.filterBar === 0, { before: ft?.before, ...ft2 });
+
+    await js(`window.hub.cancelTask(${JSON.stringify(longId)})`);
+    await waitDone([longId], 30);
+    win.setContentSize(w0, h0);
+    await wait(400);
+  }
+
   // ---------- I. Images citées dans une réponse de Claude : vignettes dans la discussion ----------
   {
     const png = fakeIllustration(2, 64);

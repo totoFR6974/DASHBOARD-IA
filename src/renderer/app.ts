@@ -374,33 +374,35 @@ function fmtGb(bytes: number): string {
 
 // ---------- Barre du haut ----------
 
+/** IA de la barre du haut : les facultatives (Codex, Antigravity) n'apparaissent que lorsqu'elles sont prêtes. */
+function listedProviders(): ProviderInfo[] {
+  return state.providers.filter((p) => p.available || !p.optional);
+}
+
+/** Une IA listée « a un souci » : indisponible, sauf ComfyUI non installé (module facultatif, affiché en gris). */
+function providerHasIssue(p: ProviderInfo): boolean {
+  return !p.available && p.id !== 'comfyui';
+}
+
+/** Détail court à droite d'une ligne du panneau « IA » (le détail complet reste en infobulle). */
+function providerShortDetail(p: ProviderInfo): string {
+  if (!p.available) {
+    if (/non connect/i.test(p.detail)) return 'se connecter';
+    if (/non installé|introuvable/i.test(p.detail)) return 'non installé';
+    if (/injoignable/i.test(p.detail)) return 'injoignable';
+    return p.detail.split(' — ')[0];
+  }
+  // ComfyUI : nom du modèle d'image actif (début du détail) ; ailleurs : modèle par défaut, sinon abonnement / version.
+  if (p.id === 'comfyui') return p.detail.split(/ \(| · /)[0];
+  const model = p.defaultModel && p.defaultModel !== 'default' ? p.defaultModel : '';
+  return model || p.detail.split(' · ').slice(1).join(' · ') || p.detail;
+}
+
+/** sig : état déjà affiché (renderPills est appelé à chaque événement de tâche : on ne refait la pastille que si les IA ou les sites changent). */
+const iaUi = { open: false, sig: '' };
+
 function renderPills(): void {
-  // IA facultatives (Codex, Antigravity) : pastille seulement quand elles sont prêtes.
-  const providerPills = state.providers.filter((p) => p.available || !p.optional).map((p) =>
-    h(
-      'span',
-      { class: 'pill', title: `${p.name} — ${p.detail}\n(cliquer pour revérifier)`, onclick: () => void hub.listProviders(true) },
-      // ComfyUI non installé n'est pas une panne : point gris plutôt que rouge.
-      h('span', { class: `dot ${p.available ? 'on' : p.id === 'comfyui' ? 'off' : ''}` }),
-      // Nom court pour garder la barre du haut sur une ligne (nom complet en infobulle).
-      p.name.replace(/\s*\(.*\)$/, '').replace('Claude Code', 'Claude'),
-    ),
-  );
-  const webPills = shownWebPanels().map((p) =>
-    h(
-      'span',
-      {
-        class: 'pill web-pill',
-        'data-web': p.id,
-        title: p.loggedIn ? 'Connecté' : 'Non connecté — cliquer pour ouvrir',
-        onclick: () => openWebPanel(p.id),
-      },
-      h('span', { class: `dot ${p.loggedIn ? 'on' : 'off'}` }),
-      // « Claude » existe déjà à gauche (Claude Code) : le site est nommé « Claude web » ici.
-      p.id === 'claude' ? 'Claude web' : p.name,
-    ),
-  );
-  $('provider-pills').replaceChildren(...providerPills, ...(webPills.length ? [h('span', { class: 'pill-sep' }), ...webPills] : []));
+  renderIaPill();
   // Les étapes manuelles ('waiting') ne comptent pas comme « en cours ».
   const running = [...state.tasks.values()].filter((t) => t.status === 'running').length;
   const badge = $('running-badge');
@@ -408,6 +410,107 @@ function renderPills(): void {
   badge.classList.toggle('hidden', running === 0);
   renderWfBadge();
   renderAgentsPill();
+}
+
+/** Pastille « ● N IA ▾ » : vert si toutes les IA listées répondent, ambre si l'une a un souci. */
+function renderIaPill(): void {
+  const providers = listedProviders();
+  const sites = shownWebPanels();
+  const sig = JSON.stringify([providers.map((p) => [p.id, p.name, p.available, p.detail, p.defaultModel]), sites.map((p) => [p.id, p.name, p.loggedIn])]);
+  if (sig === iaUi.sig) return;
+  iaUi.sig = sig;
+  const issues = providers.filter(providerHasIssue);
+  const btn = $('ia-btn');
+  btn.classList.toggle('warn', issues.length > 0);
+  btn.replaceChildren(h('span', { class: `dot ${issues.length ? 'warn' : 'on'}` }), `${providers.length + sites.length} IA`, h('span', { class: 'ia-caret' }, '▾'));
+  btn.title = issues.length
+    ? `À vérifier : ${issues.map((p) => p.name).join(', ')} — cliquer pour le détail`
+    : 'IA connectées et sites web — cliquer pour le détail';
+  // Le panneau est toujours rendu (caché quand il est fermé) : il reste à jour à chaque changement d'IA ou de site.
+  renderIaMenu();
+}
+
+function renderIaMenu(): void {
+  const row = (attrs: Record<string, string>, dot: string, name: string, detail: string, title: string, onclick: () => void) =>
+    h(
+      'button',
+      { type: 'button', class: 'ia-row', title, onclick, ...attrs },
+      h('span', { class: `dot ${dot}` }),
+      h('span', { class: 'ia-name' }, name),
+      h('span', { class: 'ia-detail' }, detail),
+    );
+  const sites = shownWebPanels();
+  $('ia-menu').replaceChildren(
+    h('div', { class: 'ia-section' }, 'IA connectées'),
+    ...listedProviders().map((p) =>
+      row(
+        { 'data-provider': p.id },
+        p.available ? 'on' : providerHasIssue(p) ? 'warn' : 'off',
+        // Nom court (« Images (ComfyUI) » → « Images ») : le nom complet est dans l'infobulle.
+        p.name.replace(/\s*\(.*\)$/, ''),
+        providerShortDetail(p),
+        `${p.name} — ${p.detail}\n(cliquer pour revérifier)`,
+        () => {
+          toggleIaMenu(false);
+          void hub.listProviders(true);
+        },
+      ),
+    ),
+    ...(sites.length
+      ? [
+          h('div', { class: 'ia-sep' }),
+          h('div', { class: 'ia-section' }, 'Sites web'),
+          ...sites.map((p) =>
+            row(
+              { 'data-web': p.id },
+              p.loggedIn ? 'on' : 'off',
+              // « Claude » existe déjà au-dessus (Claude Code) : le site est nommé « Claude web » ici.
+              p.id === 'claude' ? 'Claude web' : p.name,
+              p.loggedIn ? 'connecté' : 'non connecté',
+              p.loggedIn ? `${p.name} — connecté (cliquer pour ouvrir)` : `${p.name} — non connecté (cliquer pour ouvrir)`,
+              () => {
+                toggleIaMenu(false);
+                openWebPanel(p.id);
+              },
+            ),
+          ),
+        ]
+      : []),
+    h('div', { class: 'ia-sep' }),
+    h('button', { type: 'button', class: 'ia-row ia-settings', id: 'ia-settings', onclick: () => openProviderSettings() }, icon('gear'), h('span', { class: 'ia-name' }, 'Réglages des IA…')),
+  );
+}
+
+function toggleIaMenu(force?: boolean): void {
+  const open = force ?? !iaUi.open;
+  if (open === iaUi.open && force !== undefined) return;
+  iaUi.open = open;
+  $('ia-menu').classList.toggle('hidden', !open);
+  $('ia-btn').classList.toggle('open', open);
+  if (open) webPanels.layout([]); // les sites web (vues natives) masqueraient le panneau
+  else sendWebLayout();
+}
+
+/** Réglages › IA connectées (fermeture du panneau, ouverture des Réglages, défilement jusqu'à la section). */
+function openProviderSettings(): void {
+  toggleIaMenu(false);
+  setView('settings');
+  // Les Réglages se remplissent en plusieurs temps (cartes des modules, accès de Claude, rôles…) et la section des IA
+  // est en bas : on la recale quelques fois pendant le chargement, sauf si l'utilisateur fait défiler entre-temps.
+  const box = $('view-settings');
+  let userScrolled = false;
+  const stop = () => (userScrolled = true);
+  box.addEventListener('wheel', stop, { passive: true });
+  box.addEventListener('keydown', stop);
+  for (const delay of [0, 250, 600, 1100]) {
+    setTimeout(() => {
+      if (!userScrolled && state.view === 'settings') $('settings-providers').scrollIntoView({ block: 'start' });
+    }, delay);
+  }
+  setTimeout(() => {
+    box.removeEventListener('wheel', stop);
+    box.removeEventListener('keydown', stop);
+  }, 1300);
 }
 
 // ---------- Agents en cours (barre du haut) ----------
@@ -537,15 +640,58 @@ function visibleConversations(): Conversation[] {
   return f ? state.conversations.filter((c) => normPath(c.cwd) === normPath(f.path)) : state.conversations;
 }
 
+/**
+ * Filtres de dossier en tête des listes (Discussions, Workflows) : une seule logique, rendue dans chaque
+ * emplacement ([data-folder-btn] + son [data-folder-menu] voisin). Le dossier actif est commun aux deux listes.
+ */
+function folderButtons(): HTMLButtonElement[] {
+  return [...document.querySelectorAll<HTMLButtonElement>('[data-folder-btn]')];
+}
+
+function folderMenuOf(btn: HTMLElement): HTMLElement | null {
+  return btn.closest('.folder-picker')?.querySelector<HTMLElement>('[data-folder-menu]') ?? null;
+}
+
 function renderFolderButton(): void {
   const f = activeFolder();
-  const btn = $('folder-btn');
-  btn.replaceChildren(iconText('folder', `${f ? f.name : 'Tous les dossiers'} ▾`));
-  btn.title = f ? `${f.path}\nLes nouvelles discussions seront créées ici.` : 'Toutes les discussions, quel que soit leur dossier';
+  for (const btn of folderButtons()) {
+    btn.classList.toggle('filtering', !!f);
+    btn.replaceChildren(icon('folder'), h('span', { class: 'folder-btn-name' }, f ? f.name : 'Tous les dossiers'), h('span', { class: 'folder-btn-caret' }, '▾'));
+    btn.title = f ? `${f.path}\nLes nouvelles discussions et les nouveaux workflows seront créés ici.` : 'Tout afficher, quel que soit le dossier (cliquer pour filtrer)';
+  }
+}
+
+/**
+ * Ligne discrète sous le filtre quand il masque des éléments (« 3 discussions masquées · Tout afficher ») :
+ * le nom du dossier est déjà sur le bouton juste au-dessus, on garde seulement ce qui manque — la liste est filtrée.
+ */
+function renderFolderHint(id: string, hidden: number, noun: 'discussion' | 'workflow'): void {
+  const el = $(id);
+  const show = !!activeFolder() && hidden > 0;
+  el.classList.toggle('hidden', !show);
+  if (!show) return void el.replaceChildren();
+  const s = hidden > 1 ? 's' : '';
+  const e = noun === 'discussion' ? 'e' : '';
+  el.replaceChildren(
+    h('span', { class: 'folder-hint-text' }, `${hidden} ${noun}${s} masqué${e}${s}`),
+    h('button', { type: 'button', class: 'link-btn', onclick: () => void hub.setActiveFolder('') }, 'Tout afficher'),
+  );
 }
 
 function closeFolderMenu(): void {
-  $('folder-menu').classList.add('hidden');
+  document.querySelectorAll('[data-folder-menu]').forEach((m) => m.classList.add('hidden'));
+  folderButtons().forEach((b) => b.classList.remove('open'));
+}
+
+function toggleFolderMenu(btn: HTMLElement): void {
+  const menu = folderMenuOf(btn);
+  if (!menu) return;
+  const wasOpen = !menu.classList.contains('hidden');
+  closeFolderMenu();
+  if (wasOpen) return;
+  renderFolderMenu(menu);
+  menu.classList.remove('hidden');
+  btn.classList.add('open');
 }
 
 async function addFolderFlow(): Promise<WorkFolder | null> {
@@ -559,8 +705,7 @@ async function addFolderFlow(): Promise<WorkFolder | null> {
   }
 }
 
-function renderFolderMenu(): void {
-  const menu = $('folder-menu');
+function renderFolderMenu(menu: HTMLElement): void {
   const item = (id: string, name: string, path: string | null, preset: boolean, removable: boolean) =>
     h(
       'div',
@@ -616,7 +761,7 @@ function onFolders(folders: WorkFolder[], activeFolderId: string): void {
   state.folders = folders;
   state.activeFolderId = activeFolderId;
   renderFolderButton();
-  if (!$('folder-menu').classList.contains('hidden')) renderFolderMenu();
+  document.querySelectorAll<HTMLElement>('[data-folder-menu]:not(.hidden)').forEach((m) => renderFolderMenu(m));
   if (changed) {
     // La discussion ouverte n'est plus dans le dossier choisi : on ouvre la plus récente de ce dossier.
     const visible = visibleConversations();
@@ -820,27 +965,16 @@ function fillModelSelect(select: HTMLSelectElement, providerId: string, current?
 function renderConvList(): void {
   const list = $('conv-list');
   const convs = visibleConversations();
-  // Filtre de dossier actif : on le DIT (sinon des discussions semblent avoir disparu), avec « Tout afficher ».
+  // Filtre de dossier actif : on le DIT sous le filtre (sinon des discussions semblent avoir disparu).
   const f = activeFolder();
-  const hidden = state.conversations.length - convs.length;
-  const filterBar =
-    f && hidden > 0
-      ? h(
-          'div',
-          { class: 'conv-filter-bar', title: `Seules les discussions du dossier « ${f.path} » sont affichées` },
-          h('span', {}, iconText('folder', `${f.name} · ${hidden} autre${hidden > 1 ? 's' : ''} masquée${hidden > 1 ? 's' : ''}`, 13)),
-          h('button', { type: 'button', class: 'link-btn', onclick: () => void hub.setActiveFolder('') }, 'Tout afficher'),
-        )
-      : null;
+  renderFolderHint('conv-folder-hint', state.conversations.length - convs.length, 'discussion');
   if (convs.length === 0) {
     list.replaceChildren(
-      ...(filterBar ? [filterBar] : []),
       h('div', { class: 'muted', style: 'padding:10px;font-size:13px' }, f ? `Aucune discussion dans « ${f.name} ».` : 'Aucune discussion pour le moment.'),
     );
     return;
   }
   list.replaceChildren(
-    ...(filterBar ? [filterBar] : []),
     ...convs.map((c) =>
       h(
         'div',
@@ -1923,6 +2057,7 @@ function renderWfBadge(): void {
 function renderWorkflowList(): void {
   const list = $('wf-list');
   const runs = visibleRuns();
+  renderFolderHint('wf-folder-hint', state.workflows.length - runs.length, 'workflow');
   if (runs.length === 0) {
     const f = activeFolder();
     list.replaceChildren(h('div', { class: 'muted', style: 'padding:10px;font-size:13px' }, f ? `Aucun workflow dans « ${f.name} ».` : 'Aucun workflow pour le moment.'));
@@ -5205,6 +5340,17 @@ function bindShell(): void {
     e.stopPropagation();
     toggleAgentsMenu();
   });
+  // Panneau « N IA » : fermé par un clic ailleurs, Échap, ou après une action (revérifier, ouvrir un site, réglages).
+  $('ia-btn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleIaMenu();
+  });
+  document.addEventListener('mousedown', (e) => {
+    if (iaUi.open && !(e.target as HTMLElement).closest('.ia-picker')) toggleIaMenu(false);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && iaUi.open) toggleIaMenu(false);
+  });
   document.addEventListener('mousedown', (e) => {
     if (agentsUi.open && !(e.target as HTMLElement).closest('.agents-picker')) toggleAgentsMenu(false);
   });
@@ -5292,14 +5438,12 @@ function bindUi(): void {
   $('role-add').addEventListener('click', () => addRole());
   $<HTMLSelectElement>('planner-select').addEventListener('change', (e) => (state.plannerDraft = (e.target as HTMLSelectElement).value));
 
-  $('folder-btn').addEventListener('click', (e) => {
-    e.stopPropagation();
-    const menu = $('folder-menu');
-    if (menu.classList.contains('hidden')) {
-      renderFolderMenu();
-      menu.classList.remove('hidden');
-    } else closeFolderMenu();
-  });
+  for (const btn of folderButtons()) {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleFolderMenu(btn);
+    });
+  }
   document.addEventListener('click', (e) => {
     if (!(e.target as HTMLElement).closest('.folder-picker')) closeFolderMenu();
   });

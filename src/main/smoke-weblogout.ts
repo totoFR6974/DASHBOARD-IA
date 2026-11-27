@@ -53,7 +53,7 @@ export async function smokeWebLogout(
     console.log(`${ok ? 'OK   ' : 'ÉCHEC'} ${label}${detail ? ` — ${detail}` : ''}`);
     if (!ok) failed++;
   };
-  const pillOn = (id: string): Promise<boolean> => js(`!!document.querySelector('.web-pill[data-web="${id}"] .dot.on')`);
+  const pillOn = (id: string): Promise<boolean> => js(`!!document.querySelector('#ia-menu .ia-row[data-web="${id}"] .dot.on')`);
   const waitPill = async (id: string, on: boolean, ms = 10000) => {
     const t0 = Date.now();
     while (Date.now() - t0 < ms) {
