@@ -111,3 +111,11 @@ Cas où l'installation automatique est refusée (bouton « Télécharger » manu
 - [ ] « Arrêter » une réponse avec des messages en attente : la file se met en pause (rien ne part tout seul)
 - [ ] Barre du haut : « N agents en cours » dès qu'une tâche tourne ; le panneau liste chaque agent (discussion, délégation, workflow), « Ouvrir » et « Arrêter »
 - [ ] Un dossier choisi en haut : la liste des discussions affiche « 📁 <dossier> · N autres masquées » avec « Tout afficher »
+
+## 13. Interface (alpha.16)
+- [ ] Barre du haut : agents en cours, limites, « ● N IA ▾ » (panneau : IA connectées, sites web, Réglages des IA…) ; filtre de dossier en tête de la liste des discussions
+- [ ] En-tête de discussion sur une ligne : autorisation (« Tout autorisé » en ambre), dossier, base, menu « ⋯ » (ouvrir le dossier, ouvrir dans Obsidian, renommer, supprimer)
+- [ ] Icônes du hub partout (plus d'emojis), police Inter aussi sur le téléphone
+- [ ] Statistiques : les chiffres changent sans que l'onglet clignote
+- [ ] Une image citée par Claude (chemin complet) s'affiche en vignette sous sa réponse
+- [ ] Téléphone : puce « Claude · modèle ▾ » au-dessus de la saisie, panneau « Qui répond ? »
