@@ -7,7 +7,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { statfs } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import type { ImageEngineStatus, ImageModelInfo, PlannedDownload } from '../shared/types';
 import { IMAGE_PRESETS, imagePreset, presetSize, type ImageModelFile, type ImageModelPreset } from './image-models';
 import { killProcessTree, macAppPath } from './platform';
@@ -24,10 +24,10 @@ export function comfyUrlCandidates(platform: NodeJS.Platform = process.platform)
 export const COMFY_DESKTOP_URL = 'https://www.comfy.org/download';
 /** Message quand un dossier ComfyUI choisi n'est pas valide. */
 export const COMFY_DIR_HINT = IS_MAC
-  ? 'Ce dossier n’est pas un dossier ComfyUI (il faut un sous-dossier « models », comme dans Documents/ComfyUI de ComfyUI Desktop)'
+  ? 'Ce dossier n’est pas un dossier ComfyUI (il faut un sous-dossier « models », comme dans ComfyUI-Installs/ComfyUI de Comfy Desktop)'
   : 'Ce dossier ne contient pas ComfyUI portable (il faut python_embeded\\python.exe et ComfyUI\\main.py)';
 const MAC_NO_COMFY =
-  'sur Mac, installe d’abord ComfyUI Desktop (gratuit, comfy.org/download), ouvre-le une fois pour terminer sa configuration, puis réessaie (ou choisis son dossier ci-dessus)';
+  'sur Mac, installe d’abord ComfyUI Desktop (gratuit, comfy.org/download) et laisse-le OUVERT (ComfyUI « Running ») : le hub trouve alors son dossier tout seul. Sinon, « Utiliser un ComfyUI déjà installé » et choisis son dossier (celui qui contient « models »)';
 const UA = { 'User-Agent': 'hub-ia' };
 const RELEASE_API = 'https://api.github.com/repos/Comfy-Org/ComfyUI/releases/latest';
 /** Modèle installé par défaut avec ComfyUI (le meilleur préréglage). */
@@ -74,12 +74,37 @@ export class ImageEngine {
    * macOS : celui choisi, sinon le dossier de ComfyUI Desktop (contient models/).
    */
   root(): string | null {
-    return this.customRoot() ?? (IS_MAC ? detectComfyDesktopBase() : findComfyRoot(this.dir));
+    return this.customRoot() ?? (IS_MAC ? (detectComfyDesktopBase() ?? this.serverRoot) : findComfyRoot(this.dir));
   }
 
   /** Dossier réellement utilisé (pour l'affichage et l'espace disque). */
   activeDir(): string {
-    return this.customRoot() ?? (IS_MAC ? (detectComfyDesktopBase() ?? this.dir) : this.dir);
+    return this.customRoot() ?? (IS_MAC ? (detectComfyDesktopBase() ?? this.serverRoot ?? this.dir) : this.dir);
+  }
+
+  /**
+   * macOS : dossier du serveur ComfyUI qui tourne (ComfyUI Desktop ouvert, quelle que soit sa version), lu dans
+   * sa ligne de commande (/system_stats → system.argv : --base-directory, sinon le dossier de main.py).
+   */
+  private serverRoot: string | null = null;
+
+  async refreshServerRoot(): Promise<string | null> {
+    if (!IS_MAC) return null;
+    for (const url of [this.url, ...comfyUrlCandidates().filter((u) => u !== this.url)]) {
+      try {
+        const res = await fetch(`${url}/system_stats`, { signal: AbortSignal.timeout(2000) });
+        if (!res.ok) continue;
+        const found = comfyRootFromSystemStats(await res.json());
+        if (found) {
+          this.serverRoot = found;
+          this.url = url;
+          return found;
+        }
+      } catch {
+        /* port suivant */
+      }
+    }
+    return this.serverRoot;
   }
 
   /** Serveur ComfyUI utilisé (Mac : celui qui a répondu, ComfyUI Desktop par défaut). */
@@ -200,6 +225,12 @@ export class ImageEngine {
 
   /** État complet : calcule (une fois) les téléchargements prévus si ComfyUI n'est pas installé. */
   async status(): Promise<ImageEngineStatus> {
+    // Mac : ComfyUI Desktop ouvert mais installé ailleurs que prévu → son serveur dit où il est.
+    if (IS_MAC && !this.customRoot() && !detectComfyDesktopBase()) {
+      const before = this.serverRoot;
+      await this.refreshServerRoot();
+      if (this.serverRoot && this.serverRoot !== before) this.planned = null;
+    }
     await this.refreshFreeSpace();
     if (!this.installed() && !this.planned && !this.installing) {
       try {
@@ -257,6 +288,7 @@ export class ImageEngine {
     if (!preset) throw new Error(`Modèle d'image inconnu : ${id}`);
     if (this.installing) throw new Error('Installation déjà en cours');
     // Mac : ComfyUI lui-même n'est jamais installé par le hub (seulement les modèles, dans le dossier de ComfyUI Desktop).
+    if (IS_MAC && !this.root()) await this.refreshServerRoot();
     if (IS_MAC && !this.root()) {
       this.lastError = `Installation impossible : ${MAC_NO_COMFY}`;
       this.push(true);
@@ -544,21 +576,61 @@ export function findComfyRoot(dir: string, platform: NodeJS.Platform = process.p
 }
 
 /**
- * macOS : dossier de base de ComfyUI Desktop (celui qui contient models/, user/, input/, output/…).
- * Lu dans sa configuration (~/Library/Application Support/ComfyUI/config.json, clé « basePath »), sinon
- * l'emplacement proposé par défaut à l'installation (~/Documents/ComfyUI). null s'il est introuvable.
+ * macOS : dossier de base de ComfyUI Desktop (celui qui contient models/, user/, input/, output/…), dans l'ordre :
+ * - configuration de l'appli (~/Library/Application Support/<ComfyUI | Comfy Desktop | ComfyUI Desktop>/config.json,
+ *   clé « basePath ») ;
+ * - installations de « Comfy Desktop » (versions 2026 : ~/ComfyUI-Installs/<nom>, ou un de ses sous-dossiers) ;
+ * - l'emplacement historique proposé à l'installation (~/Documents/ComfyUI).
+ * null s'il est introuvable (le serveur en marche peut encore le dire : comfyRootFromSystemStats).
  */
 export function detectComfyDesktopBase(home: string = homedir(), platform: NodeJS.Platform = process.platform): string | null {
   if (platform !== 'darwin') return null;
   const candidates: string[] = [];
+  for (const app of ['ComfyUI', 'Comfy Desktop', 'ComfyUI Desktop']) {
+    try {
+      const cfg = JSON.parse(readFileSync(join(home, 'Library', 'Application Support', app, 'config.json'), 'utf8'));
+      if (typeof cfg?.basePath === 'string' && cfg.basePath) candidates.push(cfg.basePath);
+    } catch {
+      /* pas de config pour ce nom d'appli */
+    }
+  }
   try {
-    const cfg = JSON.parse(readFileSync(join(home, 'Library', 'Application Support', 'ComfyUI', 'config.json'), 'utf8'));
-    if (typeof cfg?.basePath === 'string' && cfg.basePath) candidates.push(cfg.basePath);
+    const installs = join(home, 'ComfyUI-Installs');
+    const dirs = readdirSync(installs, { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.startsWith('.'));
+    // « ComfyUI » (installation par défaut) d'abord, puis les autres par ordre alphabétique.
+    dirs.sort((a, b) => (a.name === 'ComfyUI' ? -1 : b.name === 'ComfyUI' ? 1 : a.name.localeCompare(b.name)));
+    for (const e of dirs) candidates.push(join(installs, e.name));
   } catch {
-    /* pas de config (ComfyUI Desktop jamais lancé) : emplacement par défaut */
+    /* pas d'installation « Comfy Desktop » */
   }
   candidates.push(join(home, 'Documents', 'ComfyUI'));
-  for (const c of candidates) if (findComfyRoot(c, platform) === c) return c;
+  for (const c of candidates) {
+    const root = findComfyRoot(c, platform);
+    if (root) return root;
+  }
+  return null;
+}
+
+/**
+ * Dossier ComfyUI d'un serveur qui tourne, d'après /system_stats (system.argv) : --base-directory s'il est donné
+ * (ComfyUI Desktop), sinon le dossier de main.py. Vérifié (models/ présent) ; null sinon.
+ */
+export function comfyRootFromSystemStats(stats: any, platform: NodeJS.Platform = process.platform): string | null {
+  const argv: unknown = stats?.system?.argv;
+  if (!Array.isArray(argv)) return null;
+  const args = argv.map((a) => String(a ?? ''));
+  const candidates: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const m = /^--base-directory(?:=(.+))?$/.exec(args[i]);
+    if (m) candidates.push(m[1] ?? args[i + 1] ?? '');
+  }
+  const main = args.find((a) => /[\\/]main\.py$/.test(a));
+  if (main) candidates.push(main.replace(/[\\/]main\.py$/, ''));
+  for (const c of candidates) {
+    if (!c || !isAbsolute(c)) continue;
+    const root = findComfyRoot(c, platform);
+    if (root === c) return root;
+  }
   return null;
 }
 

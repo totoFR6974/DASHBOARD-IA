@@ -36,7 +36,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { delimiter } from 'node:path';
-import { comfyUrlCandidates, detectComfyDesktopBase, findComfyRoot } from '../src/main/image-engine';
+import { comfyRootFromSystemStats, comfyUrlCandidates, detectComfyDesktopBase, findComfyRoot } from '../src/main/image-engine';
 import { checkComfySignature, COMFY_DESKTOP_DMG_APPROX_BYTES, COMFY_DESKTOP_DMG_URL, comfyDesktopApp, isComfyDmgUrl, parseCodesignInfo, parseSpctl, pickComfyApp } from '../src/main/comfy-desktop-mac';
 import { imagePreset, macImageAdvice } from '../src/main/image-models';
 import { checkOpenPath, clipboardReadAllowed, isInsideRoots, isRealPathInside, mainWindowPermission, safeExternalUrl } from '../src/main/path-guard';
@@ -255,6 +255,31 @@ try {
   mkdirSync(join(tmp, 'Library', 'Application Support', 'ComfyUI'), { recursive: true });
   writeFileSync(join(tmp, 'Library', 'Application Support', 'ComfyUI', 'config.json'), JSON.stringify({ basePath: custom }));
   check(detectComfyDesktopBase(tmp, 'darwin') === custom, 'basePath de la config de ComfyUI Desktop prioritaire');
+
+  // « Comfy Desktop » 2026 : installations dans ~/ComfyUI-Installs/<nom> (cas réel signalé sur Mac).
+  const tmp2 = mkdtempSync(join(tmpdir(), 'hub-ia-plat2-'));
+  try {
+    check(detectComfyDesktopBase(tmp2, 'darwin') === null, 'rien d’installé : aucune détection');
+    const inst = join(tmp2, 'ComfyUI-Installs', 'ComfyUI');
+    mkdirSync(join(inst, 'models'), { recursive: true });
+    writeFileSync(join(inst, 'main.py'), '');
+    check(detectComfyDesktopBase(tmp2, 'darwin') === inst, 'Comfy Desktop : ~/ComfyUI-Installs/ComfyUI détecté');
+    const nested = join(tmp2, 'ComfyUI-Installs', 'Autre', 'ComfyUI');
+    mkdirSync(join(nested, 'models'), { recursive: true });
+    mkdirSync(join(nested, 'custom_nodes'));
+    rmSync(inst, { recursive: true, force: true });
+    check(detectComfyDesktopBase(tmp2, 'darwin') === nested, 'Comfy Desktop : installation au nom libre, ComfyUI dans un sous-dossier');
+    mkdirSync(join(tmp2, 'Library', 'Application Support', 'Comfy Desktop'), { recursive: true });
+    writeFileSync(join(tmp2, 'Library', 'Application Support', 'Comfy Desktop', 'config.json'), JSON.stringify({ basePath: custom }));
+    check(detectComfyDesktopBase(tmp2, 'darwin') === custom, 'config de « Comfy Desktop » (nouveau nom) lue aussi');
+    // Serveur en marche : son dossier lu dans /system_stats (argv).
+    check(comfyRootFromSystemStats({ system: { argv: [join(nested, 'main.py'), '--port', '8188'] } }, 'darwin') === nested, 'serveur : dossier de main.py');
+    check(comfyRootFromSystemStats({ system: { argv: ['main.py', '--base-directory', custom, '--port', '8000'] } }, 'darwin') === custom, 'serveur : --base-directory prioritaire');
+    check(comfyRootFromSystemStats({ system: { argv: [`--base-directory=${custom}`] } }, 'darwin') === custom, 'serveur : --base-directory=…');
+    check(comfyRootFromSystemStats({ system: { argv: [join(tmp2, 'nulle-part', 'main.py')] } }, 'darwin') === null && comfyRootFromSystemStats({}, 'darwin') === null && comfyRootFromSystemStats({ system: { argv: ['relatif/main.py'] } }, 'darwin') === null, 'serveur : dossier inexistant, réponse vide ou chemin relatif → rien');
+  } finally {
+    rmSync(tmp2, { recursive: true, force: true });
+  }
 } finally {
   rmSync(tmp, { recursive: true, force: true });
 }
