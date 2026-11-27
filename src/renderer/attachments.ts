@@ -3,7 +3,7 @@
 // nom assaini) ; images en miniatures (protocole hub-file), autres fichiers en puces (icône, nom, taille), avec ce que
 // chaque IA cochée en fera. Puces cliquables dans les bulles envoyées. Contient aussi la carte Réglages › Modèle vision.
 import type { AgentRole, AttachmentInfo, Conversation, HubApi, HubEvent, Participant, ProviderInfo, SetupProgress, SetupStatus } from '../shared/types';
-import { icon } from './icons';
+import { icon, type IconName } from './icons';
 import { cachedModule, moduleButton, onModuleChange } from './module-offer';
 
 type H = <K extends keyof HTMLElementTagNameMap>(tag: K, attrs?: Record<string, any>, ...children: (Node | string | null | undefined | false)[]) => HTMLElementTagNameMap[K];
@@ -296,7 +296,7 @@ function visionNotes(conv: Conversation): HTMLElement[] {
           h(
             'div',
             { class: 'attach-note warn' },
-            h('span', {}, `🖼 ${p.model ?? 'Le modèle Ollama choisi'} ne voit pas les images : ce message sera envoyé au modèle vision `, h('b', {}, chosen), '.'),
+            h('span', {}, icon('eye', 13), ` ${p.model ?? 'Le modèle Ollama choisi'} ne voit pas les images : ce message sera envoyé au modèle vision `, h('b', {}, chosen), '.'),
             h(
               'button',
               {
@@ -314,7 +314,7 @@ function visionNotes(conv: Conversation): HTMLElement[] {
           h(
             'div',
             { class: 'attach-note error' },
-            h('span', {}, `⚠️ ${p.model ?? 'Ce modèle'} ne voit pas les images et aucun modèle vision n'est installé : Ollama ne pourra pas répondre sur l'image.`),
+            h('span', {}, icon('warn', 13), ` ${p.model ?? 'Ce modèle'} ne voit pas les images et aucun modèle vision n'est installé : Ollama ne pourra pas répondre sur l'image.`),
             // Installation en un clic (taille de la variante conseillée pour ce PC), ou la raison si ce PC est trop juste.
             moduleButton('vision', { label: 'Installer la reconnaissance d’images', onInstalled: () => void deps.hub.listProviders(true).then(() => renderAttachStrip()) }),
             h('button', { type: 'button', class: 'btn ghost small', onclick: () => deps.openVisionSettings() }, 'Autres tailles…'),
@@ -344,28 +344,32 @@ const RISKY_RE =
   /\.(exe|com|bat|cmd|ps1|psm1|psd1|vbs|vbe|js|jse|mjs|cjs|wsf|wsh|wsc|hta|msi|msp|mst|scr|pif|cpl|lnk|url|reg|inf|jar|py|pyw|pyc|appref-ms|application|gadget|msc|settingcontent-ms|library-ms|sct|xll|xlam|sh|bash|zsh|command|tool|app|pkg|mpkg|dmg|scpt|applescript|workflow|desktop|appimage|deb|rpm|run)$/i;
 
 /** Icône d'après le type (si connu) puis l'extension. */
-function fileIcon(path: string, info?: AttachmentInfo): string {
+function fileIcon(path: string, info?: AttachmentInfo): SVGSVGElement {
+  return icon(fileIconName(path, info), 15);
+}
+
+function fileIconName(path: string, info?: AttachmentInfo): IconName {
   const ext = (path.match(/\.([a-z0-9]+)$/i)?.[1] ?? '').toLowerCase();
-  if (info?.kind === 'pdf' || ext === 'pdf') return '📕';
-  if (info?.kind === 'docx' || /^(docx?|odt|rtf)$/.test(ext)) return '📘';
-  if (/^(xlsx?|ods|csv|tsv)$/.test(ext)) return '📊';
-  if (/^(pptx?|odp|key)$/.test(ext)) return '📙';
-  if (/^(zip|7z|rar|tar|gz|tgz|bz2|xz|iso)$/.test(ext)) return '📦';
-  if (/^(mp3|wav|ogg|flac|m4a|aac|opus)$/.test(ext)) return '🎵';
-  if (/^(mp4|mkv|mov|avi|webm|wmv)$/.test(ext)) return '🎬';
-  if (/^(svg|ico|tiff?|heic|avif|psd|bmp|gif|webp)$/.test(ext)) return '🖼️';
-  if (/^(rbxl|rbxlx|rbxm|rbxmx)$/.test(ext)) return '🧱';
-  if (RISKY_RE.test(path) && info?.kind !== 'text') return '⚙️';
-  if (/^(lua|luau|ts|tsx|js|jsx|py|json|html?|css|xml|ya?ml|toml|sh|ps1|c|cpp|h|cs|go|rs|java|rb|php|sql)$/.test(ext)) return '📜';
-  if (info?.kind === 'text' || /^(txt|md|log|ini|cfg|conf)$/.test(ext)) return '📝';
-  return '💾';
+  if (info?.kind === 'pdf' || ext === 'pdf') return 'file';
+  if (info?.kind === 'docx' || /^(docx?|odt|rtf)$/.test(ext)) return 'note';
+  if (/^(xlsx?|ods|csv|tsv)$/.test(ext)) return 'chart';
+  if (/^(pptx?|odp|key)$/.test(ext)) return 'image';
+  if (/^(zip|7z|rar|tar|gz|tgz|bz2|xz|iso)$/.test(ext)) return 'archive';
+  if (/^(mp3|wav|ogg|flac|m4a|aac|opus)$/.test(ext)) return 'music';
+  if (/^(mp4|mkv|mov|avi|webm|wmv)$/.test(ext)) return 'film';
+  if (/^(svg|ico|tiff?|heic|avif|psd|bmp|gif|webp)$/.test(ext)) return 'image';
+  if (/^(rbxl|rbxlx|rbxm|rbxmx)$/.test(ext)) return 'cube';
+  if (RISKY_RE.test(path) && info?.kind !== 'text') return 'gear';
+  if (/^(lua|luau|ts|tsx|js|jsx|py|json|html?|css|xml|ya?ml|toml|sh|ps1|c|cpp|h|cs|go|rs|java|rb|php|sql)$/.test(ext)) return 'code';
+  if (info?.kind === 'text' || /^(txt|md|log|ini|cfg|conf)$/.test(ext)) return 'note';
+  return 'file';
 }
 
 /** Ce que les IA cochées feront de ce fichier, sous sa puce (seulement s'il y a quelque chose à signaler). */
 function fileWarning(conv: Conversation, path: string, info?: AttachmentInfo): HTMLElement | null {
   const { h } = deps;
   if (!info || !conv.participants.some((p) => p.providerId === 'ollama')) return null;
-  if (info.kind === 'binary') return h('div', { class: 'attach-note warn' }, '⚠️ Non lisible par Ollama : seul son nom sera transmis.');
+  if (info.kind === 'binary') return h('div', { class: 'attach-note warn' }, icon('warn', 13), ' Non lisible par Ollama : seul son nom sera transmis.');
   if (info.kind === 'pdf') return h('div', { class: 'attach-note' }, 'Ollama recevra le texte extrait du PDF.');
   return null;
 }
@@ -471,7 +475,7 @@ export function attachmentChips(files: string[] | undefined): HTMLElement | null
             const size = el.querySelector('.fc-size');
             if (size) size.textContent = fmtSize(info.size);
             const icon = el.querySelector('.fc-icon');
-            if (icon) icon.textContent = fileIcon(info.path, info);
+            if (icon) icon.replaceChildren(fileIcon(info.path, info));
           }
         }
       })

@@ -73,7 +73,7 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Record<string,
 function moduleIcon(m: { icon: string } | undefined, size = 18): Node {
   const name = m?.icon ?? '';
   if ((ICON_NAMES as string[]).includes(name)) return icon(name as IconName, size);
-  return el('span', { class: 'mod-emoji', 'aria-hidden': 'true' }, name || '⬇');
+  return name ? el('span', { class: 'mod-emoji', 'aria-hidden': 'true' }, name) : icon('download', size);
 }
 
 function pct(m: ModuleInfo): number | null {
@@ -298,7 +298,7 @@ function openOffer(m: ModuleInfo, opts: { anchor?: HTMLElement | null; variant?:
           ', ensuite tout reste sur ton PC.',
         ),
         el('div', { class: 'mod-offer-meta muted small' }, [cur.variantLabel, `licence ${cur.license}`].filter(Boolean).join(' · ')),
-        error ? el('div', { class: 'mod-error' }, `⚠ ${error}`) : null,
+        error ? el('div', { class: 'mod-error' }, icon('warn', 13), ` ${error}`) : null,
         el(
           'div',
           { class: 'mod-offer-actions' },
@@ -386,7 +386,7 @@ export function moduleHintForError(text: string | undefined): HTMLElement | null
   return el(
     'div',
     { class: 'mod-hint' },
-    el('span', {}, m?.state === 'unavailable' ? `🎨 Les images locales ne sont pas disponibles sur ce PC : ${m.reason ?? ''}` : '🎨 Les images locales (ComfyUI) ne sont pas encore installées sur ce PC.'),
+    el('span', {}, m?.state === 'unavailable' ? `Les images locales ne sont pas disponibles sur ce PC : ${m.reason ?? ''}` : 'Les images locales (ComfyUI) ne sont pas encore installées sur ce PC.'),
     el('button', { type: 'button', class: 'btn small primary mod-hint-open', onclick: () => openModuleCard('images') }, 'Ouvrir « Images locales »'),
   );
 }
@@ -497,9 +497,9 @@ function patchCard(m: ModuleInfo): void {
     el('div', { class: 'mod-usage' }, m.usage),
     el('div', { class: 'mod-meta muted small' }, [size, m.variantLabel, `licence ${m.license}`].filter(Boolean).join(' · ')),
     el('div', { class: 'mod-why muted small' }, `Pour ce PC : ${m.recommendedWhy}.`),
-    m.state === 'unavailable' && m.reason ? el('div', { class: 'mod-reason' }, `⚠ ${m.reason}`) : null,
+    m.state === 'unavailable' && m.reason ? el('div', { class: 'mod-reason' }, icon('warn', 13), ` ${m.reason}`) : null,
     m.note ? el('div', { class: 'mod-note' }, m.note) : null,
-    m.error && m.state !== 'installing' ? el('div', { class: 'mod-error' }, `⚠ ${m.error}`) : null,
+    m.error && m.state !== 'installing' ? el('div', { class: 'mod-error' }, icon('warn', 13), ` ${m.error}`) : null,
     m.state === 'installing' ? progressEl(m) : null,
     el(
       'div',
@@ -563,7 +563,7 @@ async function renderSemanticOptions(box: HTMLElement): Promise<void> {
   ctx.addEventListener('change', () => void deps.hub.setSemanticOptions({ semanticContext: ctx.checked }).catch((e) => deps.toast(cleanErr(e))));
   box.replaceChildren(
     el('label', {}, 'Modèle d’embeddings ', select),
-    el('label', { class: 'check' }, ctx, ' Discussions 📚 avec une IA locale : passages trouvés par le sens plutôt que par mots-clés'),
-    el('p', { class: 'muted small' }, 'L’index est rangé dans les données du hub, jamais dans tes notes. Recherche : onglet Connaissances › 🧠.'),
+    el('label', { class: 'check' }, ctx, ' Discussions avec une IA locale : passages trouvés par le sens plutôt que par mots-clés'),
+    el('p', { class: 'muted small' }, 'L’index est rangé dans les données du hub, jamais dans tes notes. Recherche : onglet Connaissances, bouton « Par le sens ».'),
   );
 }

@@ -2,6 +2,7 @@
 // Enregistré tout de suite (pas besoin du bouton « Enregistrer ») ; les listes n'ont pas d'attribut name, elles
 // restent donc hors du formulaire des réglages.
 import type { WebMicChoice, WebMicInfo, WebPanelsApi } from '../shared/types';
+import { icon } from './icons';
 
 const CHOICES: [WebMicChoice, string][] = [
   ['ask', 'Demander'],
@@ -19,7 +20,7 @@ function box(): HTMLElement {
     set.id = 'webmic-settings';
     set.className = 'info-card';
     const legend = document.createElement('legend');
-    legend.textContent = '🌐 Panneaux web — micro';
+    legend.append(icon('globe'), ' Panneaux web — micro');
     set.append(legend, body);
     // Après la section des modules complémentaires (la dictée y est devenue une carte).
     const after = document.getElementById('modules-settings') ?? document.getElementById('voice-settings');
@@ -86,9 +87,10 @@ export async function renderWebMicSettings(web: WebPanelsApi, toast: (msg: strin
       'p',
       'small',
       mac
-        ? '⚠ macOS bloque le micro pour Hub IA (Réglages Système › Confidentialité et sécurité › Microphone).'
-        : '⚠ Windows bloque le micro pour les applications de bureau (Paramètres › Confidentialité › Microphone) : la dictée des sites ne marchera pas tant qu\'il est coupé.',
+        ? 'macOS bloque le micro pour Hub IA (Réglages Système › Confidentialité et sécurité › Microphone).'
+        : 'Windows bloque le micro pour les applications de bureau (Paramètres › Confidentialité › Microphone) : la dictée des sites ne marchera pas tant qu\'il est coupé.',
     );
+    warn.prepend(icon('warn', 13), ' ');
     const btn = el('button', 'btn ghost small', mac ? 'Ouvrir les Réglages Système' : 'Ouvrir les paramètres Windows') as HTMLButtonElement;
     btn.type = 'button';
     btn.onclick = () => void web.openMicSystemSettings();

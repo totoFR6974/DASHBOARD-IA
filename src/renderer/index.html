@@ -134,7 +134,7 @@
             <textarea id="prompt" rows="3" placeholder="Écris ton message… (Entrée pour envoyer, Maj+Entrée pour aller à la ligne)"></textarea>
             <div class="composer-actions">
               <button type="button" id="stop-btn" class="btn danger hidden">■ Arrêter</button>
-              <button type="button" id="attach-btn" class="btn attach-btn" title="Joindre une image (ou glisse-la ici, ou colle une capture avec Ctrl+V)">📎</button>
+              <button type="button" id="attach-btn" class="btn attach-btn" title="Joindre une image (ou glisse-la ici, ou colle une capture avec Ctrl+V)"><span data-icon="clip"></span></button>
               <button type="button" id="mic-btn" class="btn mic-btn" title="Dictée vocale (Ctrl+Maj+Espace)"><span data-icon="mic"></span></button>
               <button type="button" id="kn-toggle" class="btn kn-toggle" title="Base de connaissances : désactivée"><span data-icon="books"></span></button>
               <div class="effort-picker hidden" id="effort-picker">
@@ -251,7 +251,7 @@
                recherche par le sens, images locales), créées par module-offer.ts. Les anciennes sections séparées
                (Dictée vocale, Modèle vision, Détourage, Images locales) sont devenues les « Options » de ces cartes. -->
           <fieldset id="modules-settings" class="info-card">
-            <legend>⬇ Modules complémentaires</legend>
+            <legend><span data-icon="download"></span> Modules complémentaires</legend>
             <div id="modules-settings-body"></div>
           </fieldset>
           <fieldset>
@@ -261,7 +261,7 @@
               <select name="claudePermission">
                 <option value="default">Prudent : lecture seule, les actions sensibles sont refusées</option>
                 <option value="acceptEdits">Modifications de fichiers autorisées</option>
-                <option value="bypassPermissions">Tout autorisé (commandes comprises) ⚠️</option>
+                <option value="bypassPermissions">Tout autorisé (commandes comprises)</option>
               </select>
             </label>
             <label>Dossier de travail par défaut <input name="workspaceDir" /></label>

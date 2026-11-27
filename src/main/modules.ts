@@ -328,9 +328,9 @@ export class Modules {
     return {
       id: 'cutout',
       name: 'Détourage',
-      icon: '✂',
+      icon: 'scissors',
       description: `${CUTOUT_MODEL.label} : fond transparent en un clic.`,
-      usage: '« ✂ Détourer » sous une image crée sa version PNG sans fond, à côté de l’original (aucune image n’est envoyée).',
+      usage: '« Détourer » sous une image crée sa version PNG sans fond, à côté de l’original (aucune image n’est envoyée).',
       state: st.downloading ? 'installing' : installed ? 'installed' : noGpu && this.envKnown ? 'unavailable' : 'absent',
       reason:
         noGpu && this.envKnown && !installed
@@ -381,7 +381,7 @@ export class Modules {
     return {
       id: 'vision',
       name: 'Reconnaissance d’images',
-      icon: '🖼',
+      icon: 'eye',
       description: 'Modèle vision Qwen3-VL pour Ollama.',
       usage: 'Joindre une capture d’écran ou une photo et demander à une IA locale ce qu’elle voit ou lit ; l’agent Observateur vérifie les images générées.',
       state,
@@ -410,7 +410,7 @@ export class Modules {
     return {
       id: 'semantic',
       name: 'Recherche par le sens',
-      icon: '🧠',
+      icon: 'sense',
       description: `Modèle d’embeddings ${info.name} pour Ollama.`,
       usage: 'Retrouver une note en posant une question, même sans les mots exacts (onglet Connaissances, et passages donnés aux IA locales).',
       state: installed ? 'installed' : tags === null ? 'unavailable' : 'absent',
@@ -439,7 +439,7 @@ export class Modules {
     const common = {
       id: 'images' as const,
       name: 'Images locales',
-      icon: '🎨',
+      icon: 'image',
       usage: 'Générer des illustrations sur ce PC : agent Illustrateur des workflows, discussions avec « Images (ComfyUI) ».',
       license: 'ComfyUI : GPL-3.0 · modèles : Apache 2.0 (Z-Image Turbo), Open RAIL++-M (SDXL)',
       large: true,

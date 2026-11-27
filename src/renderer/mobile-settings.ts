@@ -1,6 +1,7 @@
 // Réglages › « Accès mobile » : activer le serveur local, associer un téléphone (QR code ou code à taper), révoquer.
 // Aucun champ n'a d'attribut name : rien n'entre dans le formulaire des réglages (enregistré immédiatement).
 import type { HubApi, MobileState } from '../shared/types';
+import { icon } from './icons';
 
 let hubApi: HubApi;
 let notify: (msg: string) => void = () => undefined;
@@ -29,7 +30,9 @@ function box(): HTMLElement {
     body.id = 'mobile-settings-body';
     const set = el('fieldset', 'info-card');
     set.id = 'mobile-settings';
-    set.append(el('legend', '', '📱 Accès mobile'), body);
+    const legend = el('legend');
+  legend.append(icon('phone'), ' Accès mobile');
+  set.append(legend, body);
     const updates = document.getElementById('upd-version')?.closest('fieldset');
     if (updates) updates.before(set);
     else document.getElementById('settings-form')?.append(set);
@@ -95,7 +98,7 @@ export function render(state: MobileState): void {
 
   const parts: Node[] = [intro, enableLabel, awakeLabel, portRow];
 
-  if (state.error) parts.push(el('div', 'small mobile-error', `⚠️ ${state.error}`));
+  if (state.error) parts.push((() => { const d = el('div', 'small mobile-error'); d.append(icon('warn', 13), ` ${state.error}`); return d; })());
 
   if (state.running) {
     const where = el('div', 'small');

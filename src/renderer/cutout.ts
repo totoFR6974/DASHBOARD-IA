@@ -3,6 +3,7 @@
 // de l'original. Le modèle (licence MIT) est téléchargé une fois, avec confirmation ; ensuite tout reste sur le PC.
 import { CUTOUT_MODEL, CUTOUT_SUFFIX, type AgentRole, type CutoutStatus, type CutoutVariant, type HubApi } from '../shared/types';
 import { ensureModule } from './module-offer';
+import { icon } from './icons';
 
 interface CutoutDeps {
   hub: HubApi;
@@ -172,7 +173,7 @@ export function cutoutButton(path: string): HTMLButtonElement {
   btn.type = 'button';
   btn.className = 'thumb-cut';
   btn.title = 'Détourer : version PNG à fond transparent, enregistrée à côté de l’original (100 % local)';
-  btn.textContent = busyPaths.has(path) ? '… Détourage' : '✂ Détourer';
+  btn.replaceChildren(...(busyPaths.has(path) ? ['… Détourage'] : [icon('scissors', 13), ' Détourer']));
   btn.disabled = busyPaths.has(path);
   btn.addEventListener('click', async (e) => {
     e.stopPropagation();
@@ -192,7 +193,7 @@ export function cutoutButton(path: string): HTMLButtonElement {
     } catch (err: any) {
       if (!/annulé/.test(err?.message ?? '')) deps.toast(`Détourage impossible : ${err?.message ?? err}`);
       btn.disabled = false;
-      btn.textContent = '✂ Détourer';
+      btn.replaceChildren(icon('scissors', 13), ' Détourer');
     } finally {
       busyPaths.delete(path);
     }
@@ -247,7 +248,7 @@ export async function renderCutoutSettings(box: HTMLElement): Promise<void> {
     lab.append(cb, document.createTextNode(` ${role.name} : toujours détourer ses images (fond transparent, original conservé)`));
     lines.push(lab);
   }
-  lines.push(el('p', 'muted small', 'Dans une discussion avec les images (ComfyUI), le bouton ◩ du composer active le fond transparent ; sous chaque image, « ✂ Détourer » crée la version transparente.'));
+  lines.push(el('p', 'muted small', 'Dans une discussion avec les images (ComfyUI), le bouton « Transparent » (damier) du composer active le fond transparent ; sous chaque image, « Détourer » crée la version transparente.'));
 
   box.replaceChildren(...lines);
 }

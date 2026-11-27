@@ -136,7 +136,7 @@ function statusLine(st: SemanticStatus | null): HTMLElement {
     return el(
       'div',
       { class: 'kn-sem-status' },
-      el('span', {}, `⬇ ${p?.step ?? `${mod.variant} : téléchargement…`}${pct !== null ? ` — ${pct} %` : ''}`),
+      el('span', {}, icon('download', 13), ` ${p?.step ?? `${mod.variant} : téléchargement…`}${pct !== null ? ` — ${pct} %` : ''}`),
       pct !== null ? el('div', { class: 'kn-sem-bar' }, el('i', { style: `width:${pct}%` })) : null,
     );
   }
@@ -182,7 +182,7 @@ function statusLine(st: SemanticStatus | null): HTMLElement {
       },
       never ? 'Indexer' : 'Réindexer',
     ),
-    st.error ? el('span', { class: 'kn-sem-err', title: st.error }, '⚠') : null,
+    st.error ? el('span', { class: 'kn-sem-err', title: st.error }, icon('warn', 14)) : null,
   );
 }
 
@@ -272,7 +272,7 @@ export function renderPanel(): void {
     el(
       'div',
       { class: 'kn-sem-row' },
-      el('span', { class: 'kn-sem-icon', 'aria-hidden': 'true' }, '🧠'),
+      el('span', { class: 'kn-sem-icon', 'aria-hidden': 'true' }, icon('sense', 16)),
       input,
       el(
         'button',
@@ -286,7 +286,7 @@ export function renderPanel(): void {
             renderPanel();
           },
         },
-        '⚙',
+        icon('gear', 15),
       ),
     ),
     statusLine(st),

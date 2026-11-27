@@ -9,7 +9,7 @@ import { initImageViewer, openImageViewer } from './image-viewer';
 import { clearSemanticQuery, initSemanticSearch, renderSemanticResults } from './semantic-search';
 import { initVaultSync, invalidateSyncConflicts, renderKnowledgeLocation, syncConflictBadge } from './vault-sync';
 import { attachBusy, attachmentChips, clearPending, initAttachments, pendingImages, renderAttachStrip, renderVisionSettings, restorePending } from './attachments';
-import { hydrateIcons, icon, iconSelect, iconText } from './icons';
+import { hydrateIcons, icon, iconSelect, iconText, type IconName } from './icons';
 import { initModules, moduleHintForError, moduleOptionsBox, openModuleCard, renderModulesSettings } from './module-offer';
 import { wikiLinks } from './wikilinks';
 import { initMobileSettings, refreshMobileSettings } from './mobile-settings';
@@ -136,10 +136,13 @@ const STATUS_LABEL: Record<TaskStatus, string> = {
   error: 'Erreur',
   cancelled: 'Annulée',
 };
+/** Icône à gauche du menu d'autorisation : bouclier (prudent), crayon (modifs), attention ambre (tout autorisé). */
+const PERMISSION_ICON: Record<ClaudePermission, IconName> = { default: 'shield', acceptEdits: 'pencil', bypassPermissions: 'warn' };
+
 const PERMISSION_LABEL: Record<ClaudePermission, string> = {
   default: 'Prudent',
   acceptEdits: 'Modifs fichiers',
-  bypassPermissions: 'Tout autorisé ⚠️',
+  bypassPermissions: 'Tout autorisé',
 };
 
 // ---------- Utilitaires ----------
@@ -744,7 +747,7 @@ function webPaneBar(p: WebPanelState): HTMLElement {
         title: `Se déconnecter de ${p.name} / vider la session (pour changer de compte)${p.loggedIn ? '' : ' — non connecté'}`,
         onclick: () => void webLogout(webPanels, p, toast),
       },
-      '👤',
+      icon('user'),
     ),
   );
 }
@@ -825,7 +828,7 @@ function renderConvList(): void {
       ? h(
           'div',
           { class: 'conv-filter-bar', title: `Seules les discussions du dossier « ${f.path} » sont affichées` },
-          h('span', {}, `📁 ${f.name} · ${hidden} autre${hidden > 1 ? 's' : ''} masquée${hidden > 1 ? 's' : ''}`),
+          h('span', {}, iconText('folder', `${f.name} · ${hidden} autre${hidden > 1 ? 's' : ''} masquée${hidden > 1 ? 's' : ''}`, 13)),
           h('button', { type: 'button', class: 'link-btn', onclick: () => void hub.setActiveFolder('') }, 'Tout afficher'),
         )
       : null;
@@ -933,13 +936,18 @@ function renderChatHeader(conv: Conversation | undefined): void {
 
   const extra: HTMLElement[] = [];
   if (parts.some((p) => providerInfo(p.providerId)?.usesWorkspace)) {
-    extra.push(
-      h(
-        'select',
-        { title: 'Ce que les agents (Claude, Codex, Antigravity) ont le droit de faire', onchange: (e: Event) => void hub.updateConversation(conv.id, { permission: (e.target as HTMLSelectElement).value as ClaudePermission }) },
-        ...(Object.keys(PERMISSION_LABEL) as ClaudePermission[]).map((k) => h('option', { value: k, selected: k === conv.permission }, PERMISSION_LABEL[k])),
-      ),
-    );
+    const perm = h(
+      'select',
+      {
+        class: `perm-select perm-${conv.permission}`,
+        title: conv.permission === 'bypassPermissions' ? 'Tout autorisé : les agents exécutent commandes et modifications SANS te demander' : 'Ce que les agents (Claude, Codex, Antigravity) ont le droit de faire',
+        onchange: (e: Event) => void hub.updateConversation(conv.id, { permission: (e.target as HTMLSelectElement).value as ClaudePermission }),
+      },
+      ...(Object.keys(PERMISSION_LABEL) as ClaudePermission[]).map((k) => h('option', { value: k, selected: k === conv.permission }, PERMISSION_LABEL[k])),
+    ) as HTMLSelectElement;
+    const permWrap = iconSelect(PERMISSION_ICON[conv.permission] ?? 'shield', perm);
+    permWrap.classList.add('perm-wrap', `perm-${conv.permission}`);
+    extra.push(permWrap);
   }
   // Le dossier est affiché pour toutes les discussions (c'est lui qui les range), modifiable ici.
   extra.push(
@@ -963,9 +971,14 @@ function renderChatHeader(conv: Conversation | undefined): void {
           if (confirm(`Supprimer la discussion « ${conv.title} » ?`)) void hub.deleteConversation(conv.id);
         },
       },
-      '🗑',
+      icon('trash'),
     ),
   );
+}
+
+/** Icône d'une ligne d'activité : outil (clé), info (i), erreur (attention ambre). */
+function actIcon(kind: string): SVGSVGElement {
+  return icon(kind === 'tool' ? 'tool' : kind === 'error' ? 'warn' : 'info', 12);
 }
 
 /** Tâches dont la liste d'activité est dépliée (gardé entre deux rafraîchissements de la discussion). */
@@ -995,12 +1008,12 @@ function activityEl(t: Task | undefined): HTMLElement | null {
       },
     },
     h('span', { class: 'act-chev' }, open ? '▾' : '▸'),
-    t.status === 'running' ? h('span', { class: 'spinner' }) : null,
+    t.status === 'running' ? h('span', { class: 'spinner' }) : actIcon(last.kind),
     h('span', { class: 'act-last' }, last.text),
-    items.length > 1 ? h('span', { class: 'act-count' }, `${items.length}${errors ? ` · ⚠ ${errors}` : ''}`) : null,
+    items.length > 1 ? h('span', { class: 'act-count' }, `${items.length}`, errors ? h('span', { class: 'act-err' }, icon('warn', 12), ` ${errors}`) : null) : null,
   );
   box.append(head);
-  if (open) box.append(h('div', { class: 'act-list' }, ...items.map((a) => h('div', { class: `act ${a.kind}`, title: a.text }, a.text))));
+  if (open) box.append(h('div', { class: 'act-list' }, ...items.map((a) => h('div', { class: `act ${a.kind}`, title: a.text }, actIcon(a.kind), h('span', { class: 'act-text' }, a.text)))));
   return box;
 }
 
@@ -1607,16 +1620,16 @@ function renderQueueStrip(conv: Conversation | undefined, running: boolean): voi
   const fail = (err: any) => toast(err?.message ?? String(err));
   const preview = (q: QueuedMessage) => {
     const t = q.text.replace(/\s+/g, ' ').trim();
-    const att = q.images.length ? ` 📎${q.images.length}` : '';
-    return (t.length > 140 ? `${t.slice(0, 140)}…` : t || '(pièce jointe)') + att;
+    return t.length > 140 ? `${t.slice(0, 140)}…` : t || '(pièce jointe)';
   };
   strip.replaceChildren(
     h(
       'div',
       { class: 'queue-head' },
+      icon(running ? 'hourglass' : 'pause', 13),
       running
-        ? `⏳ ${queue.length} message${queue.length > 1 ? 's' : ''} en attente : envoi automatique à la fin de la réponse`
-        : `⏸ ${queue.length} message${queue.length > 1 ? 's' : ''} en attente (file en pause : réponse arrêtée ou envoi raté)`,
+        ? ` ${queue.length} message${queue.length > 1 ? 's' : ''} en attente : envoi automatique à la fin de la réponse`
+        : ` ${queue.length} message${queue.length > 1 ? 's' : ''} en attente (file en pause : réponse arrêtée ou envoi raté)`,
     ),
     ...queue.map((q, i) =>
       h(
@@ -1624,7 +1637,8 @@ function renderQueueStrip(conv: Conversation | undefined, running: boolean): voi
         { class: `queue-item ${q.error ? 'error' : ''}`, title: q.error ? `Envoi raté : ${q.error}` : q.text },
         h('span', { class: 'queue-n' }, String(i + 1)),
         h('span', { class: 'queue-text' }, preview(q)),
-        q.error ? h('span', { class: 'queue-err' }, '⚠') : null,
+        q.images.length ? h('span', { class: 'queue-att' }, icon('clip', 13), ` ${q.images.length}`) : null,
+        q.error ? h('span', { class: 'queue-err' }, icon('warn', 14)) : null,
         h(
           'button',
           {
@@ -1669,7 +1683,7 @@ function renderBgToggle(conv: Conversation | undefined): void {
   btn.classList.toggle('hidden', !hasImages);
   const on = !!conv?.transparentBg;
   btn.classList.toggle('active', on);
-  btn.textContent = on ? '◩ Transparent' : '◩';
+  btn.replaceChildren(icon('checker'), on ? ' Transparent' : '');
   btn.title = on
     ? 'Fond transparent ACTIVÉ : chaque image générée est aussi détourée (PNG transparent, original conservé). Cliquer pour désactiver.'
     : 'Fond transparent : cliquer pour que les images générées soient aussi détourées (sujet isolé, PNG transparent)';
@@ -1857,7 +1871,7 @@ function renderWorkflowList(): void {
           h('span', { class: `status ${runStatusClass(r.status)}` }, RUN_STATUS_LABEL[r.status]),
           r.steps.length ? h('span', {}, runProgress(r)) : null,
           busy ? h('span', { class: 'spinner', title: 'En cours' }) : null,
-          waiting ? h('span', { title: 'Une étape attend ton action' }, '✋') : null,
+          waiting ? h('span', { title: 'Une étape attend ton action' }, icon('hand', 14)) : null,
         ),
         h('div', { class: 'conv-folder', title: r.cwd }, iconText('folder', folderLabel(r.cwd), 13)),
       );
@@ -2000,7 +2014,7 @@ function renderNewWorkflow(): void {
       { class: 'wf-new' },
       h('h2', {}, 'Nouveau workflow'),
       h('p', { class: 'muted' }, 'Un seul objectif : le planificateur le découpe en étapes et confie chacune à l’agent adapté. Les étapes indépendantes tournent en parallèle, les résultats passent d’une étape à l’autre.'),
-      h('label', { class: 'inline wf-template-row' }, '📋 Partir d’un modèle :', tplSel),
+      h('label', { class: 'inline wf-template-row' }, iconText('clipboard', 'Partir d’un modèle :'), tplSel),
       h('div', { class: 'mic-field' }, goal, micButton(() => goal, 'mic-float')),
       h(
         'div',
@@ -2015,16 +2029,16 @@ function renderNewWorkflow(): void {
         'div',
         { class: 'wf-new-opts' },
         h('label', { class: 'check', title: 'Les agents peuvent lire tes notes (Claude les consulte lui-même, Ollama reçoit les passages utiles)' }, useKn, iconText('books', 'Utiliser la base de connaissances')),
-        h('label', { class: 'check', title: 'À la fin, un compte rendu du workflow est créé dans la base (dossier « Résultats »)' }, saveKn, '💾 Enregistrer le compte rendu dans la base'),
+        h('label', { class: 'check', title: 'À la fin, un compte rendu du workflow est créé dans la base (dossier « Résultats »)' }, saveKn, iconText('save', 'Enregistrer le compte rendu dans la base')),
       ),
       h(
         'div',
         { class: 'wf-agents' },
         h('span', { class: 'muted' }, 'Agents disponibles :'),
-        ...state.roles.map((r) => h('span', { class: `tag ${isManual(r.providerId) ? 'p-manual' : ''}`, title: `${r.description}\n${roleIaLabel(r)}` }, `${r.name}${isManual(r.providerId) ? ' ✋' : ''}`)),
+        ...state.roles.map((r) => h('span', { class: `tag ${isManual(r.providerId) ? 'p-manual' : ''}`, title: `${r.description}\n${roleIaLabel(r)}` }, r.name, isManual(r.providerId) ? icon('hand', 13) : null)),
         h('button', { class: 'btn ghost small', onclick: () => setView('settings') }, 'Modifier'),
       ),
-      h('p', { class: 'muted small' }, modText('Ctrl+Entrée pour planifier. ✋ = étape manuelle (tu la fais dans l’onglet IA web).')),
+      h('p', { class: 'muted small' }, modText('Ctrl+Entrée pour planifier. '), icon('hand', 13), ' = étape manuelle (tu la fais dans l’onglet IA web).'),
     ),
   );
 }
@@ -2042,7 +2056,7 @@ function runHeader(run: WorkflowRun, goalOpen: boolean): HTMLElement {
       run.steps.length ? h('span', { class: 'muted' }, `${runProgress(run)} étapes terminées`) : null,
       h('span', { class: 'spacer' }),
       run.resultNote
-        ? h('button', { class: 'btn small', id: 'wf-result-note', title: run.resultNote, onclick: () => void openNoteIn(run.knowledgeBaseId, run.resultNote!) }, '📄 Compte rendu')
+        ? h('button', { class: 'btn small', id: 'wf-result-note', title: run.resultNote, onclick: () => void openNoteIn(run.knowledgeBaseId, run.resultNote!) }, iconText('note', 'Compte rendu'))
         : null,
       run.steps.length
         ? h(
@@ -2053,7 +2067,7 @@ function runHeader(run: WorkflowRun, goalOpen: boolean): HTMLElement {
               title: 'Réutiliser ce plan plus tard (onglet Workflows → « Partir d’un modèle »)',
               onclick: () => toggleTemplateForm(run),
             },
-            '💾 Enregistrer comme modèle',
+            iconText('save', 'Enregistrer comme modèle'),
           )
         : null,
       h('button', { class: 'btn small', id: 'wf-open-dir', title: run.runDir, onclick: () => void hub.openPath(run.runDir) }, iconText('folder', 'Dossier partagé')),
@@ -2079,7 +2093,7 @@ function runHeader(run: WorkflowRun, goalOpen: boolean): HTMLElement {
             if (confirm(`Supprimer le workflow « ${run.title || run.goal.slice(0, 40)} » ?`)) void hub.deleteWorkflow(run.id);
           },
         },
-        '🗑',
+        icon('trash'),
       ),
     ),
     h('details', { class: 'wf-goal-box', open: goalOpen }, h('summary', {}, 'Objectif'), h('div', { class: 'pre' }, run.goal)),
@@ -2091,12 +2105,12 @@ function runHeader(run: WorkflowRun, goalOpen: boolean): HTMLElement {
       h('span', {}, `Créé ${fmtTime(run.createdAt)}`),
     ),
     run.planNotes ? h('div', { class: 'wf-notes msg-body', html: md(run.planNotes) }) : null,
-    run.error ? h('div', { class: 'wf-error' }, `⚠️ ${run.error}`) : null,
+    run.error ? h('div', { class: 'wf-error' }, iconText('warn', run.error)) : null,
     waiting.length
       ? h(
           'div',
           { class: 'wf-banner', onclick: () => selectStep(waiting[0].id) },
-          `✋ Une étape attend ton action : ${waiting[0].title}`,
+          iconText('hand', `Une étape attend ton action : ${waiting[0].title}`),
           h('span', { class: 'muted' }, ' — cliquer pour l’ouvrir'),
         )
       : null,
@@ -2181,7 +2195,7 @@ function renderTemplateForm(run: WorkflowRun): void {
     h(
       'div',
       { class: 'wf-tpl-form' },
-      h('span', { class: 'muted' }, `💾 Modèle (${run.steps.length} étapes) :`),
+      h('span', { class: 'muted' }, iconText('save', `Modèle (${run.steps.length} étapes) :`)),
       name,
       desc,
       h('button', { class: 'btn ghost small', onclick: () => toggleTemplateForm(run) }, 'Annuler'),
@@ -2443,7 +2457,7 @@ function renderStepDetail(run: WorkflowRun, force: boolean): void {
     h(
       'div',
       { class: 'row', style: 'justify-content:flex-start' },
-      s.outputFile ? h('button', { class: 'btn small', title: s.outputFile, onclick: () => void hub.openPath(s.outputFile!) }, '📄 Ouvrir le résultat') : null,
+      s.outputFile ? h('button', { class: 'btn small', title: s.outputFile, onclick: () => void hub.openPath(s.outputFile!) }, iconText('file', 'Ouvrir le résultat')) : null,
       t ? h('button', { class: 'btn ghost small', onclick: () => (setView('tasks'), selectTask(t.id)) }, 'Voir la tâche') : null,
     ),
   ];
@@ -2463,7 +2477,7 @@ function manualPanel(run: WorkflowRun, s: WorkflowStep): HTMLElement {
   });
   answer.value = state.manualDrafts.get(key) ?? '';
   answer.addEventListener('input', () => state.manualDrafts.set(key, answer.value));
-  const copyBtn = h('button', { class: 'btn small', id: 'wf-copy' }, '📋 Copier le prompt');
+  const copyBtn = h('button', { class: 'btn small', id: 'wf-copy' }, iconText('clipboard', 'Copier le prompt'));
   copyBtn.addEventListener('click', async () => {
     try {
       await navigator.clipboard.writeText(s.prompt ?? '');
@@ -2471,7 +2485,7 @@ function manualPanel(run: WorkflowRun, s: WorkflowStep): HTMLElement {
     } catch {
       copyBtn.textContent = 'Copie impossible';
     }
-    setTimeout(() => (copyBtn.textContent = '📋 Copier le prompt'), 1500);
+    setTimeout(() => copyBtn.replaceChildren(iconText('clipboard', 'Copier le prompt')), 1500);
   });
   const submit = h('button', { class: 'btn primary', id: 'wf-manual-submit' }, '✔ Valider l’étape');
   submit.addEventListener('click', async () => {
@@ -2492,7 +2506,7 @@ function manualPanel(run: WorkflowRun, s: WorkflowStep): HTMLElement {
   return h(
     'div',
     { class: 'wf-manual' },
-    h('div', { class: 'wf-manual-title' }, `✋ À toi de jouer sur ${name}`),
+    h('div', { class: 'wf-manual-title' }, iconText('hand', `À toi de jouer sur ${name}`)),
     h(
       'ol',
       { class: 'wf-manual-steps' },
@@ -2976,7 +2990,7 @@ function treeNodes(dir: TreeDir, prefix: string, depth: number): HTMLElement[] {
           title: n.path,
           onclick: () => void openNote(n.path),
         },
-        `📄 ${n.title || noteTitle(n.path)}`,
+        iconText('note', n.title || noteTitle(n.path)),
       ),
     );
   }
@@ -3036,7 +3050,7 @@ function obsidianBtn(path?: string): HTMLElement {
       title: installed ? (path ? 'Ouvrir cette note dans Obsidian' : 'Ouvrir la base dans Obsidian') : 'Obsidian non installé : ouvre le dossier',
       onclick: () => void hub.openInObsidian(path ?? '', state.kn.base).catch((err: any) => toast(err.message ?? String(err))),
     },
-    installed ? '🟣 Ouvrir dans Obsidian' : '🟣 Obsidian',
+    installed ? iconText('gem', 'Ouvrir dans Obsidian') : iconText('gem', 'Obsidian'),
   );
 }
 
@@ -3080,7 +3094,7 @@ function convBaseSelect(conv: Conversation): HTMLElement {
       h(
         'button',
         { class: 'icon-btn', title: `Ouvrir la note de la discussion (${conv.knowledgeNote})`, onclick: () => void openNoteIn(conv.knowledgeNoteBase ?? conv.knowledgeBaseId, conv.knowledgeNote!) },
-        '📝',
+        icon('note'),
       ),
     );
   }
@@ -3122,7 +3136,7 @@ function knDiscussionLink(): HTMLElement | null {
         selectConversation(id);
       },
     },
-    '💬 Ouvrir la discussion',
+    iconText('chat', 'Ouvrir la discussion'),
   );
 }
 
@@ -3202,7 +3216,7 @@ function renderKnowledgeMain(): void {
     h('div', { class: 'seg kn-mode' }, modeBtn('edit', 'Édition', 'kn-mode-edit'), modeBtn('preview', 'Aperçu', 'kn-mode-preview')),
     h('span', { id: 'kn-status', class: `kn-status muted small ${state.kn.dirty ? 'dirty' : ''}` }, knStatusText()),
     state.kn.mode === 'edit' ? micButton(() => document.getElementById('kn-editor') as HTMLTextAreaElement | null, 'small') : null,
-    h('button', { type: 'button', class: 'btn ghost small', id: 'kn-delete', title: 'Mettre la note à la corbeille (dossier .corbeille du vault, récupérable)', onclick: () => void deleteCurrentNote() }, '🗑'),
+    h('button', { type: 'button', class: 'btn ghost small', id: 'kn-delete', title: 'Mettre la note à la corbeille (dossier .corbeille du vault, récupérable)', onclick: () => void deleteCurrentNote() }, icon('trash')),
   );
 
   let body: HTMLElement;
@@ -3504,7 +3518,7 @@ function comfyDirBlock(s: ImageEngineStatus): HTMLElement {
         )
       : null,
     !s.customDir && s.suggestedDir
-      ? h('div', { class: 'comfy-suggest small' }, '💡 ComfyUI trouvé sur ce PC : ', h('code', {}, s.suggestedDir), ' — inutile de retélécharger.')
+      ? h('div', { class: 'comfy-suggest small' }, icon('bulb', 14), ' ComfyUI trouvé sur ce PC : ', h('code', {}, s.suggestedDir), ' — inutile de retélécharger.')
       : null,
     h(
       'div',
@@ -4105,7 +4119,8 @@ function renderLimitsMenu(): void {
           h(
             'div',
             { class: 'usage-sub muted' },
-            `${Math.round(left)} % restant · ${fmtReset(w.resetsAt)}${w.status.includes('warning') ? ' · ⚠️ limite bientôt atteinte' : w.status === 'rejected' ? ' · ⛔ limite atteinte' : ''}`,
+            `${Math.round(left)} % restant · ${fmtReset(w.resetsAt)}`,
+            w.status.includes('warning') ? h('span', { class: 'usage-alert' }, ' · ', icon('warn', 12), ' limite bientôt atteinte') : w.status === 'rejected' ? h('span', { class: 'usage-alert' }, ' · ', icon('stop', 12), ' limite atteinte') : null,
           ),
         );
       })
@@ -4158,7 +4173,7 @@ function renderLimitsMenu(): void {
           setView('stats');
         },
       },
-      '📊 Statistiques de consommation →',
+      iconText('chart', 'Statistiques de consommation →'),
     ),
   );
 }
@@ -4394,7 +4409,7 @@ async function ccArchiveAction(kind: 'archive' | 'unarchive' | 'delete', ids: st
     const n = ids.length;
     const lost = cc.sessions.filter((s) => ids.includes(s.id) && s.originalMissing).length;
     const msg = `Supprimer ${n > 1 ? `les ${n} copies archivées` : 'la copie archivée'} dans le hub ?${
-      lost ? `\n\n⚠️ ${lost} session(s) n'existent plus que dans cette copie (original supprimé par Claude Code) : elles seront perdues définitivement, avec leur historique de consommation.` : "\n\nLes originaux dans Claude Code ne sont pas touchés."
+      lost ? `\n\nAttention : ${lost} session(s) n'existent plus que dans cette copie (original supprimé par Claude Code) : elles seront perdues définitivement, avec leur historique de consommation.` : "\n\nLes originaux dans Claude Code ne sont pas touchés."
     }`;
     if (!confirm(msg)) return;
   }
@@ -4708,7 +4723,7 @@ function renderClaudeList(): void {
   const hubSessions = cc.sessions.filter((s) => !s.archived && s.origin === 'SDK / hub');
   const bulk: HTMLElement[] = [];
   if (picked.length) {
-    if (!cc.showArchived) bulk.push(h('button', { type: 'button', class: 'btn small primary', disabled: cc.busy, onclick: () => void ccArchiveAction('archive', picked) }, `📦 Archiver la sélection (${picked.length})`));
+    if (!cc.showArchived) bulk.push(h('button', { type: 'button', class: 'btn small primary', disabled: cc.busy, onclick: () => void ccArchiveAction('archive', picked) }, iconText('archive', `Archiver la sélection (${picked.length})`)));
     else {
       bulk.push(h('button', { type: 'button', class: 'btn small', disabled: cc.busy, onclick: () => void ccArchiveAction('unarchive', picked) }, `↩ Désarchiver (${picked.length})`));
       bulk.push(h('button', { type: 'button', class: 'btn small danger', disabled: cc.busy, onclick: () => void ccArchiveAction('delete', picked) }, `Supprimer les copies (${picked.length})`));
@@ -4742,7 +4757,7 @@ function renderClaudeList(): void {
             }
           },
         },
-        `📦 Archiver les sessions du hub (${hubSessions.length})`,
+        iconText('archive', `Archiver les sessions du hub (${hubSessions.length})`),
       ),
     );
   }
@@ -4785,7 +4800,7 @@ function renderClaudeList(): void {
           ? h(
               'div',
               { class: 'cc-arch-line small' },
-              h('span', { class: 'muted' }, `📦 archivée le ${new Date(s.archivedAt ?? 0).toLocaleDateString('fr-FR')}`),
+              h('span', { class: 'muted' }, iconText('archive', `archivée le ${new Date(s.archivedAt ?? 0).toLocaleDateString('fr-FR')}`, 13)),
               s.originalMissing ? h('span', { class: 'tag cc-orphan', title: 'Claude Code a supprimé l’original ; la copie du hub le remplace' }, 'original supprimé par Claude Code') : null,
             )
           : null,
@@ -4796,7 +4811,7 @@ function renderClaudeList(): void {
           h('span', {}, `· ${s.prompts} msg`),
           s.models[0] ? h('span', { class: 'tag' }, s.models[0]) : null,
           s.origin ? h('span', { class: 'tag' }, s.origin) : null,
-          convForClaudeSession(s.id) ? h('span', { class: 'tag cc-in-hub', title: 'Déjà dans les discussions du hub' }, '💬 dans le hub') : null,
+          convForClaudeSession(s.id) ? h('span', { class: 'tag cc-in-hub', title: 'Déjà dans les discussions du hub' }, iconText('chat', 'dans le hub', 13)) : null,
           h('span', { class: 'muted' }, fmtUsd(s.costUsd)),
         ),
       );
@@ -4826,7 +4841,7 @@ function renderClaudeReader(): void {
     h('div', { class: 'chat-title' }, s.title),
     s.active ? h('span', { class: 'tag cc-active-tag' }, '● active') : null,
     s.origin ? h('span', { class: 'tag' }, s.origin) : null,
-    s.archived ? h('span', { class: 'tag', title: `Archivée dans le hub le ${new Date(s.archivedAt ?? 0).toLocaleString('fr-FR')}` }, '📦 archivée') : null,
+    s.archived ? h('span', { class: 'tag', title: `Archivée dans le hub le ${new Date(s.archivedAt ?? 0).toLocaleString('fr-FR')}` }, iconText('archive', 'archivée', 13)) : null,
     s.originalMissing ? h('span', { class: 'tag cc-orphan' }, 'original supprimé par Claude Code') : null,
     h('span', { class: 'spacer' }),
     s.archived
@@ -4834,7 +4849,7 @@ function renderClaudeReader(): void {
       : h(
           'button',
           { type: 'button', class: 'btn ghost small', disabled: cc.busy, title: 'Copie la session dans le hub et la masque de la liste (rien ne change dans Claude Code)', onclick: () => void ccArchiveAction('archive', [s.id]) },
-          '📦 Archiver',
+          iconText('archive', 'Archiver'),
         ),
     s.hasArchiveCopy
       ? h('button', { type: 'button', class: 'btn ghost small cc-del-copy', disabled: cc.busy, title: 'Supprime la copie archivée dans le hub', onclick: () => void ccArchiveAction('delete', [s.id]) }, 'Supprimer la copie')
@@ -4859,7 +4874,7 @@ function renderClaudeReader(): void {
           h(
             'button',
             { type: 'button', class: 'btn primary small', title: `Discussion du hub : « ${linked.title} »`, onclick: () => void showConversation(linked) },
-            '💬 Ouvrir la discussion',
+            iconText('chat', 'Ouvrir la discussion'),
           ),
         ];
       }
@@ -4902,13 +4917,13 @@ function renderClaudeReader(): void {
     `${s.project}${s.cwd ? ` · ${s.cwd}` : ''} · commencée le ${new Date(s.startedAt).toLocaleString('fr-FR')} · ${s.prompts} messages · ${s.replies} réponses${s.subagents ? ` · ${s.subagents} sous-agent(s)` : ''} · ${fmtTokens(s.tokens)} tokens · ${fmtUsd(s.costUsd)} (équiv. API)`,
   );
   const warn = s.originalMissing
-    ? h('div', { class: 'cc-warn small' }, '📦 Copie archivée par le hub : Claude Code a supprimé l’original (nettoyage automatique). La conversation reste lisible ici, mais ne peut plus être continuée.')
+    ? h('div', { class: 'cc-warn small' }, icon('archive', 14), ' Copie archivée par le hub : Claude Code a supprimé l’original (nettoyage automatique). La conversation reste lisible ici, mais ne peut plus être continuée.')
     : h(
         'div',
         { class: 'cc-warn small' },
         s.active
-          ? '⚠️ Session active en ce moment ailleurs (terminal, appli Claude). Pour la continuer dans le hub, utilise « Copie indépendante » : l’originale reste intacte. « Reprendre ici » est désactivé pour éviter deux suites différentes.'
-          : 'ℹ️ « Copie indépendante » : nouvelle session avec tout l’historique, l’originale n’est pas modifiée. « Reprendre ici » : même session — ne l’utilise plus ailleurs ensuite (l’appli Claude n’affiche pas ce qui est écrit depuis le hub).',
+          ? 'Session active en ce moment ailleurs (terminal, appli Claude). Pour la continuer dans le hub, utilise « Copie indépendante » : l’originale reste intacte. « Reprendre ici » est désactivé pour éviter deux suites différentes.'
+          : '« Copie indépendante » : nouvelle session avec tout l’historique, l’originale n’est pas modifiée. « Reprendre ici » : même session — ne l’utilise plus ailleurs ensuite (l’appli Claude n’affiche pas ce qui est écrit depuis le hub).',
       );
   const body = h('div', { class: 'messages cc-messages' });
   if (!r) body.append(h('div', { class: 'muted', style: 'padding:20px' }, 'Lecture…'));
@@ -5181,7 +5196,7 @@ function bindUi(): void {
   // Visionneuse d'images (clic sur une vignette) : bouton « Détourer » du module cutout repris dans sa barre.
   initImageViewer({ imgUrl, isCutout, cutoutButton, onHubEvent: (l) => hub.onEvent(l) });
   // Bouton ◩ « Fond transparent » du composer (visible quand les images ComfyUI participent à la discussion).
-  const bgBtn = h('button', { type: 'button', id: 'bg-toggle', class: 'btn kn-toggle bg-toggle hidden' }, '◩');
+  const bgBtn = h('button', { type: 'button', id: 'bg-toggle', class: 'btn kn-toggle bg-toggle hidden' }, icon('checker'));
   $('kn-toggle').after(bgBtn);
   bgBtn.addEventListener('click', () => {
     const conv = activeConv();

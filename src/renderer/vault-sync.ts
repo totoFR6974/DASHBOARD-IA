@@ -3,6 +3,7 @@
 //   choix d'un dossier, confirmation avec le nombre de notes et la taille, déplacement vérifié) ;
 // - onglet Connaissances : « N conflits de synchronisation » (liste, ouverture de chaque paire ; rien n'est fusionné).
 import type { HubApi, KnowledgeLocationInfo, KnowledgeMovePlan, KnowledgeMoveResult, SyncConflictInfo } from '../shared/types';
+import { icon } from './icons';
 
 export interface VaultSyncDeps {
   hub: HubApi;
@@ -166,8 +167,8 @@ function planBox(plan: KnowledgeMovePlan): HTMLElement {
       : el('p', { class: 'small' }, 'Aucune note à copier : le hub utilisera directement les bases présentes à cet endroit.'),
     merges ? el('p', { class: 'muted small' }, 'Si une note existe des deux côtés avec un contenu différent, les deux sont gardées et signalées comme conflit dans l’onglet Connaissances.') : null,
     el('p', { class: 'muted small' }, 'Les bases sont ensuite réinscrites dans Obsidian. L’index de recherche reste sur cet appareil.'),
-    ...plan.problems.map((p) => el('div', { class: 'kn-loc-err' }, `⚠ ${p}`)),
-    plan.obsidianRunning ? el('div', { class: 'kn-loc-warn' }, '⚠ Obsidian est ouvert : ferme-le d’abord (il réécrit ses réglages en se fermant), puis réessaie.') : null,
+    ...plan.problems.map((p) => el('div', { class: 'kn-loc-err' }, icon('warn', 13), ` ${p}`)),
+    plan.obsidianRunning ? el('div', { class: 'kn-loc-warn' }, icon('warn', 13), ' Obsidian est ouvert : ferme-le d’abord (il réécrit ses réglages en se fermant), puis réessaie.') : null,
     el(
       'div',
       { class: 'row', style: 'justify-content:flex-start' },
@@ -187,7 +188,7 @@ function resultBox(r: KnowledgeMoveResult): HTMLElement {
     return el(
       'div',
       { class: 'kn-loc-box', id: 'kn-loc-result' },
-      el('div', { class: 'kn-loc-err' }, '⚠ Déplacement annulé : la vérification a échoué. Rien n’a été supprimé, les bases restent à leur place.'),
+      el('div', { class: 'kn-loc-err' }, icon('warn', 13), ' Déplacement annulé : la vérification a échoué. Rien n’a été supprimé, les bases restent à leur place.'),
       ...r.problems.slice(0, 6).map((p) => el('div', { class: 'muted small' }, p)),
     );
   }
@@ -212,11 +213,11 @@ function renderLocation(): void {
     return;
   }
   const d = vs.deps!;
-  const badge = loc.isDefault ? el('span', { class: 'kn-loc-badge default' }, 'par défaut') : loc.cloudLabel ? el('span', { class: 'kn-loc-badge' }, `☁ ${loc.cloudLabel}`) : el('span', { class: 'kn-loc-badge' }, 'personnalisé');
+  const badge = loc.isDefault ? el('span', { class: 'kn-loc-badge default' }, 'par défaut') : loc.cloudLabel ? el('span', { class: 'kn-loc-badge' }, icon('cloud', 12), ` ${loc.cloudLabel}`) : el('span', { class: 'kn-loc-badge' }, 'personnalisé');
   const parts: (HTMLElement | null)[] = [
     el('div', { class: 'kn-loc-title' }, 'Emplacement des bases de connaissances'),
     el('div', { class: 'kv-line' }, el('span', { class: 'muted' }, 'Dossier :'), el('code', { id: 'kn-loc-root', title: loc.root }, loc.root), badge),
-    loc.available ? null : el('div', { class: 'kn-loc-warn' }, '⚠ Ce dossier est introuvable (Google Drive, OneDrive… pas encore lancé ? disque débranché ?). Le hub n’écrit aucune note ailleurs en attendant.'),
+    loc.available ? null : el('div', { class: 'kn-loc-warn' }, icon('warn', 13), ' Ce dossier est introuvable (Google Drive, OneDrive… pas encore lancé ? disque débranché ?). Le hub n’écrit aucune note ailleurs en attendant.'),
     el(
       'p',
       { class: 'muted small' },
@@ -239,7 +240,7 @@ function renderLocation(): void {
           ? el(
               'div',
               { class: 'kn-loc-cloud' },
-              ...loc.cloud.map((c) => el('button', { type: 'button', class: 'btn small kn-loc-cloud-btn', 'data-kind': c.kind, title: c.suggested, onclick: () => void choose(c.suggested) }, `☁ ${c.label}`, el('small', {}, c.suggested))),
+              ...loc.cloud.map((c) => el('button', { type: 'button', class: 'btn small kn-loc-cloud-btn', 'data-kind': c.kind, title: c.suggested, onclick: () => void choose(c.suggested) }, icon('cloud', 13), ` ${c.label}`, el('small', {}, c.suggested))),
             )
           : null,
         el(
@@ -252,7 +253,7 @@ function renderLocation(): void {
       ),
     );
   }
-  if (vs.error) parts.push(el('div', { class: 'kn-loc-err' }, `⚠ ${vs.error}`));
+  if (vs.error) parts.push(el('div', { class: 'kn-loc-err' }, icon('warn', 13), ` ${vs.error}`));
   if (vs.plan) parts.push(planBox(vs.plan));
   if (vs.result) parts.push(resultBox(vs.result));
   box.replaceChildren(el('div', { class: 'kn-loc' }, ...parts));
@@ -344,7 +345,8 @@ function fillConflictBadge(): void {
         if (vs.listOpen) void refreshConflicts(true);
       },
     },
-    `⚠ ${plural(n, 'conflit')} de synchronisation`,
+    icon('warn', 13),
+    ` ${plural(n, 'conflit')} de synchronisation`,
   );
   const children: HTMLElement[] = [btn];
   if (vs.listOpen) {

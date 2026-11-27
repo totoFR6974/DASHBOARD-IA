@@ -2,6 +2,7 @@
 // La déconnexion efface toute la session du panneau (cookies, données du site, cache), et seulement celle-là.
 // Aucun champ n'a d'attribut name : rien n'entre dans le formulaire des réglages.
 import type { WebPanelState, WebPanelsApi } from '../shared/types';
+import { icon } from './icons';
 
 /** Fieldset créé une fois, juste après « Panneaux web — micro » (ou « Dictée vocale »). */
 function box(): HTMLElement {
@@ -13,7 +14,7 @@ function box(): HTMLElement {
     set.id = 'webaccount-settings';
     set.className = 'info-card';
     const legend = document.createElement('legend');
-    legend.textContent = '🌐 Panneaux web — comptes';
+    legend.append(icon('globe'), ' Panneaux web — comptes');
     set.append(legend, body);
     const after = document.getElementById('webmic-settings') ?? document.getElementById('modules-settings') ?? document.getElementById('voice-settings');
     if (after) after.after(set);

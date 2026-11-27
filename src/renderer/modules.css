@@ -142,3 +142,18 @@
 .act-last { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .act-count { flex-shrink: 0; padding: 0 7px; border-radius: 99px; background: rgba(255, 255, 255, 0.08); font-variant-numeric: tabular-nums; }
 .act-list { display: flex; flex-direction: column; gap: 3px; margin-top: 4px; padding: 6px 8px 6px 22px; max-height: 320px; overflow-y: auto; border-left: 2px solid var(--line); }
+
+/* ---------- Icônes « sticker » à la place des emojis ---------- */
+/* Mode d'autorisation : icône à gauche (bouclier / crayon / attention) ; « Tout autorisé » se voit (ambre). */
+.perm-wrap.perm-bypassPermissions select { border-color: rgba(245, 165, 36, 0.7); background-color: rgba(245, 165, 36, 0.12); color: #ffd79a; }
+.perm-wrap.perm-bypassPermissions select:hover { border-color: rgba(245, 165, 36, 0.95); }
+/* Lignes d'activité : icône + texte alignés. */
+.act-list .act { display: flex; align-items: center; gap: 6px; }
+.act-list .act .ico, .act-head .ico { flex: none; }
+.act-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.act-err { display: inline-flex; align-items: center; gap: 3px; margin-left: 6px; color: #f5c56b; }
+.queue-att { display: inline-flex; align-items: center; gap: 3px; color: var(--muted); font-size: 12.5px; flex-shrink: 0; }
+.queue-head .ico, .queue-err .ico { vertical-align: -0.2em; }
+.usage-alert { white-space: nowrap; }
+.fc-icon .ico { width: 18px; height: 18px; }
+legend .ico { vertical-align: -0.2em; margin-right: 2px; }

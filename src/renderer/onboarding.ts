@@ -528,7 +528,7 @@ function moduleRow(m: ModuleInfo): HTMLElement {
       m.state === 'installing'
         ? h('span', { class: 'ob-mod-progress' }, h('span', { class: 'progress' }, h('span', { class: `progress-bar ${pct === null ? 'indeterminate' : ''}`, style: pct === null ? undefined : `width:${pct}%` })), h('span', { class: 'muted small' }, p?.step ?? 'Préparation…'))
         : null,
-      err ? h('span', { class: 'small ob-mod-warn' }, `⚠ ${err}`) : null,
+      err ? h('span', { class: 'small ob-mod-warn' }, icon('warn', 13), ` ${err}`) : null,
     ),
     right,
   );
@@ -687,7 +687,7 @@ function render(): void {
       ),
       // L'animation d'entrée ne rejoue qu'au changement d'étape (pas à chaque mise à jour de progression).
       h('div', { class: `ob-body ${enter ? 'enter' : ''}` }, ...steps[ob.step]()),
-      ob.error ? h('div', { class: 'ob-error' }, '⚠ ', ob.error) : null,
+      ob.error ? h('div', { class: 'ob-error' }, icon('warn', 14), ' ', ob.error) : null,
       h(
         'div',
         { class: 'ob-foot' },
