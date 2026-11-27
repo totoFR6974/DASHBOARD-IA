@@ -21,8 +21,8 @@ import qrcode from 'qrcode-generator';
 import { JsonFile } from './store';
 import { IMAGE_TYPES, isAllowedImagePath } from './image-actions';
 import { isRealPathInside } from './path-guard';
-import type { Conversation, HubEvent, MobileDevice, MobileState, ProviderInfo, Task } from '../shared/types';
-import type { MobileConversation, MobileConversationResponse, MobileEvent, MobileListResponse } from '../shared/mobile-api';
+import { CLAUDE_EFFORTS, type ClaudeEffort, type Conversation, type ConversationPatch, type HubEvent, type MobileDevice, type MobileState, type NewConversationInput, type Participant, type ProviderInfo, type Task } from '../shared/types';
+import type { MobileConversation, MobileConversationResponse, MobileEvent, MobileListResponse, MobileProvidersResponse } from '../shared/mobile-api';
 
 export const MOBILE_DEFAULT_PORT = 8770;
 const PAIRING_MS = 5 * 60_000;
@@ -49,6 +49,19 @@ export const normalizeCode = (raw: unknown) =>
     .replace(/[^A-Z0-9]/g, '')
     .slice(0, 16);
 
+/** IA envoyées par le téléphone : liste courte d'identifiants simples (le hub vérifie ensuite qu'elles existent). */
+export function parseParticipants(raw: unknown): Participant[] | null {
+  if (!Array.isArray(raw) || !raw.length || raw.length > 6) return null;
+  const out: Participant[] = [];
+  for (const p of raw) {
+    const id = typeof p?.providerId === 'string' ? p.providerId : '';
+    if (!/^[a-z][a-z0-9-]{0,39}$/.test(id) || out.some((x) => x.providerId === id)) return null;
+    const model = typeof p?.model === 'string' && p.model.length <= 120 && !/[\0\n\r]/.test(p.model) ? p.model : undefined;
+    out.push({ providerId: id, ...(model ? { model } : {}) });
+  }
+  return out;
+}
+
 interface StoredDevice extends MobileDevice {
   tokenHash: string;
 }
@@ -64,7 +77,8 @@ export interface MobileHub {
   listConversations(): Conversation[];
   listTasks(): Task[];
   listProviders(): Promise<ProviderInfo[]>;
-  createConversation(): Promise<Conversation>;
+  createConversation(input?: NewConversationInput): Promise<Conversation>;
+  updateConversation(id: string, patch: ConversationPatch): Promise<Conversation>;
   sendMessage(conversationId: string, text: string): Promise<Task[]>;
   cancelTask(taskId: string): void;
   imageRoots(): string[];
@@ -384,12 +398,27 @@ export class MobileServer {
 
       if (method === 'GET' && path === '/api/events') return this.openStream(res, dev);
       if (method === 'GET' && path === '/api/conversations') return this.send(res, 200, await this.list());
+      if (method === 'GET' && path === '/api/providers') return this.send(res, 200, await this.providers());
       if (method === 'POST' && path === '/api/conversations') {
-        const conv = await this.opts.hub.createConversation();
+        // IA choisies sur le téléphone (sinon celles du PC par défaut).
+        const participants = parseParticipants((await this.body(req)).participants);
+        const conv = await this.opts.hub.createConversation(participants ? { participants } : {});
         return this.send(res, 200, { id: conv.id });
       }
       let m = /^\/api\/conversations\/([A-Za-z0-9-]{1,80})$/.exec(path);
       if (method === 'GET' && m) return this.send(res, 200, await this.conversation(m[1]));
+      if (method === 'PATCH' && m) {
+        // Changer les IA (et leur modèle) ou l'effort de Claude de cette discussion.
+        this.findConv(m[1]);
+        const body = await this.body(req);
+        const patch: ConversationPatch = {};
+        const participants = parseParticipants(body.participants);
+        if (participants) patch.participants = participants;
+        if (typeof body.effort === 'string' && (CLAUDE_EFFORTS as string[]).includes(body.effort)) patch.effort = body.effort as ClaudeEffort;
+        if (!Object.keys(patch).length) return this.send(res, 400, { error: 'Rien à modifier' });
+        await this.opts.hub.updateConversation(m[1], patch);
+        return this.send(res, 200, await this.conversation(m[1]));
+      }
       m = /^\/api\/conversations\/([A-Za-z0-9-]{1,80})\/messages$/.exec(path);
       if (method === 'POST' && m) {
         const { text } = await this.body(req);
@@ -468,6 +497,17 @@ export class MobileServer {
     return { conversations, providerNames: await this.names() };
   }
 
+  /** IA proposées sur le téléphone : connecteurs du hub (pas les sites web), facultatives seulement si prêtes. */
+  private async providers(): Promise<MobileProvidersResponse> {
+    const all = await this.opts.hub.listProviders();
+    return {
+      providers: all
+        .filter((p) => p.available || !p.optional)
+        .map((p) => ({ id: p.id, name: p.name, available: p.available, detail: p.detail, models: p.models.slice(0, 40), ...(p.defaultModel ? { defaultModel: p.defaultModel } : {}) })),
+      efforts: [...CLAUDE_EFFORTS],
+    };
+  }
+
   private async conversation(id: string): Promise<MobileConversationResponse> {
     const c = this.findConv(id);
     const msgs = c.messages.slice(-MAX_MESSAGES);
@@ -475,6 +515,8 @@ export class MobileServer {
       id: c.id,
       title: c.title,
       providers: c.participants.map((p) => p.providerId),
+      participants: c.participants.map((p) => ({ providerId: p.providerId, ...(p.model ? { model: p.model } : {}) })),
+      ...(c.effort ? { effort: c.effort } : {}),
       olderCount: c.messages.length - msgs.length,
       messages: msgs.map((m) => ({
         role: m.role,

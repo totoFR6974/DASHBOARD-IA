@@ -173,6 +173,52 @@ export async function smokeMobile(win: BrowserWindow, outDir: string, shot: (nam
     h.sendMessage = realSend;
     await pshot('mobile-discussion');
 
+    // ---------- 3b. Choix de l'IA sur le téléphone (avant : toutes les IA cochées sur le PC répondaient) ----------
+    const auth = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+    const prov = await fetch(`${base}/api/providers`, { headers: auth }).then((x) => x.json());
+    const avail = (prov.providers ?? []).filter((p: any) => p.available);
+    check(Array.isArray(prov.providers) && prov.providers.length > 0 && !prov.providers.some((p: any) => String(p.id).startsWith('web')), `API : IA proposées (${(prov.providers ?? []).map((p: any) => p.id).join(', ')})`);
+    r = await fetch(`${base}/api/conversations/${conv.id}`, { method: 'PATCH', headers: auth, body: JSON.stringify({ participants: [{ providerId: '../x' }] }) });
+    check(r.status === 400, `IA invalide refusée → ${r.status}`);
+    if (avail.length) {
+      // Discussion à plusieurs IA (comme une discussion créée sur le PC) : la puce les montre toutes.
+      conv.participants = (prov.providers as any[]).slice(0, 2).map((p) => ({ providerId: p.id }));
+      h.emit({ type: 'conversation', conversation: conv });
+      check(await until(() => pjs(`(document.querySelector('.ai-chip .ai-label')?.textContent ?? '').includes(${JSON.stringify(conv.participants.length > 1 ? '+' : '')})`)), 'Puce de l’IA affichée au-dessus de la saisie');
+      await pjs(`document.querySelector('.ai-chip').click()`);
+      check(await until(() => pjs(`document.querySelectorAll('.sheet .ai-row').length === ${prov.providers.length}`)), 'Panneau « Qui répond ? » : une ligne par IA');
+      await wait(500); // fin de l'animation d'ouverture
+      await pshot('mobile-choix-ia');
+      // Choix d'UNE IA disponible, puis Valider.
+      const target = avail[0];
+      await pjs(`(() => {
+        const rows = [...document.querySelectorAll('.sheet .ai-row')];
+        const multi = document.querySelector('.sheet .ai-multi input');
+        if (multi?.checked) { multi.checked = false; multi.dispatchEvent(new Event('change')); }
+        const row = [...document.querySelectorAll('.sheet .ai-row')].find((r) => !r.classList.contains('off') && r.textContent.includes(${JSON.stringify(String(target.name).replace(/\s*\(.*\)$/, '').replace('Claude Code', 'Claude'))}));
+        row?.querySelector('.ai-row-main')?.click();
+      })()`);
+      await wait(200);
+      await pjs(`[...document.querySelectorAll('.sheet .sheet-actions button')].pop().click()`);
+      check(await until(() => conv.participants.length === 1 && conv.participants[0].providerId === target.id), `Valider → la discussion n’a plus qu’une IA (${conv.participants.map((p) => p.providerId).join(', ')})`);
+      check(await until(() => pjs(`!document.querySelector('.sheet') && !(document.querySelector('.ai-chip .ai-label')?.textContent ?? '').includes('+')`)), 'Panneau fermé, puce mise à jour');
+      check(await pjs(`JSON.parse(localStorage.getItem('hubia.mobile.ai') ?? '[]')[0]?.providerId === ${JSON.stringify(target.id)}`), 'Choix retenu pour les prochaines discussions');
+      // Nouvelle discussion depuis le téléphone : elle reprend CE choix, pas toutes les IA du PC.
+      h.settings.defaultParticipants = (prov.providers as any[]).map((p) => ({ providerId: p.id }));
+      await pjs(`location.hash = ''`);
+      check(await until(() => pjs(`!!document.querySelector('.field.search')`)), 'Liste : barre de recherche');
+      await pjs(`(() => { const s = document.querySelector('.field.search'); s.value = 'zzzz-introuvable'; s.dispatchEvent(new Event('input')); })()`);
+      check(await until(() => pjs(`document.querySelector('.conv-list .empty')?.textContent.includes('ne correspond')`)), 'Recherche sans résultat → message');
+      await pjs(`(() => { const s = document.querySelector('.field.search'); s.value = ''; s.dispatchEvent(new Event('input')); })()`);
+      const before = hub.listConversations().length;
+      await pjs(`document.querySelector('.topbar .icon-btn').click()`);
+      check(await until(() => hub.listConversations().length === before + 1), 'Nouvelle discussion créée depuis le téléphone');
+      const fresh = hub.listConversations().sort((a, b) => b.createdAt - a.createdAt)[0];
+      check(fresh.participants.length === 1 && fresh.participants[0].providerId === target.id, `Nouvelle discussion : seulement l’IA choisie sur le téléphone (${fresh.participants.map((p) => p.providerId).join(', ')})`);
+    } else {
+      console.log('  (aucune IA disponible dans ce test : choix de l’IA non testé dans l’interface)');
+    }
+
     // ---------- 4. Révocation puis désactivation ----------
     await js(`document.querySelector('[data-mobile-device] button')?.click()`);
     check(await until(() => mobile.state().devices.length === 0), 'Révoquer → téléphone retiré');

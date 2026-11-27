@@ -38,10 +38,29 @@ export interface MobileConversation {
   id: string;
   title: string;
   providers: string[];
+  /** IA de la discussion avec leur modèle (absent = modèle par défaut). */
+  participants: { providerId: string; model?: string }[];
+  /** Effort de Claude (absent = par défaut). */
+  effort?: string;
   messages: MobileMessage[];
   /** Messages plus anciens non envoyés (discussion très longue). */
   olderCount: number;
   running: MobileRunning[];
+}
+
+/** IA proposées dans le sélecteur du téléphone. */
+export interface MobileProvider {
+  id: string;
+  name: string;
+  available: boolean;
+  detail: string;
+  models: string[];
+  defaultModel?: string;
+}
+
+export interface MobileProvidersResponse {
+  providers: MobileProvider[];
+  efforts: string[];
 }
 
 export interface MobileListResponse {

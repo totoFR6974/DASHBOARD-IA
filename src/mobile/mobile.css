@@ -410,3 +410,195 @@ body {
 .toast[hidden] {
   display: none;
 }
+
+/* Choix de l'IA : puce au-dessus de la saisie (comme le sélecteur de modèle de l'appli Claude) */
+.composer-wrap {
+  background: var(--bg-2);
+  border-top: 1px solid var(--line);
+}
+.composer-wrap .composer {
+  border-top: 0;
+  padding-top: 4px;
+}
+.composer-tools {
+  display: flex;
+  gap: 8px;
+  padding: 8px calc(env(safe-area-inset-right) + 10px) 0 calc(env(safe-area-inset-left) + 10px);
+}
+.ai-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg-3);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+}
+.ai-chip .ai-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ai-chip .chev {
+  color: var(--muted);
+}
+.ai-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* Panneau du bas */
+.sheet-back {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: flex-end;
+  background: rgba(0, 0, 0, 0.55);
+  animation: fade 0.15s ease;
+}
+.sheet {
+  width: 100%;
+  max-height: 85dvh;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 8px calc(env(safe-area-inset-right) + 16px) calc(env(safe-area-inset-bottom) + 14px) calc(env(safe-area-inset-left) + 16px);
+  background: var(--bg-2);
+  border-radius: 20px 20px 0 0;
+  border-top: 1px solid var(--line);
+  animation: rise 0.2s ease;
+}
+.sheet-grip {
+  align-self: center;
+  width: 40px;
+  height: 5px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.18);
+}
+.sheet-title {
+  font-size: 18px;
+  font-weight: 700;
+}
+.sheet-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+}
+.sheet-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.ai-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--bg);
+}
+.ai-row.on {
+  border-color: rgba(243, 122, 50, 0.6);
+  background: var(--accent-soft);
+}
+.ai-row.off {
+  opacity: 0.5;
+}
+.ai-row-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 6px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+}
+.ai-row-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.ai-row-text .small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ai-mark {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 2px solid var(--muted);
+  font-size: 14px;
+  font-weight: 700;
+  color: #111;
+}
+.ai-mark.round {
+  border-radius: 50%;
+}
+.ai-mark.square {
+  border-radius: 7px;
+}
+.ai-mark.on {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+.ai-model {
+  margin: 0 8px 8px 46px;
+}
+.ai-multi,
+.ai-effort {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 4px;
+  font-size: 14px;
+  color: var(--muted);
+}
+.ai-multi input {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--accent);
+}
+.ai-effort {
+  justify-content: space-between;
+}
+.ai-effort .field {
+  min-width: 150px;
+}
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes rise {
+  from {
+    transform: translateY(30px);
+    opacity: 0;
+  }
+}
+
+/* Recherche dans la liste */
+.search-wrap {
+  padding: 10px calc(env(safe-area-inset-right) + 12px) 4px calc(env(safe-area-inset-left) + 12px);
+}
+.field.search {
+  width: 100%;
+  min-height: 42px;
+}

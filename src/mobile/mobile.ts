@@ -1,9 +1,11 @@
 // Accès mobile du Hub IA : page du téléphone. Liste des discussions, lecture, envoi, réponses en direct, arrêt.
 // Tout passe par l'API du hub avec le jeton de ce téléphone (localStorage), obtenu à l'appairage.
 // Le texte des messages est inséré en textContent (jamais en HTML) : un message ne peut pas injecter de code.
-import type { MobileConvSummary, MobileConversation, MobileConversationResponse, MobileEvent, MobileListResponse, MobileMessage } from '../shared/mobile-api';
+import type { MobileConvSummary, MobileConversation, MobileConversationResponse, MobileEvent, MobileListResponse, MobileMessage, MobileProvider, MobileProvidersResponse } from '../shared/mobile-api';
 
 const TOKEN_KEY = 'hubia.mobile.token';
+/** Dernier choix d'IA fait sur ce téléphone : repris pour les nouvelles discussions. */
+const AI_KEY = 'hubia.mobile.ai';
 const app = document.getElementById('app')!;
 const toastEl = document.getElementById('toast')!;
 
@@ -200,12 +202,28 @@ function renderPairing(prefill = ''): void {
   if (!prefill) code.focus();
 }
 
+let listQuery = '';
+let lastList: MobileConvSummary[] = [];
+
 async function renderList(): Promise<void> {
   current = null;
   const newBtn = h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Nouvelle discussion', onclick: () => void newConversation() }, '+');
   const list = h('ul', { class: 'conv-list' });
-  app.replaceChildren(topbar('Discussions', newBtn), h('main', { class: 'scroll' }, list));
+  const search = h('input', { class: 'field search', type: 'search', placeholder: 'Rechercher une discussion', value: listQuery, enterkeyhint: 'search' });
+  search.addEventListener('input', () => {
+    listQuery = search.value;
+    fillList(list);
+  });
+  app.replaceChildren(topbar('Discussions', newBtn), h('main', { class: 'scroll' }, h('div', { class: 'search-wrap' }, search), list));
   await refreshList(list);
+}
+
+function fillList(list: HTMLUListElement): void {
+  const q = listQuery.trim().toLowerCase();
+  const shown = q ? lastList.filter((c) => c.title.toLowerCase().includes(q) || c.preview.toLowerCase().includes(q)) : lastList;
+  if (!lastList.length) return void list.replaceChildren(h('li', { class: 'empty' }, 'Aucune discussion. Touche « + » pour en commencer une.'));
+  if (!shown.length) return void list.replaceChildren(h('li', { class: 'empty' }, 'Aucune discussion ne correspond.'));
+  list.replaceChildren(...shown.map(convItem));
 }
 
 async function refreshList(list = app.querySelector<HTMLUListElement>('.conv-list')): Promise<void> {
@@ -213,8 +231,8 @@ async function refreshList(list = app.querySelector<HTMLUListElement>('.conv-lis
   const data = await api<MobileListResponse>('/api/conversations');
   names = data.providerNames;
   if (current || !list.isConnected) return;
-  if (!data.conversations.length) return void list.replaceChildren(h('li', { class: 'empty' }, 'Aucune discussion. Touche « + » pour en commencer une.'));
-  list.replaceChildren(...data.conversations.map(convItem));
+  lastList = data.conversations;
+  fillList(list);
 }
 
 function convItem(c: MobileConvSummary): HTMLElement {
@@ -232,7 +250,9 @@ function convItem(c: MobileConvSummary): HTMLElement {
 
 async function newConversation(): Promise<void> {
   try {
-    const { id } = await api<{ id: string }>('/api/conversations', 'POST', {});
+    // IA choisie sur ce téléphone (pas toutes les IA cochées en dernier sur le PC).
+    const participants = await defaultChoice();
+    const { id } = await api<{ id: string }>('/api/conversations', 'POST', participants ? { participants } : {});
     location.hash = `#c/${id}`;
   } catch (err: any) {
     if (!(err instanceof Unauthorized)) toast(err?.message ?? String(err));
@@ -252,7 +272,12 @@ async function renderConversation(id: string): Promise<void> {
   composerEl.addEventListener('input', autosize);
   actionBtn = h('button', { class: 'send', type: 'button', onclick: () => void onAction() }, 'Envoyer');
   const back = h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Retour', onclick: () => (location.hash = '') }, '‹');
-  app.replaceChildren(topbar('…', back), h('main', { class: 'scroll chat' }, messagesEl), h('footer', { class: 'composer' }, composerEl, actionBtn));
+  aiChip = h('button', { class: 'ai-chip', type: 'button', 'aria-label': 'Choisir l’IA qui répond', onclick: () => void openAiSheet() }, '…');
+  app.replaceChildren(
+    topbar('…', back),
+    h('main', { class: 'scroll chat' }, messagesEl),
+    h('footer', { class: 'composer-wrap' }, h('div', { class: 'composer-tools' }, aiChip), h('div', { class: 'composer' }, composerEl, actionBtn)),
+  );
   await loadConversation(id, true);
 }
 
@@ -287,6 +312,7 @@ async function loadConversation(id: string, scroll = false): Promise<void> {
   current = data.conversation;
   const title = app.querySelector('.topbar .title');
   if (title) title.textContent = current.title;
+  updateAiChip();
   liveNodes.clear();
   const nodes: Node[] = [];
   if (current.olderCount) nodes.push(h('div', { class: 'older muted small' }, `${current.olderCount} message(s) plus ancien(s) : visibles sur le PC`));
@@ -340,6 +366,163 @@ async function onAction(): Promise<void> {
   } finally {
     actionBtn?.removeAttribute('disabled');
   }
+}
+
+// ---------- Choix de l'IA (comme le sélecteur de modèle de l'appli Claude) ----------
+
+let aiChip: HTMLButtonElement | null = null;
+let providers: MobileProvider[] | null = null;
+let efforts: string[] = [];
+type Choice = { providerId: string; model?: string }[];
+
+const EFFORT_LABEL: Record<string, string> = { default: 'Par défaut', low: 'Faible', medium: 'Moyen', high: 'Élevé', xhigh: 'Très élevé', max: 'Maximum' };
+
+async function loadProviders(force = false): Promise<MobileProvider[]> {
+  if (!providers || force) {
+    const data = await api<MobileProvidersResponse>('/api/providers');
+    providers = data.providers;
+    efforts = data.efforts;
+    for (const p of data.providers) names[p.id] ??= p.name;
+  }
+  return providers;
+}
+
+/** Nom court : « Claude Code » → « Claude », « Ollama (local) » → « Ollama ». */
+const shortName = (id: string) => providerName(id).replace(/\s*\(.*\)$/, '').replace('Claude Code', 'Claude');
+
+function updateAiChip(): void {
+  if (!aiChip || !current) return;
+  const ps = current.participants ?? current.providers.map((providerId) => ({ providerId }));
+  const label = ps.length === 1 ? `${shortName(ps[0].providerId)}${ps[0].model && ps[0].model !== 'default' ? ` · ${ps[0].model}` : ''}` : ps.map((p) => shortName(p.providerId)).join(' + ');
+  aiChip.replaceChildren(h('span', { class: 'ai-dot' }), h('span', { class: 'ai-label' }, label || 'Choisir une IA'), h('span', { class: 'chev' }, '▾'));
+}
+
+/** IA des nouvelles discussions : dernier choix de ce téléphone, sinon Claude (ou la 1re IA disponible). */
+async function defaultChoice(): Promise<Choice | null> {
+  try {
+    const list = await loadProviders();
+    let saved: unknown = null;
+    try {
+      saved = JSON.parse(localStorage.getItem(AI_KEY) ?? 'null');
+    } catch {
+      /* choix illisible : ignoré */
+    }
+    if (Array.isArray(saved) && saved.length && saved.every((p) => list.some((x) => x.id === p?.providerId && x.available))) return saved as Choice;
+    const first = list.find((p) => p.id === 'claude' && p.available) ?? list.find((p) => p.available);
+    return first ? [{ providerId: first.id }] : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Panneau du bas : quelle(s) IA répondent, leur modèle, l'effort de Claude. */
+async function openAiSheet(): Promise<void> {
+  if (!current) return;
+  let list: MobileProvider[];
+  try {
+    list = await loadProviders(true);
+  } catch (err: any) {
+    if (!(err instanceof Unauthorized)) toast(err?.message ?? String(err));
+    return;
+  }
+  const conv = current;
+  const chosen = new Map<string, string | undefined>((conv.participants ?? conv.providers.map((providerId) => ({ providerId, model: undefined }))).map((p) => [p.providerId, p.model]));
+  let multi = chosen.size > 1;
+  let effort = conv.effort ?? 'default';
+  const close = () => overlay.remove();
+  const body = h('div', { class: 'sheet-body' });
+
+  const draw = (): void => {
+    const rows = list.map((p) => {
+      const on = chosen.has(p.id);
+      const pick = () => {
+        if (!p.available) return;
+        if (multi) {
+          if (on && chosen.size > 1) chosen.delete(p.id);
+          else if (!on) chosen.set(p.id, undefined);
+        } else {
+          const keep = chosen.get(p.id);
+          chosen.clear();
+          chosen.set(p.id, keep);
+        }
+        draw();
+      };
+      const mark = h('span', { class: `ai-mark ${multi ? 'square' : 'round'} ${on ? 'on' : ''}` }, on ? '✓' : '');
+      const row = h(
+        'div',
+        { class: `ai-row ${on ? 'on' : ''} ${p.available ? '' : 'off'}` },
+        h(
+          'button',
+          { type: 'button', class: 'ai-row-main', disabled: !p.available, onclick: pick },
+          mark,
+          h('span', { class: 'ai-row-text' }, h('b', {}, shortName(p.id) || p.name), h('span', { class: 'muted small' }, p.available ? p.detail : `Indisponible : ${p.detail}`)),
+        ),
+      );
+      if (on && p.models.length > 1) {
+        const sel = h('select', { class: 'field ai-model', 'aria-label': `Modèle de ${p.name}` });
+        const cur = chosen.get(p.id) ?? p.defaultModel;
+        for (const m of p.models) sel.append(h('option', { value: m, selected: m === cur }, m === 'default' ? 'Modèle par défaut' : m === p.defaultModel ? `${m} (par défaut)` : m));
+        sel.addEventListener('change', () => chosen.set(p.id, sel.value));
+        row.append(sel);
+      }
+      return row;
+    });
+    const multiToggle = h('input', { type: 'checkbox', checked: multi });
+    multiToggle.addEventListener('change', () => {
+      multi = multiToggle.checked;
+      if (!multi && chosen.size > 1) {
+        const [first] = chosen.keys();
+        const keep = chosen.get(first);
+        chosen.clear();
+        chosen.set(first, keep);
+      }
+      draw();
+    });
+    const extra: Node[] = [];
+    if (chosen.has('claude') && efforts.length) {
+      const sel = h('select', { class: 'field', 'aria-label': 'Effort de Claude' });
+      for (const e of efforts) sel.append(h('option', { value: e, selected: e === effort }, EFFORT_LABEL[e] ?? e));
+      sel.addEventListener('change', () => (effort = sel.value));
+      extra.push(h('label', { class: 'ai-effort' }, h('span', {}, 'Effort de Claude'), sel));
+    }
+    body.replaceChildren(...rows, h('label', { class: 'ai-multi' }, multiToggle, h('span', {}, 'Plusieurs IA à la fois (elles répondent toutes)')), ...extra);
+  };
+  draw();
+
+  const save = h('button', { class: 'btn primary', type: 'button' }, 'Valider');
+  save.addEventListener('click', async () => {
+    const participants: Choice = [...chosen].map(([providerId, model]) => ({ providerId, ...(model ? { model } : {}) }));
+    if (!participants.length) return toast('Choisis au moins une IA');
+    save.setAttribute('disabled', '');
+    try {
+      const res = await api<MobileConversationResponse>(`/api/conversations/${encodeURIComponent(conv.id)}`, 'PATCH', { participants, ...(chosen.has('claude') ? { effort } : {}) });
+      localStorage.setItem(AI_KEY, JSON.stringify(participants));
+      names = res.providerNames;
+      if (current?.id === conv.id) {
+        current.participants = res.conversation.participants;
+        current.providers = res.conversation.providers;
+        current.effort = res.conversation.effort;
+        updateAiChip();
+      }
+      close();
+    } catch (err: any) {
+      if (!(err instanceof Unauthorized)) toast(err?.message ?? String(err));
+      save.removeAttribute('disabled');
+    }
+  });
+  const overlay: HTMLDivElement = h(
+    'div',
+    { class: 'sheet-back', onclick: (e: Event) => e.target === overlay && close() },
+    h(
+      'div',
+      { class: 'sheet', role: 'dialog', 'aria-label': 'Choisir l’IA' },
+      h('div', { class: 'sheet-grip' }),
+      h('div', { class: 'sheet-title' }, 'Qui répond ?'),
+      body,
+      h('div', { class: 'sheet-actions' }, h('button', { class: 'btn', type: 'button', onclick: close }, 'Annuler'), save),
+    ),
+  );
+  document.body.append(overlay);
 }
 
 // ---------- Événements en direct ----------
