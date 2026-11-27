@@ -171,6 +171,52 @@ export function importedMessage(m: ClaudeSessionMessage): ChatMessage {
   return { role: m.role, content, ...(m.role === 'assistant' ? { providerId: 'claude' } : {}), imported: true, at: m.at || Date.now() };
 }
 
+/**
+ * Discussions du hub reliées à la MÊME session Claude Code (récupérée plusieurs fois) : réunies en une seule.
+ * On garde la plus récemment utilisée ; ses messages et ceux des doublons sont fusionnés par ordre chronologique
+ * (un message identique — même rôle, même heure, même texte — n'apparaît qu'une fois) ; les tâches et les messages
+ * en attente des doublons sont rattachés à la discussion gardée. Rien n'est perdu.
+ */
+export function mergeClaudeDuplicates(conversations: Conversation[], tasks: Task[]): { conversations: Conversation[]; removed: number } {
+  const groups = new Map<string, Conversation[]>();
+  for (const c of conversations) {
+    const sid = c.providerSessions?.claude;
+    if (!sid) continue;
+    const g = groups.get(sid);
+    if (g) g.push(c);
+    else groups.set(sid, [c]);
+  }
+  const drop = new Set<string>();
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    const [keep, ...others] = [...group].sort((a, b) => b.updatedAt - a.updatedAt);
+    const seen = new Set<string>();
+    const all = [...keep.messages, ...others.flatMap((o) => o.messages)]
+      .map((m, i) => ({ m, i }))
+      .sort((a, b) => a.m.at - b.m.at || a.i - b.i)
+      .map((x) => x.m)
+      .filter((m) => {
+        const key = `${m.role}|${m.at}|${m.content}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    keep.messages = all;
+    keep.claudeOrigin ??= others.find((o) => o.claudeOrigin)?.claudeOrigin;
+    // Une seule a déjà parlé dans la session : plus de copie indépendante en attente.
+    if (group.some((c) => !c.claudeForkPending)) delete keep.claudeForkPending;
+    const queued = others.flatMap((o) => o.queue ?? []);
+    if (queued.length) keep.queue = [...(keep.queue ?? []), ...queued];
+    keep.createdAt = Math.min(...group.map((c) => c.createdAt));
+    keep.updatedAt = Math.max(...group.map((c) => c.updatedAt));
+    for (const o of others) {
+      drop.add(o.id);
+      for (const t of tasks) if (t.conversationId === o.id) t.conversationId = keep.id;
+    }
+  }
+  return { conversations: drop.size ? conversations.filter((c) => !drop.has(c.id)) : conversations, removed: drop.size };
+}
+
 /** Tours de parole des messages repris : chaque question et sa réponse partagent un turnId (réponse sans question = tour à part). */
 export function withImportedTurns(messages: ChatMessage[]): ChatMessage[] {
   let current = '';
@@ -379,6 +425,12 @@ export class Hub {
     }
 
     for (const conv of this.db.data.conversations) this.migrate(conv);
+    // Même session Claude Code récupérée plusieurs fois (« Récupérer ici ») : une seule discussion, messages réunis.
+    const merged = mergeClaudeDuplicates(this.db.data.conversations, this.db.data.tasks);
+    if (merged.removed) {
+      this.db.data.conversations = merged.conversations;
+      this.db.save();
+    }
 
     // Assistant de premier démarrage : déjà utilisateur (discussions ou tâches) → on ne le montre pas.
     if (typeof s.onboardingDone !== 'boolean') {
@@ -1365,6 +1417,11 @@ export class Hub {
         "Claude Code a supprimé l'original de cette session (nettoyage automatique des anciennes conversations) : `claude --resume` ne la retrouve plus, elle ne peut donc pas être continuée. Elle reste lisible ici grâce à la copie archivée.",
       );
     }
+    // Session déjà dans le hub (récupérée avant, ou lancée par le hub) : on rouvre CETTE discussion, pas de doublon.
+    const existing = this.db.data.conversations
+      .filter((c) => c.claudeOrigin === s.id || c.providerSessions?.claude === s.id)
+      .sort((a, b) => b.updatedAt - a.updatedAt)[0];
+    if (existing) return existing;
     const conv = await this.createConversation({
       participants: [{ providerId: 'claude' }],
       agent: 'Claude Code',

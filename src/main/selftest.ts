@@ -3,8 +3,8 @@
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Task, WorkflowRun } from '../shared/types';
-import { Hub, samePath } from './hub';
+import type { Conversation, Task, WorkflowRun } from '../shared/types';
+import { Hub, mergeClaudeDuplicates, samePath } from './hub';
 import { imagePreset } from './image-models';
 import { macModelChoice } from './providers/comfyui';
 import { detectExistingComfy, findComfyRoot, unpackedPath } from './image-engine';
@@ -779,6 +779,32 @@ async function testClaudeLogs(): Promise<void> {
       !!r1?.imported && r1.role === 'assistant' && r1.content.startsWith('Salut') && /🔧 Read/.test(r1.content) && r1.turnId === q1.turnId &&
       !note?.imported && /Copie indépendante/.test(note?.content ?? '') && !!note?.turnId && note.turnId !== q1.turnId,
     `historique repris dans la discussion (${c1.messages.map((m) => `${m.role}${m.imported ? '*' : ''}`).join(', ')})`,
+  );
+  // Récupérer à nouveau la même session (copie ou reprise) : la discussion existante est rouverte, pas de doublon.
+  const nBefore = h2.listConversations().length;
+  const again = await h2.continueClaudeSession('s1', 'resume');
+  const again2 = await h2.continueClaudeSession('s1', 'fork');
+  check(again.id === c1.id && again2.id === c1.id && h2.listConversations().length === nBefore, 'même session récupérée deux fois → même discussion (aucun doublon)');
+  // Doublons déjà créés (versions précédentes) : fusionnés en une discussion, messages réunis sans répétition.
+  const base = { participants: [{ providerId: 'claude' }], agent: 'Claude Code', cwd: 'C:\\x', permission: 'default' as const };
+  const dupA: Conversation = { ...base, id: 'dupA', title: 'A', createdAt: 1, updatedAt: 50, providerSessions: { claude: 'S' }, messages: [
+    { role: 'assistant', content: 'note A', at: 10 },
+    { role: 'user', content: 'question 1', at: 20 },
+    { role: 'assistant', content: 'réponse 1', at: 21, taskId: 't1' },
+  ] };
+  const dupB: Conversation = { ...base, id: 'dupB', title: 'B', createdAt: 5, updatedAt: 90, providerSessions: { claude: 'S' }, claudeOrigin: 'S', messages: [
+    { role: 'assistant', content: 'note A', at: 10 },
+    { role: 'user', content: 'question 2', at: 30 },
+    { role: 'assistant', content: 'réponse 2', at: 31, taskId: 't2' },
+  ] };
+  const other: Conversation = { ...base, id: 'other', title: 'Autre', createdAt: 1, updatedAt: 60, providerSessions: { claude: 'T' }, messages: [{ role: 'user', content: 'x', at: 1 }] };
+  const tks = [{ id: 't1', conversationId: 'dupA' }, { id: 't2', conversationId: 'dupB' }] as Task[];
+  const mg = mergeClaudeDuplicates([dupA, dupB, other], tks);
+  const kept = mg.conversations.find((c) => c.id === 'dupB');
+  check(
+    mg.removed === 1 && mg.conversations.length === 2 && !!kept && kept.messages.map((m) => m.content).join('|') === 'note A|question 1|réponse 1|question 2|réponse 2' &&
+      kept.createdAt === 1 && tks.every((t) => t.conversationId === 'dupB') && mg.conversations.some((c) => c.id === 'other'),
+    `doublons d'une même session fusionnés (${mg.removed} retiré, ${kept?.messages.length} messages, tâches rattachées)`,
   );
   let refused = false;
   try {

@@ -4853,19 +4853,22 @@ function renderClaudeReader(): void {
       const missing = 'Impossible : Claude Code a supprimé l’original de cette session, `claude --resume` ne la retrouve plus. Elle reste lisible ici.';
       // Déjà récupérée (ou lancée par le hub) : on y retourne au lieu d'en créer une de plus.
       const linked = convForClaudeSession(s.id);
+      // Déjà dans le hub : un seul bouton, qui rouvre la discussion (une session = une seule discussion).
+      if (linked) {
+        return [
+          h(
+            'button',
+            { type: 'button', class: 'btn primary small', title: `Discussion du hub : « ${linked.title} »`, onclick: () => void showConversation(linked) },
+            '💬 Ouvrir la discussion',
+          ),
+        ];
+      }
       return [
-        linked
-          ? h(
-              'button',
-              { type: 'button', class: 'btn primary small', title: `Discussion du hub : « ${linked.title} »`, onclick: () => void showConversation(linked) },
-              '💬 Ouvrir la discussion',
-            )
-          : null,
         h(
           'button',
           {
             type: 'button',
-            class: linked ? 'btn small' : 'btn primary small',
+            class: 'btn primary small',
             disabled: !!s.originalMissing,
             title: s.originalMissing
               ? missing
