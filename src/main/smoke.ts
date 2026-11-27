@@ -13,6 +13,7 @@ import { smokeIcons } from './smoke-icons';
 import { smokeModules } from './smoke-modules';
 import { smokeFakeClaude } from './smoke-fakeclaude';
 import { smokeVaultSync } from './smoke-vaultsync';
+import { smokeMobile } from './smoke-mobile';
 import { cpSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -559,6 +560,7 @@ export async function runSmoke(win: BrowserWindow, outDir: string, getWeb: () =>
     if (!before || r.seen < before || r.animated > r.total - before) throw new Error('Discussion : les bulles déjà affichées rejouent leur animation (clignotement)');
     return;
   }
+  if (only === 'mobile') return smokeMobile(win, outDir, shot, js);
   if (only === 'web') return smokeWeb(win, outDir, getWeb, shot, js);
   if (only === 'webmic') return smokeWebMic(win, outDir, getWeb, shot, js);
   if (only === 'weblogout') return smokeWebLogout(win, outDir, getWeb, shot, js);

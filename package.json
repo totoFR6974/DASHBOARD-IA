@@ -1,7 +1,7 @@
 {
   "name": "hub-ia",
   "productName": "Hub IA",
-  "version": "0.1.0-alpha.10",
+  "version": "0.1.0-alpha.11",
   "private": true,
   "description": "Hub local pour piloter plusieurs IA (Claude Code, Ollama...) depuis un seul endroit",
   "author": "Hub IA",
@@ -39,6 +39,7 @@
       "dist/pdf-text.js",
       "dist/icon.png",
       "dist/renderer/**",
+      "dist/mobile/**",
       "!dist/**/*.map",
       "package.json"
     ],
@@ -138,6 +139,7 @@
     "electron-builder": "^26.18.0",
     "esbuild": "^0.28.2",
     "pdfjs-dist": "6.5.438",
+    "qrcode-generator": "^2.0.4",
     "typescript": "^7.0.2"
   },
   "dependencies": {

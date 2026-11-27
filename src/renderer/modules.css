@@ -83,3 +83,10 @@
 .ob-mod-foot { margin-top: 4px; }
 .ob-mod-total { font-weight: 600; font-variant-numeric: tabular-nums; }
 .ob-mod-also { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+/* ---------- Accès mobile (Réglages) ---------- */
+.mobile-error { color: var(--warn); }
+.mobile-pairing { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; padding: 12px; border-radius: 12px; border: 1px solid var(--line); background: rgba(255, 255, 255, 0.025); }
+.mobile-qr { width: 180px; height: 180px; border-radius: 8px; background: #fff; image-rendering: pixelated; }
+.mobile-pairing-info { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 220px; align-items: flex-start; }
+.mobile-code { font: 600 26px ui-monospace, Consolas, monospace; letter-spacing: 4px; color: var(--accent); user-select: all; }

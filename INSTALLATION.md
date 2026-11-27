@@ -110,6 +110,33 @@ L'index de recherche par le sens et les réglages du hub restent sur chaque appa
 le dossier synchronisé. Si le dossier synchronisé est absent au lancement (Google Drive pas encore démarré, disque
 débranché), le hub le signale dans les Réglages et n'écrit aucune note ailleurs en attendant.
 
+## Piloter le hub depuis son téléphone (accès mobile)
+
+Le hub peut servir une page pensée pour le téléphone. Tu y retrouves la liste de tes discussions et les réponses
+en direct ; tu peux envoyer un message, arrêter une réponse et voir les images générées. Ça marche avec toutes les
+IA du hub : Claude, Ollama, images.
+
+1. **Réglages › Accès mobile** : coche **Activer l'accès mobile**. À la première fois, Windows (ou macOS) demande
+   d'autoriser Hub IA sur le réseau. Accepte pour les **réseaux privés**. Si ton réseau Windows est réglé en
+   « Public », passe-le en « Privé » (Paramètres › Réseau et Internet), sinon le téléphone ne pourra pas joindre le PC.
+2. **Associer un téléphone** : un QR code et un code de 8 caractères s'affichent pendant 5 minutes. Scanne le QR
+   code avec l'appareil photo du téléphone, puis donne un nom à l'appareil.
+   - **iPhone** : ouvre d'abord l'adresse affichée dans Safari, ajoute la page à l'écran d'accueil (Partager ›
+     Sur l'écran d'accueil), ouvre-la depuis l'icône, puis **tape le code**. La page de l'écran d'accueil ne partage
+     pas le stockage de Safari, donc une association faite dans Safari ne la suit pas.
+   - **Android** : après l'association, menu ⋮ › Ajouter à l'écran d'accueil.
+3. **À distance** : connecte le téléphone à ton **VPN** qui mène au réseau de la maison, puis utilise la même
+   adresse (`http://<adresse du PC>:8770`).
+
+Le PC doit rester **allumé**, hub ouvert. L'option **« Empêcher la mise en veille du PC »** est cochée par
+défaut : tant que l'accès mobile est activé, le PC ne s'endort plus tout seul. L'écran, lui, s'éteint normalement.
+
+**Sécurité** : chaque téléphone a son propre jeton. Le hub n'en garde qu'une empreinte, et tu peux révoquer un
+téléphone à tout moment dans la même section. La connexion est en HTTP non chiffré : utilise-la uniquement sur ton
+réseau local ou ton VPN. **N'ouvre jamais le port sur ta box** (pas de redirection de port vers internet).
+L'accès mobile ne donne que les discussions : ni les réglages, ni les fichiers du PC (seulement les images des
+discussions), ni les workflows.
+
 ## Désinstaller
 
 - **Version installée** : Paramètres Windows › Applications › **Hub IA** › Désinstaller.

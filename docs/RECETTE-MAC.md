@@ -79,3 +79,11 @@ Cas où l'installation automatique est refusée (bouton « Télécharger » manu
 - [ ] Clic sur le micro sans modèle : bulle « La dictée vocale a besoin d'un modèle (≈ … Mo) », « Télécharger maintenant » → progression → l'enregistrement démarre tout seul
 - [ ] Image jointe à Ollama sans modèle vision : bouton « Installer la reconnaissance d'images (… Go) » dans l'avertissement (16 Go → variante 8B conseillée)
 - [ ] Détourage (✂) sans modèle : même bulle ; sans WebGPU, la bulle explique pourquoi c'est impossible
+
+## 8. Accès mobile (alpha.11)
+- [ ] Réglages › **Accès mobile** › Activer : macOS demande d'accepter les connexions entrantes pour Hub IA → Autoriser ; « En service » avec l'adresse du Mac
+- [ ] « Associer un téléphone » : QR code + code ; scanner avec l'iPhone ouvre la page, nom → « Associé » ; le téléphone apparaît dans la liste
+- [ ] iPhone, écran d'accueil : Partager › Sur l'écran d'accueil, ouvrir depuis l'icône, taper un nouveau code → la liste des discussions s'affiche
+- [ ] Envoyer un message depuis le téléphone : la réponse s'écrit en direct sur le téléphone ET dans le hub ; « Arrêter » coupe la réponse
+- [ ] Une image générée apparaît en vignette, un appui l'agrandit
+- [ ] Téléphone en 4G + VPN de la maison : même adresse, ça marche ; « Révoquer » dans les Réglages → le téléphone revient à l'écran d'association

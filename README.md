@@ -53,6 +53,10 @@ npm start
   Seuls le presse-papiers et le plein écran sont autorisés (pas de micro ni de caméra). Les liens externes
   s'ouvrent dans ton navigateur. Ajouter un site : liste `PANELS` dans `src/main/web-panels.ts`.
 - **Réglages** : chemin de Claude, adresse d'Ollama, permissions et dossier de travail par défaut.
+- **Accès mobile** (Réglages › Accès mobile, désactivé par défaut) : page pour téléphone servie par le hub sur le
+  réseau local ou via un VPN (`src/main/mobile-server.ts` + `src/mobile/`). Discussions, réponses en direct,
+  envoi, arrêt, images. Appairage par QR code ou code à 8 caractères, jeton par téléphone (seule l'empreinte est
+  gardée), révocable. Voir INSTALLATION.md.
 
 ### Niveaux de permission de Claude
 
@@ -180,6 +184,8 @@ src/
   main/providers/          un fichier par IA (claude.ts, ollama.ts) — contrat dans provider.ts
   preload/preload.ts       expose window.hub à l'interface
   renderer/                interface (HTML/CSS/TypeScript sans framework)
+  main/mobile-server.ts    accès mobile : serveur HTTP local, appairage, API des discussions
+  mobile/                  page du téléphone (servie par mobile-server.ts)
 ```
 
 ### Ajouter une IA

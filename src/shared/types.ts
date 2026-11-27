@@ -873,6 +873,8 @@ export type HubEvent =
   /** Modules complémentaires : état / progression d'un module (même événement pour tous). */
   | { type: 'module'; module: ModuleInfo }
   | { type: 'update'; state: UpdateState }
+  /** Accès mobile : état du serveur local, appareils associés, appairage en cours. */
+  | { type: 'mobile'; state: MobileState }
   | { type: 'setup'; progress: SetupProgress }
   /** Une session Claude Code est apparue ou a changé (surveillance de ~/.claude/projects). */
   | { type: 'claudeSessions' }
@@ -1095,7 +1097,38 @@ export interface HubApi {
   /** Ouvre un lien officiel (liste blanche : ollama.com, claude.ai, docs.claude.com, code.claude.com) dans le navigateur. */
   openExternal(url: string): Promise<void>;
   setOnboardingDone(done: boolean): Promise<void>;
+  /** Accès mobile (piloter les discussions depuis un téléphone du réseau local / VPN). */
+  mobileState(): Promise<MobileState>;
+  setMobileEnabled(enabled: boolean, port?: number): Promise<MobileState>;
+  startMobilePairing(address?: string): Promise<MobileState>;
+  cancelMobilePairing(): Promise<MobileState>;
+  revokeMobileDevice(id: string): Promise<MobileState>;
+  setMobileKeepAwake(on: boolean): Promise<MobileState>;
   onEvent(listener: (event: HubEvent) => void): () => void;
+}
+
+/** Téléphone associé à l'accès mobile (le jeton n'est jamais renvoyé : seule son empreinte est gardée). */
+export interface MobileDevice {
+  id: string;
+  name: string;
+  createdAt: number;
+  lastSeenAt?: number;
+}
+
+export interface MobileState {
+  /** Réglage : l'accès mobile est activé (le serveur démarre avec le hub). */
+  enabled: boolean;
+  /** Le serveur écoute vraiment. */
+  running: boolean;
+  /** Empêcher la mise en veille du PC tant que l'accès mobile est en service (défaut : oui). */
+  keepAwake: boolean;
+  port: number;
+  /** Adresses IPv4 de ce PC sur les réseaux locaux (la première est la plus probable). */
+  addresses: string[];
+  error?: string;
+  devices: MobileDevice[];
+  /** Appairage en cours : lien à ouvrir sur le téléphone, QR code (SVG), code à taper (ABCD-EFGH) et échéance. */
+  pairing?: { url: string; qrSvg: string; code: string; expiresAt: number };
 }
 
 // ---------- Panneaux web (vrais sites ChatGPT, Gemini… affichés dans l'appli) ----------
@@ -1256,5 +1289,11 @@ export const HUB_METHODS = [
   'checkForUpdates',
   'installUpdateNow',
   'cancelUpdateDownload',
+  'mobileState',
+  'setMobileEnabled',
+  'startMobilePairing',
+  'cancelMobilePairing',
+  'revokeMobileDevice',
+  'setMobileKeepAwake',
 ] as const;
 export type HubMethod = (typeof HUB_METHODS)[number];

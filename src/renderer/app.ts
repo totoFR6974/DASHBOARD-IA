@@ -12,6 +12,7 @@ import { attachBusy, attachmentChips, clearPending, initAttachments, pendingImag
 import { hydrateIcons, icon, iconSelect, iconText } from './icons';
 import { initModules, moduleHintForError, moduleOptionsBox, openModuleCard, renderModulesSettings } from './module-offer';
 import { wikiLinks } from './wikilinks';
+import { initMobileSettings, refreshMobileSettings } from './mobile-settings';
 import type {
   AgentRole,
   ChatMessage,
@@ -3330,6 +3331,7 @@ async function renderSettings(): Promise<void> {
   renderWebAccountSettings(webPanels, state.web.panels, toast);
   renderVisionSettings($('vision-settings-body'));
   renderUpdateSettings();
+  refreshMobileSettings();
   try {
     const { roles, plannerRoleId } = await hub.listRoles();
     state.roles = roles;
@@ -4920,6 +4922,7 @@ function bindUi(): void {
     rerenderSide: () => renderKnowledgeSide(),
   });
   initVaultSync({ hub, toast: (msg) => toast(msg), openNoteIn: (baseId, path) => void openNoteIn(baseId, path) });
+  initMobileSettings(hub, toast);
   $('kn-new-btn').addEventListener('click', () => openNewNoteRow());
   $('kn-new-cancel').addEventListener('click', () => closeNewNoteRow());
   const createFromRow = () => {

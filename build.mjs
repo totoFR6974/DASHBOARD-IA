@@ -11,6 +11,8 @@ await Promise.all([
   build({ ...common, entryPoints: ['src/main/selftest.ts'], outfile: 'dist/selftest.js', platform: 'node', format: 'cjs', external: ['7zip-bin'] }),
   build({ ...common, entryPoints: ['src/preload/preload.ts'], outfile: 'dist/preload.js', platform: 'node', format: 'cjs', external: ['electron'] }),
   build({ ...common, entryPoints: ['src/renderer/app.ts'], outfile: 'dist/renderer/app.js', platform: 'browser', format: 'iife' }),
+  // Accès mobile : page servie au téléphone par le hub (mobile-server.ts). Cible Safari iOS 15 / Chrome Android récents.
+  build({ ...common, sourcemap: false, entryPoints: ['src/mobile/mobile.ts'], outfile: 'dist/mobile/mobile.js', platform: 'browser', format: 'iife', target: ['safari15', 'chrome100'] }),
   // Dictée vocale : Whisper (Transformers.js, Apache 2.0) dans un worker à part, chargé à la demande.
   build({ ...common, sourcemap: false, minify: true, entryPoints: ['src/renderer/voice-worker.ts'], outfile: 'dist/renderer/voice-worker.js', platform: 'browser', format: 'iife', logLevel: 'error' }),
   // Détourage d'images : BiRefNet (MIT) via Transformers.js, même moteur ONNX que la dictée, worker chargé à la demande.
@@ -48,4 +50,8 @@ for (const f of ['inter-latin-wght-normal.woff2', 'inter-latin-ext-wght-normal.w
 }
 // Icône de fenêtre (générée par `npm run icon` dans build/).
 if (existsSync('build/icon.png')) cpSync('build/icon.png', 'dist/icon.png');
+// Accès mobile : page, style, manifeste et icône (écran d'accueil du téléphone).
+mkdirSync('dist/mobile', { recursive: true });
+for (const f of ['index.html', 'mobile.css', 'manifest.webmanifest']) cpSync(`src/mobile/${f}`, `dist/mobile/${f}`);
+if (existsSync('build/icon.png')) cpSync('build/icon.png', 'dist/mobile/icon.png');
 console.log('Build OK');

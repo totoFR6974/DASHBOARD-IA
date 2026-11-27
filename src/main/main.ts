@@ -1,5 +1,5 @@
 // Process principal Electron : fenêtre, sécurité, pont IPC vers le Hub.
-import { app, BrowserWindow, dialog, ipcMain, Notification, protocol, screen, session, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Notification, powerSaveBlocker, protocol, screen, session, shell } from 'electron';
 import { readFile } from 'node:fs/promises';
 import { copyFileSync, createReadStream, existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import { Readable } from 'node:stream';
@@ -15,6 +15,7 @@ import { installAppMenu, titleBarOptions } from './window-chrome';
 import { clipboardFilePaths } from './clipboard-files';
 import { IMAGE_TYPES, isAllowedImagePath, registerImageActions } from './image-actions';
 import { checkOpenPath, isRealPathInside, mainWindowPermission } from './path-guard';
+import { MobileServer } from './mobile-server';
 
 const appDir = app.getAppPath();
 
@@ -74,6 +75,9 @@ let hub: Hub;
 let win: BrowserWindow | null = null;
 let webPanels: WebPanels | null = null;
 let updater: Updater | null = null;
+let mobile: MobileServer | null = null;
+/** powerSaveBlocker actif pendant que l'accès mobile est en service (option « empêcher la veille »). */
+let keepAwakeId: number | null = null;
 /** Fermeture déjà confirmée (tâches en cours) : pas de seconde question. */
 let closeConfirmed = false;
 
@@ -356,6 +360,39 @@ function start(): void {
   });
   updater.start();
 
+  // Accès mobile (Réglages › Accès mobile) : serveur local pour piloter les discussions depuis un téléphone.
+  // Tests : données isolées (accès désactivé par défaut), écoute sur 127.0.0.1 et port libre.
+  mobile = new MobileServer({
+    hub: {
+      listConversations: () => hub.listConversations(),
+      listTasks: () => hub.listTasks(),
+      listProviders: () => hub.listProviders(),
+      createConversation: () => hub.createConversation(),
+      sendMessage: (id, text) => hub.sendMessage(id, text),
+      cancelTask: (id) => hub.cancelTask(id),
+      imageRoots: () => hub.imageRoots(),
+      onEvent: (l) => hub.onEvent(l),
+    },
+    file: join(dataDir, 'mobile.json'),
+    staticDir: join(appDir, 'dist', 'mobile'),
+    emit: (state) => {
+      if (win && !win.isDestroyed()) win.webContents.send('hub:event', { type: 'mobile', state });
+    },
+    // Joignable à distance seulement si le PC ne dort pas : la veille système est bloquée (pas l'écran, qui s'éteint).
+    // (Tests : on trace seulement, la veille du PC n'est pas touchée.)
+    keepAwake: (on) => {
+      if (smoke) return void ((globalThis as { __mobileKeepAwake?: boolean }).__mobileKeepAwake = on);
+      if (on && keepAwakeId === null) keepAwakeId = powerSaveBlocker.start('prevent-app-suspension');
+      else if (!on && keepAwakeId !== null) {
+        powerSaveBlocker.stop(keepAwakeId);
+        keepAwakeId = null;
+      }
+    },
+    ...(smoke ? { forcePort: 0, host: '127.0.0.1' } : {}),
+  });
+  void mobile.init();
+  if (smoke) (globalThis as { __mobileSmoke?: MobileServer }).__mobileSmoke = mobile; // tests (smoke-mobile.ts)
+
   // Notification Windows quand une étape manuelle (ChatGPT / Gemini web) attend l'utilisateur.
   const notified = new Set<string>();
   const keyOf = (runId: string, s: { id: string; startedAt?: number }) => `${runId}:${s.id}:${s.startedAt ?? 0}`;
@@ -421,6 +458,18 @@ function start(): void {
         return updater!.installNow();
       case 'cancelUpdateDownload':
         return updater!.cancelDownload();
+      case 'mobileState':
+        return mobile!.state();
+      case 'setMobileEnabled':
+        return mobile!.setEnabled(!!args[0], args[1] === undefined || args[1] === null ? undefined : Number(args[1]));
+      case 'startMobilePairing':
+        return mobile!.startPairing(args[0] ? String(args[0]) : undefined);
+      case 'cancelMobilePairing':
+        return mobile!.cancelPairing();
+      case 'revokeMobileDevice':
+        return mobile!.revokeDevice(String(args[0]));
+      case 'setMobileKeepAwake':
+        return mobile!.setKeepAwake(!!args[0]);
       case 'openInObsidian':
         return openInObsidian(args[0] === undefined || args[0] === null || args[0] === '' ? undefined : String(args[0]), args[1] ? String(args[1]) : undefined);
       default:
