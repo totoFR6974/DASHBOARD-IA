@@ -1,7 +1,7 @@
 {
   "name": "hub-ia",
   "productName": "Hub IA",
-  "version": "0.1.0-alpha.12",
+  "version": "0.1.0-alpha.13",
   "private": true,
   "description": "Hub local pour piloter plusieurs IA (Claude Code, Ollama...) depuis un seul endroit",
   "author": "Hub IA",

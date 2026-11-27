@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import type { Task, WorkflowRun } from '../shared/types';
 import { Hub, samePath } from './hub';
 import { imagePreset } from './image-models';
+import { macModelChoice } from './providers/comfyui';
 import { detectExistingComfy, findComfyRoot, unpackedPath } from './image-engine';
 import { isAllowedExternalUrl, recommendModel } from './setup';
 import { compareSemver, fetchReleases, isPrereleaseVersion, pickLatestRelease, readableUpdateError } from './update-check';
@@ -679,6 +680,18 @@ function testImagePresets(st: Awaited<ReturnType<typeof hub.imageStatus>>): void
     'graphe Z-Image Turbo conforme au modèle officiel (8 étapes, cfg 1, res_multistep, lumina2)',
   );
   check((sdxl!.buildGraph('x', 1) as Record<string, any>)['4']?.class_type === 'CheckpointLoaderSimple', 'graphe SDXL inchangé');
+  // Mac : Z-Image Turbo (≈ 20 Go) refusé sous 24 Go de mémoire unifiée, SDXL pris à la place s'il est installé.
+  const both = ['z-image-turbo', 'sdxl'];
+  const m16 = macModelChoice('z-image-turbo', 16, both);
+  const m16z = macModelChoice('z-image-turbo', 16, ['z-image-turbo']);
+  check(
+    m16.presetId === 'sdxl' && /16/.test(m16.note ?? '') && !m16.error &&
+      !!m16z.error && /Installe SDXL/.test(m16z.error) &&
+      macModelChoice('z-image-turbo', 32, both).presetId === 'z-image-turbo' &&
+      macModelChoice('z-image-turbo', null, both).presetId === 'z-image-turbo' && !macModelChoice('z-image-turbo', null, both).note &&
+      macModelChoice('sdxl', 8, both).presetId === 'sdxl',
+    'Mac 16 Go : Z-Image Turbo remplacé par SDXL (ou erreur claire), inchangé à 32 Go et hors Mac',
+  );
   check(
     (st.imageModels ?? []).length === 2 && (st.imageModels ?? []).every((m) => !m.installed && m.sizeBytes > 0) && st.activeModel === undefined,
     `liste des modèles dans le statut (${(st.imageModels ?? []).map((m) => m.id).join(', ')}), aucun actif sans installation`,
@@ -755,7 +768,7 @@ async function testClaudeLogs(): Promise<void> {
 
   const h2 = new Hub(join(dir, 'data-cl'), dir, { claudeLogsRoot: root });
   const listed = await h2.listClaudeSessions();
-  const conv = await h2.continueClaudeSession('s2');
+  const conv = await h2.continueClaudeSession('s2', 'resume'); // « fork » (défaut) préfixe le titre de « ⑂ »
   check(listed.length === 2 && conv.providerSessions.claude === 's2' && conv.title === 'Question B longue' && conv.participants[0]?.providerId === 'claude', 'reprise dans le hub : discussion liée à la session (claude --resume)');
   let refused = false;
   try {

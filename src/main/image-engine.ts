@@ -492,10 +492,27 @@ export class ImageEngine {
     throw new Error('ComfyUI Desktop ne répond pas après 3 minutes (termine sa configuration au premier lancement, puis réessaie)');
   }
 
-  /** Programme l'arrêt du serveur après 10 min sans image (libère la carte graphique). */
+  /**
+   * Après 10 min sans image : arrête le serveur lancé par le hub (Windows) ; sur Mac, ComfyUI Desktop n'est pas
+   * à nous (on ne le ferme pas) mais on lui demande de vider sa mémoire : sinon le modèle (7 à 20 Go) reste
+   * chargé dans la mémoire unifiée et sature le Mac.
+   */
   scheduleIdleStop(): void {
     this.clearIdle();
-    this.idleTimer = setTimeout(() => this.stop(), IDLE_STOP_MS);
+    this.idleTimer = setTimeout(() => {
+      if (this.child) this.stop();
+      else void this.freeMemory();
+    }, IDLE_STOP_MS);
+  }
+
+  /** Demande à ComfyUI de décharger ses modèles et de rendre la mémoire (POST /free). Sans effet s'il ne répond pas. */
+  async freeMemory(): Promise<void> {
+    await fetch(`${this.url}/free`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ unload_models: true, free_memory: true }),
+      signal: AbortSignal.timeout(5000),
+    }).catch(() => undefined);
   }
 
   private clearIdle(): void {

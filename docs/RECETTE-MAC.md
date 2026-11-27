@@ -93,3 +93,8 @@ Cas où l'installation automatique est refusée (bouton « Télécharger » manu
 - [ ] (si abonnement) Installer Codex ou agy, « Revérifier », « Se connecter » ouvre le Terminal → connexion navigateur → l'IA passe au vert et apparaît dans le menu des IA ; une réponse dans une discussion
 - [ ] IA web : plus de case « Côte à côte » ; onglets ChatGPT, Gemini, Claude ; cocher Gemini → 2 sites côte à côte ; cocher Claude → 3 sites côte à côte ; double-clic sur un onglet → ce site seul
 - [ ] Connexion à claude.ai dans le panneau (e-mail + code, ou Google)
+
+## 10. Consommation au repos (alpha.13)
+- [ ] Hub ouvert sur Discussions, rien en cours : Moniteur d'activité › GPU → Hub IA et WindowServer proches de 0 % (avant : ~35 % chacun)
+- [ ] Z-Image Turbo installé sur un Mac 16 Go : une génération utilise SDXL à la place (note « Z-Image Turbo a besoin d'environ 20 Go… ») ; sans SDXL, message clair au lieu d'attendre 10 min
+- [ ] 10 min après la dernière image : la mémoire de ComfyUI Desktop redescend (Moniteur d'activité › Mémoire)

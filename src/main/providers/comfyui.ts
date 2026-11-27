@@ -7,7 +7,7 @@ import type { ImageEngine } from '../image-engine';
 import { imagePreset } from '../image-models';
 import { promptForCutout } from '../cutout';
 import { CancelledError, type Provider, type RunContext, type RunResult } from './provider';
-import { testOnlyEnv } from '../platform';
+import { detectAppleChip, testOnlyEnv } from '../platform';
 import { fakeIllustration } from '../fake-image';
 
 /** Images simulées (HUB_FAKE_IMAGE=1) : tests uniquement, ignoré dans l'appli packagée. Lu à chaque appel. */
@@ -17,6 +17,21 @@ const fakeImages = (): boolean => testOnlyEnv('HUB_FAKE_IMAGE') === '1';
 export const IMAGE_PROVIDERS = new Set(['comfyui']);
 
 const GENERATION_TIMEOUT_MS = 10 * 60 * 1000;
+
+/** Mémoire unifiée (Go) en dessous de laquelle Z-Image Turbo (≈ 20 Go chargés) sature un Mac et n'aboutit pas. */
+export const MAC_ZIMAGE_MIN_GB = 24;
+
+/**
+ * Mac : choix du modèle selon la mémoire. Z-Image Turbo charge ≈ 20 Go : sous 24 Go le Mac passe en swap, la
+ * génération dépasse le délai et sature la mémoire. → SDXL à la place s'il est installé (avec une note), sinon
+ * une erreur claire. Hors Mac (memoryGb null) ou modèle léger : rien ne change.
+ */
+export function macModelChoice(presetId: string, memoryGb: number | null, installed: string[]): { presetId: string; note?: string; error?: string } {
+  if (memoryGb === null || presetId !== 'z-image-turbo' || memoryGb >= MAC_ZIMAGE_MIN_GB) return { presetId };
+  const why = `Z-Image Turbo a besoin d'environ 20 Go de mémoire et ce Mac en a ${memoryGb} : il sature la mémoire et ne finit pas`;
+  if (installed.includes('sdxl')) return { presetId: 'sdxl', note: `${why}. SDXL utilisé à la place.` };
+  return { presetId, error: `${why}. Installe SDXL (Réglages › Modules complémentaires › Images locales), il tient dans ${memoryGb} Go.` };
+}
 
 export class ComfyUIProvider implements Provider {
   readonly id = 'comfyui';
@@ -56,8 +71,12 @@ export class ComfyUIProvider implements Provider {
     const started = Date.now();
     // Modèle demandé s'il est installé (ancien format « fichier checkpoint » accepté), sinon le modèle actif.
     const requested = imagePreset(ctx.model);
-    const presetId = requested && this.engine.models().includes(requested.id) ? requested.id : this.engine.activeModel();
-    const preset = imagePreset(presetId);
+    const installedIds = this.engine.models();
+    const wanted = requested && installedIds.includes(requested.id) ? requested.id : this.engine.activeModel();
+    const choice = macModelChoice(wanted ?? '', detectAppleChip()?.memoryGb ?? null, installedIds);
+    if (choice.error) throw new Error(choice.error);
+    if (choice.note) ctx.onActivity({ kind: 'info', text: choice.note });
+    const preset = imagePreset(choice.presetId);
     if (!preset) throw new Error('Aucun modèle d’image installé (Réglages › Images locales)');
     const model = preset.name;
     if (!ctx.prompt.trim()) throw new Error("Décris l'image à générer");
@@ -112,7 +131,12 @@ export class ComfyUIProvider implements Provider {
         }
         await new Promise((r) => setTimeout(r, 1000));
       }
-      if (!outputs) throw new Error('La génération a dépassé 10 minutes');
+      if (!outputs) {
+        // On abandonne : ComfyUI doit arrêter AUSSI (sinon il continue des heures en arrière-plan et garde la mémoire).
+        onAbort();
+        void this.engine.freeMemory();
+        throw new Error(`La génération a dépassé 10 minutes : arrêtée et mémoire de ComfyUI libérée. ${preset.id === 'sdxl' ? 'Ferme les applis gourmandes et réessaie.' : 'Ce modèle est sans doute trop lourd pour cette machine : essaie SDXL.'}`);
+      }
 
       const destDir = ctx.addDirs?.[0] ?? this.imagesDir();
       mkdirSync(destDir, { recursive: true });
