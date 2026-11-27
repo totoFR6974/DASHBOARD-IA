@@ -105,13 +105,13 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .msg-body p { margin: 0 0 8px; }
 .msg-body p:last-child { margin-bottom: 0; }
 .msg-body pre { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; overflow-x: auto; font-size: 12.5px; }
-.msg-body code { font-family: Consolas, 'Cascadia Code', monospace; }
+.msg-body code { font-family: var(--mono); }
 .msg-body :not(pre) > code { background: var(--bg); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
 .msg-body h1, .msg-body h2, .msg-body h3, .msg-body h4 { margin: 10px 0 6px; font-size: 15px; }
 .msg-body ul, .msg-body ol { margin: 4px 0 8px; padding-left: 22px; }
 .msg-body a { color: var(--accent); }
 .activity { display: flex; flex-direction: column; gap: 3px; margin-bottom: 8px; }
-.act { font-size: 12px; color: var(--muted); font-family: Consolas, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 780px; }
+.act { font-size: 12px; color: var(--muted); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 780px; }
 .act.tool::before { content: '🔧 '; }
 .act.info::before { content: 'ℹ️ '; }
 .act.error { color: var(--err); }
@@ -224,7 +224,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .wf-step-title-input { flex: 1; font-weight: 600; }
 .wf-role-select { max-width: 320px; }
 .wf-instr { width: 100%; resize: vertical; line-height: 1.45; }
-.wf-step-id { font-family: Consolas, monospace; font-size: 11px; color: var(--muted); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; }
+.wf-step-id { font-family: var(--mono); font-size: 11px; color: var(--muted); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; }
 
 .wf-board { flex: 1; display: flex; min-height: 0; }
 .wf-columns { flex: 1; display: flex; gap: 14px; padding: 16px 18px; overflow: auto; align-items: flex-start; }
@@ -364,7 +364,7 @@ mark { background: color-mix(in srgb, var(--warn) 35%, transparent); color: var(
 .kn-path:focus { background: var(--bg); border-color: var(--accent); }
 .kn-status { min-width: 120px; text-align: right; }
 .kn-status.dirty { color: var(--warn); }
-.kn-editor { flex: 1; resize: none; border: 0; border-radius: 0; padding: 18px 24px; font-family: Consolas, 'Cascadia Code', monospace; font-size: 13.5px; line-height: 1.6; background: var(--bg); }
+.kn-editor { flex: 1; resize: none; border: 0; border-radius: 0; padding: 18px 24px; font-family: var(--mono); font-size: 13.5px; line-height: 1.6; background: var(--bg); }
 .kn-editor:focus { border: 0; }
 .kn-preview { flex: 1; overflow-y: auto; padding: 18px 28px; line-height: 1.65; }
 .kn-preview .wikilink { color: var(--accent); text-decoration: none; border-bottom: 1px dashed var(--accent); }
@@ -412,7 +412,7 @@ button.mic-btn .mic-ico, button.mic-btn.busy .mic-ico { display: inline-flex; }
 
 /* Réglages : cartes d'information */
 .info-card .kv-line { display: flex; gap: 8px; align-items: baseline; font-size: 13px; }
-.info-card code { font-family: Consolas, monospace; font-size: 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; word-break: break-all; }
+.info-card code { font-family: var(--mono); font-size: 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; word-break: break-all; }
 .img-dir { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 560px; }
 .img-downloads ul { margin: 4px 0; padding-left: 20px; font-size: 13px; }
 .progress-wrap { display: flex; flex-direction: column; gap: 6px; }

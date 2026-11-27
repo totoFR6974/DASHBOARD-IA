@@ -132,6 +132,9 @@ export async function smokeMobile(win: BrowserWindow, outDir: string, shot: (nam
     check(await until(() => pjs(`[...document.querySelectorAll('.conv-title')].some((e) => e.textContent === 'Test mobile')`)), 'Liste : discussion visible');
     check(await pjs(`!!document.querySelector('.live')`), 'Liste : « En cours » affiché');
     check(await until(() => pjs(`document.querySelector('.topbar .dot')?.classList.contains('on')`)), 'Flux en direct connecté');
+    // Même typo que le hub sur le PC : Inter, servie par le hub et réellement chargée par la page.
+    const font = await pjs(`(async () => { await document.fonts.ready; await document.fonts.load('16px Inter'); return { ok: document.fonts.check('16px Inter'), family: getComputedStyle(document.body).fontFamily }; })()`);
+    check(font?.ok === true && /^"?Inter/.test(font?.family ?? ''), `Police Inter chargée sur le téléphone (${font?.family})`);
     await pshot('mobile-liste');
 
     await pjs(`location.hash = '#c/${conv.id}'`);

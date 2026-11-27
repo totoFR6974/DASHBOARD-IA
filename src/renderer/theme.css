@@ -22,6 +22,8 @@
 }
 
 :root {
+  /* Une seule police à chasse fixe (code, commandes, codes) : Cascadia/Consolas sous Windows, SF Mono/Menlo sur Mac. */
+  --mono: 'Cascadia Code', Consolas, ui-monospace, 'SF Mono', Menlo, monospace;
   --base: #0b0c0f;
   /* --bg sert aux champs et blocs de code : sombre translucide */
   --bg: rgba(6, 7, 10, 0.55);
@@ -620,7 +622,7 @@ tr.task-row.has-kids td.title { cursor: pointer; }
 .ob-extra-text { flex: 1; display: flex; flex-direction: column; gap: 4px; }
 .ob-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .ob-code { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px; background: rgba(0, 0, 0, 0.4); border: 1px solid var(--line); }
-.ob-code code { flex: 1; font-family: Consolas, 'Cascadia Code', monospace; font-size: 13px; color: #ffd9c2; user-select: all; }
+.ob-code code { flex: 1; font-family: var(--mono); font-size: 13px; color: #ffd9c2; user-select: all; }
 .ob-progress { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: 12px; background: rgba(0, 0, 0, 0.25); border: 1px solid var(--line); font-size: 12.5px; }
 .ob-progress.error { border-color: rgba(255, 110, 110, 0.45); color: #ffc2c2; }
 .ob-progress.done { border-color: rgba(143, 220, 107, 0.4); color: #cdeec0; }
@@ -700,3 +702,6 @@ td.title.child { padding-left: 30px; color: #c9ccd2; }
 .img-model.active { border-color: rgba(243, 122, 50, 0.55); box-shadow: 0 0 0 3px rgba(243, 122, 50, 0.08); }
 .img-model-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .img-model-active { color: #ffd6bd; border-color: rgba(243, 122, 50, 0.5); background: var(--accent-soft); }
+
+/* Code sans style propre (pre, code, samp) : même police à chasse fixe partout. Les touches (kbd) restent en Inter. */
+code, pre, samp { font-family: var(--mono); }

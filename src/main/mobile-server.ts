@@ -105,10 +105,13 @@ const STATIC: Record<string, [file: string, type: string]> = {
   '/m.css': ['mobile.css', 'text/css; charset=utf-8'],
   '/icon.png': ['icon.png', 'image/png'],
   '/manifest.webmanifest': ['manifest.webmanifest', 'application/manifest+json'],
+  // Police Inter du hub (même typo que sur le PC), servie par le hub : rien n'est chargé depuis internet.
+  '/inter-latin.woff2': ['inter-latin-wght-normal.woff2', 'font/woff2'],
+  '/inter-latin-ext.woff2': ['inter-latin-ext-wght-normal.woff2', 'font/woff2'],
 };
 
 const CSP =
-  "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+  "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest();
 

@@ -89,7 +89,7 @@
 .mobile-pairing { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; padding: 12px; border-radius: 12px; border: 1px solid var(--line); background: rgba(255, 255, 255, 0.025); }
 .mobile-qr { width: 180px; height: 180px; border-radius: 8px; background: #fff; image-rendering: pixelated; }
 .mobile-pairing-info { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 220px; align-items: flex-start; }
-.mobile-code { font: 600 26px ui-monospace, Consolas, monospace; letter-spacing: 4px; color: var(--accent); user-select: all; }
+.mobile-code { font: 600 26px var(--mono); letter-spacing: 4px; color: var(--accent); user-select: all; }
 
 /* ---------- Agents facultatifs (Codex, Antigravity) : couleurs et ajout depuis les Réglages ---------- */
 :root { --codex: #3fbf8f; --antigravity: #8ab4f8; }
@@ -97,7 +97,7 @@
 .tag.p-antigravity { color: var(--antigravity); border-color: color-mix(in srgb, var(--antigravity) 40%, transparent); background: color-mix(in srgb, var(--antigravity) 8%, transparent); }
 .provider-block { display: flex; flex-direction: column; gap: 6px; }
 .provider-setup { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 12px 4px 30px; }
-.provider-install-cmd { font: 12px ui-monospace, Consolas, monospace; padding: 4px 8px; border-radius: 6px; background: rgba(0, 0, 0, 0.35); border: 1px solid var(--line); user-select: all; }
+.provider-install-cmd { font: 12px var(--mono); padding: 4px 8px; border-radius: 6px; background: rgba(0, 0, 0, 0.35); border: 1px solid var(--line); user-select: all; }
 
 /* ---------- IA web : sites cochés affichés ensemble (1, 2 ou 3) ---------- */
 .web-area { display: grid; grid-template-columns: minmax(0, 1fr); grid-auto-rows: minmax(0, 1fr); }

@@ -54,4 +54,8 @@ if (existsSync('build/icon.png')) cpSync('build/icon.png', 'dist/icon.png');
 mkdirSync('dist/mobile', { recursive: true });
 for (const f of ['index.html', 'mobile.css', 'manifest.webmanifest']) cpSync(`src/mobile/${f}`, `dist/mobile/${f}`);
 if (existsSync('build/icon.png')) cpSync('build/icon.png', 'dist/mobile/icon.png');
+// Même police Inter que sur le PC (servie par le hub au téléphone).
+for (const f of ['inter-latin-wght-normal.woff2', 'inter-latin-ext-wght-normal.woff2']) {
+  cpSync(`node_modules/@fontsource-variable/inter/files/${f}`, `dist/mobile/${f}`);
+}
 console.log('Build OK');
