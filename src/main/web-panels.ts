@@ -55,6 +55,14 @@ const PANELS: PanelDef[] = [
     // Cookies du compte Google (posés sur .google.com une fois connecté).
     login: { url: 'https://accounts.google.com/', names: ['__Secure-1PSID', '__Secure-3PSID', 'SID'] },
   },
+  {
+    // Claude web (claude.ai) : en option, pour ceux qui n'ont pas l'abonnement Claude Code (formule gratuite).
+    id: 'claude',
+    name: 'Claude',
+    url: 'https://claude.ai/new',
+    micOrigin: 'https://claude.ai',
+    login: { url: 'https://claude.ai/', names: ['sessionKey'] },
+  },
 ];
 
 /**

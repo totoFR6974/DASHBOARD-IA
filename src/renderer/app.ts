@@ -51,7 +51,7 @@ import type {
   ClaudeEffort,
   UpdateState,
 } from '../shared/types';
-import { CLAUDE_EFFORTS } from '../shared/types';
+import { CLAUDE_EFFORTS, DEFAULT_WEB_PANELS } from '../shared/types';
 
 declare global {
   interface Window {
@@ -79,8 +79,8 @@ const state = {
   selectedTaskId: null as string | null,
   web: {
     panels: [] as WebPanelState[],
-    selected: ['chatgpt'] as string[],
-    split: false,
+    /** Sites affichés ensemble dans l'onglet IA web (mémorisés entre deux lancements). */
+    selected: loadWebSelection(),
   },
   settings: null as HubSettings | null,
   // Workflows
@@ -371,7 +371,8 @@ function fmtGb(bytes: number): string {
 // ---------- Barre du haut ----------
 
 function renderPills(): void {
-  const providerPills = state.providers.map((p) =>
+  // IA facultatives (Codex, Antigravity) : pastille seulement quand elles sont prêtes.
+  const providerPills = state.providers.filter((p) => p.available || !p.optional).map((p) =>
     h(
       'span',
       { class: 'pill', title: `${p.name} — ${p.detail}\n(cliquer pour revérifier)`, onclick: () => void hub.listProviders(true) },
@@ -381,7 +382,7 @@ function renderPills(): void {
       p.name.replace(/\s*\(.*\)$/, '').replace('Claude Code', 'Claude'),
     ),
   );
-  const webPills = state.web.panels.map((p) =>
+  const webPills = shownWebPanels().map((p) =>
     h(
       'span',
       {
@@ -391,7 +392,8 @@ function renderPills(): void {
         onclick: () => openWebPanel(p.id),
       },
       h('span', { class: `dot ${p.loggedIn ? 'on' : 'off'}` }),
-      p.name,
+      // « Claude » existe déjà à gauche (Claude Code) : le site est nommé « Claude web » ici.
+      p.id === 'claude' ? 'Claude web' : p.name,
     ),
   );
   $('provider-pills').replaceChildren(...providerPills, ...(webPills.length ? [h('span', { class: 'pill-sep' }), ...webPills] : []));
@@ -564,35 +566,103 @@ function folderSelect(conv: Conversation): HTMLElement {
 
 // ---------- IA web ----------
 
-function openWebPanel(id: string): void {
-  if (state.web.split) {
-    if (!state.web.selected.includes(id)) state.web.selected = [...state.web.selected, id];
-  } else {
-    state.web.selected = [id];
+const WEB_SELECTION_KEY = 'hub.web.selected';
+
+function loadWebSelection(): string[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(WEB_SELECTION_KEY) ?? '[]');
+    if (Array.isArray(v) && v.every((x) => typeof x === 'string') && v.length) return v.slice(0, 3);
+  } catch {
+    /* valeur illisible : sélection par défaut */
   }
+  return ['chatgpt'];
+}
+
+function setWebSelection(ids: string[]): void {
+  state.web.selected = ids;
+  localStorage.setItem(WEB_SELECTION_KEY, JSON.stringify(ids));
+}
+
+/** Sites proposés dans l'onglet IA web (réglage ; Claude web en option). */
+function shownWebPanels(): WebPanelState[] {
+  const ids = state.settings?.webPanelsShown?.length ? state.settings.webPanelsShown : DEFAULT_WEB_PANELS;
+  return state.web.panels.filter((p) => ids.includes(p.id));
+}
+
+/** Sites affichés : ceux cochés parmi les sites proposés (au moins un). */
+function webSelection(): string[] {
+  const shown = shownWebPanels().map((p) => p.id);
+  const sel = state.web.selected.filter((id) => shown.includes(id));
+  return sel.length ? sel : shown.slice(0, 1);
+}
+
+/** Pastille / lien vers un site : il rejoint ceux déjà affichés (côte à côte). */
+function openWebPanel(id: string): void {
+  const sel = webSelection();
+  if (!sel.includes(id)) setWebSelection([...sel, id]);
   setView('web');
 }
 
 function renderWebTabs(): void {
-  const { panels, selected, split } = state.web;
+  const selected = webSelection();
   $('web-tabs').replaceChildren(
-    ...panels.map((p) =>
-      h(
+    ...shownWebPanels().map((p) => {
+      const on = selected.includes(p.id);
+      return h(
         'button',
         {
-          class: selected.includes(p.id) ? 'active' : '',
-          title: split ? 'Afficher / masquer ce site' : `Afficher ${p.name}`,
+          class: on ? 'active' : '',
+          'data-web-tab': p.id,
+          'aria-pressed': on ? 'true' : 'false',
+          title: on
+            ? selected.length > 1
+              ? `Masquer ${p.name} (double-clic : ${p.name} seul)`
+              : `${p.name} est affiché (coche un autre site pour les voir côte à côte)`
+            : `Afficher ${p.name} à côté (double-clic : ${p.name} seul)`,
           onclick: () => {
-            if (!split) state.web.selected = [p.id];
-            else if (selected.includes(p.id)) {
-              if (selected.length > 1) state.web.selected = selected.filter((x) => x !== p.id);
-            } else state.web.selected = [...selected, p.id];
+            const cur = webSelection();
+            if (cur.includes(p.id)) {
+              if (cur.length > 1) setWebSelection(cur.filter((x) => x !== p.id));
+            } else setWebSelection([...cur, p.id]);
+            renderWeb();
+          },
+          ondblclick: () => {
+            setWebSelection([p.id]);
             renderWeb();
           },
         },
+        h('span', { class: 'web-tab-check' }, on ? '✓' : ''),
         p.name,
-      ),
-    ),
+      );
+    }),
+  );
+  renderWebSitesMenu();
+}
+
+/** Menu « Sites ▾ » : choisir les sites proposés (ex. ajouter Claude web pour ceux sans abonnement Claude Code). */
+function renderWebSitesMenu(): void {
+  const menu = $('web-sites-menu');
+  const shown = shownWebPanels().map((p) => p.id);
+  menu.replaceChildren(
+    h('div', { class: 'muted small' }, 'Sites proposés dans cet onglet'),
+    ...state.web.panels.map((p) => {
+      const cb = h('input', { type: 'checkbox', 'data-web-site': p.id, checked: shown.includes(p.id), disabled: shown.length === 1 && shown.includes(p.id) });
+      cb.addEventListener('change', async () => {
+        const next = cb.checked ? [...shown, p.id] : shown.filter((x) => x !== p.id);
+        try {
+          const saved = await hub.setWebPanelsShown(next);
+          if (state.settings) state.settings.webPanelsShown = saved;
+          // Un site ajouté s'affiche tout de suite, à côté des autres.
+          if (cb.checked && !webSelection().includes(p.id)) setWebSelection([...webSelection(), p.id]);
+        } catch (err: any) {
+          toast(err?.message ?? String(err));
+        }
+        renderWeb();
+        renderPills();
+      });
+      const hint = p.id === 'claude' ? h('span', { class: 'muted small' }, ' — sans abonnement Claude Code') : null;
+      return h('label', { class: 'check' }, cb, ` ${p.name}`, hint);
+    }),
   );
 }
 
@@ -622,16 +692,44 @@ function webPaneBar(p: WebPanelState): HTMLElement {
 
 function renderWeb(): void {
   renderWebTabs();
-  const visible = state.web.panels.filter((p) => state.web.selected.includes(p.id));
+  const sel = webSelection();
+  const visible = shownWebPanels().filter((p) => sel.includes(p.id));
   $('web-area').replaceChildren(
     ...visible.map((p) => h('div', { class: 'web-pane' }, webPaneBar(p), h('div', { class: 'web-slot', 'data-id': p.id }))),
   );
+  arrangeWebPanes();
   sendWebLayout();
+}
+
+/** Largeur minimale confortable d'un site : en dessous, la grille passe sur deux lignes (fenêtre étroite). */
+const WEB_PANE_MIN = 320;
+
+/**
+ * Disposition selon le nombre de sites cochés : 1 = plein écran, 2 ou 3 = côte à côte. Fenêtre trop étroite pour
+ * tous les mettre côte à côte : ligne(s) supplémentaire(s), le dernier site prenant toute la largeur restante.
+ */
+function arrangeWebPanes(): void {
+  const area = $('web-area');
+  const panes = [...area.querySelectorAll<HTMLElement>('.web-pane')];
+  const n = panes.length;
+  const width = area.clientWidth || window.innerWidth;
+  const cols = Math.max(1, Math.min(n, Math.floor(width / WEB_PANE_MIN)));
+  const rows = Math.max(1, Math.ceil(n / cols));
+  area.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+  area.style.gridTemplateRows = `repeat(${rows}, minmax(0, 1fr))`;
+  area.dataset.panes = String(n);
+  panes.forEach((p, i) => {
+    const lastRowStart = (rows - 1) * cols;
+    const inLastRow = i >= lastRowStart;
+    const lastRowCount = n - lastRowStart;
+    p.style.gridColumn = inLastRow && lastRowCount < cols && i === n - 1 ? `${i - lastRowStart + 1} / -1` : '';
+  });
 }
 
 function sendWebLayout(): void {
   // Assistant ouvert : les sites (vues natives) passeraient au-dessus de lui.
-  if (state.view !== 'web' || isOnboardingOpen()) return webPanels.layout([]);
+  // Menu « Sites ▾ » ouvert : idem, le temps du choix.
+  if (state.view !== 'web' || isOnboardingOpen() || !$('web-sites-menu').classList.contains('hidden')) return webPanels.layout([]);
   const rects: WebRect[] = [...document.querySelectorAll<HTMLElement>('.web-slot')].map((el) => {
     const r = el.getBoundingClientRect();
     return { id: el.dataset.id!, x: r.left, y: r.top, width: r.width, height: r.height };
@@ -745,7 +843,7 @@ function renderChatHeader(conv: Conversation | undefined): void {
     extra.push(
       h(
         'select',
-        { title: 'Ce que Claude a le droit de faire', onchange: (e: Event) => void hub.updateConversation(conv.id, { permission: (e.target as HTMLSelectElement).value as ClaudePermission }) },
+        { title: 'Ce que les agents (Claude, Codex, Antigravity) ont le droit de faire', onchange: (e: Event) => void hub.updateConversation(conv.id, { permission: (e.target as HTMLSelectElement).value as ClaudePermission }) },
         ...(Object.keys(PERMISSION_LABEL) as ClaudePermission[]).map((k) => h('option', { value: k, selected: k === conv.permission }, PERMISSION_LABEL[k])),
       ),
     );
@@ -1087,7 +1185,8 @@ function renderAiMenu(): void {
   if (!state.aiMenuOpen || !conv) return;
 
   const parts = participantsOf(conv);
-  const rows = state.providers.map((p) => {
+  // IA facultatives pas encore prêtes : absentes du menu (sauf si la discussion les utilise déjà).
+  const rows = state.providers.filter((p) => p.available || !p.optional || parts.some((x) => x.providerId === p.id)).map((p) => {
     const current = parts.find((x) => x.providerId === p.id);
     const checked = !!current;
     const locked = checked && parts.length === 1;
@@ -1129,7 +1228,13 @@ function renderAiMenu(): void {
   menu.replaceChildren(
     h('div', { class: 'ai-menu-title' }, 'IA de cette discussion'),
     ...rows,
-    h('div', { class: 'ai-menu-note' }, 'ChatGPT et Gemini : onglet IA web, ou étapes manuelles des workflows'),
+    h(
+      'div',
+      { class: 'ai-menu-note' },
+      state.providers.some((p) => p.optional && !p.available)
+        ? 'Abonnement ChatGPT ou Google ? Ajoute Codex / Antigravity dans Réglages › IA connectées. Sites web : onglet IA web.'
+        : 'ChatGPT, Gemini, Claude web : onglet IA web, ou étapes manuelles des workflows',
+    ),
   );
 }
 
@@ -3428,15 +3533,45 @@ function addRole(): void {
 
 function renderProvidersDetail(): void {
   $('providers-detail').replaceChildren(
-    ...state.providers.map((p) =>
-      h(
+    ...state.providers.map((p) => {
+      const card = h(
         'div',
-        { class: 'provider-card' },
-        h('span', { class: `dot ${p.available ? 'on' : ''}` }),
+        { class: 'provider-card', 'data-provider-card': p.id },
+        h('span', { class: `dot ${p.available ? 'on' : p.optional ? 'off' : ''}` }),
         h('span', { class: 'name' }, p.name),
-        h('span', { class: 'detail' }, p.detail),
-      ),
-    ),
+        h('span', { class: 'detail' }, p.optional && !p.available && !p.setup?.installed ? 'Facultatif — pour ceux qui ont l’abonnement' : p.detail),
+      );
+      // Agents facultatifs (Codex, Antigravity) : comment les ajouter, sans quitter le hub.
+      if (!p.setup || p.available) return card;
+      const s = p.setup;
+      const actions = h('div', { class: 'provider-setup' });
+      if (!s.installed) {
+        const code = h('code', { class: 'provider-install-cmd', title: 'Commande d’installation officielle' }, s.installCommand);
+        actions.append(
+          h('span', { class: 'muted small' }, `1. Installe-le (${IS_MAC ? 'Terminal' : 'PowerShell'}) :`),
+          code,
+          h('button', { class: 'btn ghost small', type: 'button', onclick: () => void navigator.clipboard.writeText(s.installCommand).then(() => toast('Commande copiée : colle-la dans un terminal.')) }, 'Copier'),
+          h('button', { class: 'btn ghost small', type: 'button', onclick: () => void hub.openExternal(s.docsUrl) }, 'Page officielle'),
+          h('span', { class: 'muted small' }, '2. Puis « Revérifier » ci-dessous et connecte-toi.'),
+        );
+      } else if (s.canLogin) {
+        actions.append(
+          h('span', { class: 'muted small' }, s.loginHint),
+          h(
+            'button',
+            {
+              class: 'btn primary small',
+              type: 'button',
+              'data-provider-login': p.id,
+              onclick: () => void hub.providerLogin(p.id).catch((err: any) => toast(err?.message ?? String(err))),
+            },
+            'Se connecter',
+          ),
+          h('span', { class: 'muted small' }, 'Une fois connecté dans le navigateur, « Revérifier ».'),
+        );
+      }
+      return h('div', { class: 'provider-block' }, card, actions);
+    }),
   );
 }
 
@@ -4990,12 +5125,24 @@ function bindUi(): void {
   });
   $('providers-refresh').addEventListener('click', () => void hub.listProviders(true));
 
-  $<HTMLInputElement>('web-split').addEventListener('change', (e) => {
-    state.web.split = (e.target as HTMLInputElement).checked;
-    state.web.selected = state.web.split ? state.web.panels.map((p) => p.id) : state.web.selected.slice(0, 1);
-    renderWeb();
+  $('web-sites-btn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const menu = $('web-sites-menu');
+    menu.classList.toggle('hidden');
+    // Menu ouvert : les sites (vues natives, au-dessus de la page) sont masqués le temps du choix.
+    if (!menu.classList.contains('hidden')) webPanels.layout([]);
+    else sendWebLayout();
   });
-  new ResizeObserver(() => sendWebLayout()).observe($('web-area'));
+  document.addEventListener('click', (e) => {
+    const menu = $('web-sites-menu');
+    if (menu.classList.contains('hidden') || (e.target as HTMLElement).closest('.web-sites')) return;
+    menu.classList.add('hidden');
+    sendWebLayout();
+  });
+  new ResizeObserver(() => {
+    if (state.view === 'web') arrangeWebPanes();
+    sendWebLayout();
+  }).observe($('web-area'));
 
   // Durées des tâches en cours rafraîchies chaque seconde dans l'onglet Tâches.
   setInterval(() => {

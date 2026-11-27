@@ -110,6 +110,25 @@ L'index de recherche par le sens et les réglages du hub restent sur chaque appa
 le dossier synchronisé. Si le dossier synchronisé est absent au lancement (Google Drive pas encore démarré, disque
 débranché), le hub le signale dans les Réglages et n'écrit aucune note ailleurs en attendant.
 
+## Ajouter Codex (ChatGPT) ou Antigravity (Google)
+
+Si tu as un abonnement ChatGPT (Plus, Pro…) ou un compte Google (Free, Pro, Ultra), tu peux ajouter leur agent en
+ligne de commande au hub, comme Claude Code : il répond dans les discussions, travaille dans le dossier de travail
+et retient le fil de la discussion.
+
+1. **Réglages › IA connectées** : sous **Codex** ou **Antigravity**, copie la commande d'installation officielle et
+   colle-la dans PowerShell (Windows) ou le Terminal (Mac). Codex demande Node.js (`npm install -g @openai/codex`).
+2. **Revérifier**, puis **Se connecter** : une fenêtre s'ouvre, connecte-toi dans le navigateur avec ton compte
+   ChatGPT (Codex) ou Google (Antigravity), puis **Revérifier** encore.
+3. L'agent apparaît alors dans la barre du haut et dans le menu des IA de chaque discussion.
+
+Niveaux de permission de la discussion : **Prudent** = lecture seule (Codex : bac à sable `read-only` ; Antigravity :
+mode `plan`, il analyse et propose sans modifier), **Modifications de fichiers** = fichiers du dossier autorisés,
+**Tout autorisé** = commandes comprises.
+
+**Pas d'abonnement Claude Code ?** Onglet **IA web › Sites ▾ › Claude** : le site claude.ai s'ajoute à côté de
+ChatGPT et Gemini, avec ton compte (formule gratuite comprise). Coche 1, 2 ou 3 sites pour les afficher côte à côte.
+
 ## Piloter le hub depuis son téléphone (accès mobile)
 
 Le hub peut servir une page pensée pour le téléphone. Tu y retrouves la liste de tes discussions et les réponses

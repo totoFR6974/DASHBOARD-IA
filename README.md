@@ -48,8 +48,14 @@ npm start
   - Ollama : tout reste sur ton PC.
 - **Tâches** : chaque message devient une tâche. Tri par colonne, filtres (IA, agent, statut, recherche),
   regroupement par IA / agent / statut, détail (demande, outils utilisés, réponse, durée), bouton Arrêter.
-- **IA web** : les vrais sites ChatGPT et Gemini dans l'appli, seuls ou côte à côte, avec ta connexion
-  (mémorisée, une session séparée par site). Le hub ne les pilote pas : c'est toi qui les utilises.
+- **IA web** : les vrais sites ChatGPT, Gemini et (en option, menu « Sites ▾ ») Claude web dans l'appli, avec ta
+  connexion (mémorisée, une session séparée par site). Les sites cochés s'affichent ensemble : 1 en plein écran,
+  2 ou 3 côte à côte (fenêtre étroite : sur deux lignes) ; double-clic sur un site = lui seul. Le hub ne les pilote
+  pas : c'est toi qui les utilises.
+- **Codex et Antigravity** (facultatifs, pour ceux qui ont l'abonnement ChatGPT ou Google) : agents en ligne de
+  commande comme Claude Code (`codex exec --json`, `agy -p --output-format stream-json`), avec reprise de session
+  et niveaux de permission traduits (Prudent = lecture seule / mode plan). Masqués tant qu'ils ne sont pas
+  installés et connectés ; Réglages › IA connectées donne la commande d'installation et le bouton « Se connecter ».
   Seuls le presse-papiers et le plein écran sont autorisés (pas de micro ni de caméra). Les liens externes
   s'ouvrent dans ton navigateur. Ajouter un site : liste `PANELS` dans `src/main/web-panels.ts`.
 - **Réglages** : chemin de Claude, adresse d'Ollama, permissions et dossier de travail par défaut.

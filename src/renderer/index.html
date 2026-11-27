@@ -178,11 +178,14 @@
       <!-- IA web : vrais sites affichés dans l'appli -->
       <section id="view-web" class="view">
         <div class="web-toolbar">
-          <div id="web-tabs" class="seg"></div>
-          <label class="check" title="Afficher plusieurs sites en même temps">
-            <input type="checkbox" id="web-split" /> Côte à côte
-          </label>
-          <span class="muted web-hint">Ta connexion est mémorisée. Les autres liens s'ouvrent dans ton navigateur.</span>
+          <!-- Sites cochés = affichés ensemble (1 seul, 2 ou 3 côte à côte) ; double-clic = ce site seul. -->
+          <div id="web-tabs" class="seg web-tabs"></div>
+          <!-- Sites proposés (Claude web en option) : menu rempli par app.ts -->
+          <div class="web-sites">
+            <button type="button" id="web-sites-btn" class="btn ghost small" title="Choisir les sites proposés (ex. ajouter Claude web)">Sites ▾</button>
+            <div id="web-sites-menu" class="web-sites-menu hidden"></div>
+          </div>
+          <span class="muted web-hint">Coche 1, 2 ou 3 sites : ils s'affichent côte à côte. Ta connexion est mémorisée.</span>
         </div>
         <div id="web-area" class="web-area"></div>
       </section>

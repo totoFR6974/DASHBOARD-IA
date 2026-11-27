@@ -219,7 +219,10 @@ export function windowsLoginCommand(
   extra: string[],
   env: NodeJS.ProcessEnv = process.env,
   keep: '/k' | '/c' = '/k',
+  /** Titre de la fenêtre (lettres, chiffres, espaces et tirets seulement). */
+  title = 'Connexion a Claude Code',
 ): { cmd: string; args: string[]; env: NodeJS.ProcessEnv; inner: string } {
+  if (!/^[\w -]+$/.test(title)) throw new Error('Titre de fenêtre refusé.');
   // Lanceur non résolu (via cmd) : la fenêtre lance le .cmd lui-même (shimPath), pas la ligne déjà échappée.
   const argv = spec.via === 'cmd' && spec.shimPath ? [spec.shimPath] : [spec.cmd, ...spec.args];
   for (const a of [...argv, ...extra]) if (/[\u0000-\u001f\u007f"]/.test(a)) throw new Error('Connexion à Claude : chemin refusé (caractère de contrôle ou guillemet).');
@@ -230,7 +233,7 @@ export function windowsLoginCommand(
   const cmdExe = windowsCmdExe(env);
   return {
     cmd: cmdExe,
-    args: ['/d', '/v:off', '/c', 'start', '"Connexion a Claude Code"', `"${cmdExe}"`, '/d', '/v:on', '/s', keep, inner],
+    args: ['/d', '/v:off', '/c', 'start', `"${title}"`, `"${cmdExe}"`, '/d', '/v:on', '/s', keep, inner],
     env: { ...env, ...vars },
     inner,
   };

@@ -87,3 +87,9 @@ Cas où l'installation automatique est refusée (bouton « Télécharger » manu
 - [ ] Envoyer un message depuis le téléphone : la réponse s'écrit en direct sur le téléphone ET dans le hub ; « Arrêter » coupe la réponse
 - [ ] Une image générée apparaît en vignette, un appui l'agrandit
 - [ ] Téléphone en 4G + VPN de la maison : même adresse, ça marche ; « Révoquer » dans les Réglages → le téléphone revient à l'écran d'association
+
+## 9. Codex, Antigravity, IA web à 3 sites (alpha.11)
+- [ ] Réglages › IA connectées : Codex et Antigravity « Facultatif », commande d'installation (Terminal) + « Copier » ; absents de la barre du haut
+- [ ] (si abonnement) Installer Codex ou agy, « Revérifier », « Se connecter » ouvre le Terminal → connexion navigateur → l'IA passe au vert et apparaît dans le menu des IA ; une réponse dans une discussion
+- [ ] IA web : plus de case « Côte à côte » ; cocher Gemini → 2 sites côte à côte ; « Sites ▾ › Claude » → 3 sites côte à côte ; double-clic sur un onglet → ce site seul
+- [ ] Connexion à claude.ai dans le panneau (e-mail + code, ou Google)

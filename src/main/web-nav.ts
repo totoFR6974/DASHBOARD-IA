@@ -53,6 +53,11 @@ export const PANEL_NAV: Record<string, PanelNavRule> = {
       { host: /^www\.google\.com$/, paths: ['/accounts/', '/sorry/'] },
     ],
   },
+  // Claude web : connexion par e-mail (code reçu, saisi sur claude.ai) ou « Continuer avec Google ».
+  claude: {
+    official: 'https://claude.ai',
+    login: [...GOOGLE_ACCOUNTS],
+  },
 };
 
 /**

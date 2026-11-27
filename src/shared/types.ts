@@ -17,6 +17,13 @@ export interface ProviderInfo {
   usesWorkspace: boolean;
   /** Modèles capables de lire des images (Ollama : capacité « vision » de /api/show). */
   visionModels?: string[];
+  /**
+   * IA facultative (Codex, Antigravity : pour ceux qui ont l'abonnement) : masquée du menu des IA et de la barre du
+   * haut tant qu'elle n'est pas prête ; les Réglages expliquent comment l'ajouter.
+   */
+  optional?: boolean;
+  /** Ajout de l'IA : commande d'installation officielle, page de référence, connexion possible depuis le hub. */
+  setup?: { installCommand: string; docsUrl: string; installed: boolean; canLogin: boolean; loginHint: string };
 }
 
 /** 'waiting' = étape manuelle qui attend l'utilisateur (ChatGPT / Gemini web). */
@@ -475,6 +482,8 @@ export interface HubSettings {
   comfyuiDir?: string;
   /** Micro des panneaux web, par panneau ('chatgpt', 'gemini') ; absent = demander à la première utilisation. */
   webMic?: Record<string, WebMicChoice>;
+  /** Sites proposés dans l'onglet IA web (absent = ChatGPT et Gemini ; Claude web en option). */
+  webPanelsShown?: string[];
   /** L'assistant de premier démarrage a été terminé ou passé. */
   onboardingDone: boolean;
 }
@@ -1104,6 +1113,10 @@ export interface HubApi {
   cancelMobilePairing(): Promise<MobileState>;
   revokeMobileDevice(id: string): Promise<MobileState>;
   setMobileKeepAwake(on: boolean): Promise<MobileState>;
+  /** Ouvre la fenêtre de connexion d'un agent en ligne de commande (claude, codex, antigravity). */
+  providerLogin(providerId: string): Promise<void>;
+  /** Sites proposés dans l'onglet IA web (au moins un). Renvoie la liste enregistrée. */
+  setWebPanelsShown(ids: string[]): Promise<string[]>;
   onEvent(listener: (event: HubEvent) => void): () => void;
 }
 
@@ -1295,5 +1308,12 @@ export const HUB_METHODS = [
   'cancelMobilePairing',
   'revokeMobileDevice',
   'setMobileKeepAwake',
+  'providerLogin',
+  'setWebPanelsShown',
 ] as const;
+
+/** Sites des panneaux web (mêmes identifiants que web-panels.ts), dans l'ordre d'affichage. */
+export const WEB_PANEL_IDS = ['chatgpt', 'gemini', 'claude'] as const;
+/** Sites proposés par défaut dans l'onglet IA web (Claude web : en option, pour ceux sans abonnement Claude Code). */
+export const DEFAULT_WEB_PANELS = ['chatgpt', 'gemini'];
 export type HubMethod = (typeof HUB_METHODS)[number];

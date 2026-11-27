@@ -43,7 +43,7 @@ import type {
   ClaudeSessionMessage,
   SetupStatus,
 } from '../shared/types';
-import { CLAUDE_EFFORTS } from '../shared/types';
+import { CLAUDE_EFFORTS, WEB_PANEL_IDS } from '../shared/types';
 import { COMFY_DIR_HINT, detectExistingComfy, findComfyRoot, ImageEngine } from './image-engine';
 import { caseInsensitiveFs } from './platform';
 import { isRealPathInside } from './path-guard';
@@ -62,6 +62,8 @@ import { installObsidian as runObsidianInstall, obsidianStatus, registerVaults }
 import { ClaudeProvider, ClaudeSessionLostError } from './providers/claude';
 import { ComfyUIProvider, IMAGE_PROVIDERS } from './providers/comfyui';
 import { OllamaProvider } from './providers/ollama';
+import { CodexProvider } from './providers/codex';
+import { AntigravityProvider } from './providers/antigravity';
 import { CancelledError, type Provider, type RunContext, type RunResult } from './providers/provider';
 import { JsonFile } from './store';
 import { DELEGATION_TOOLS, KNOWLEDGE_TOOLS, MCP_SERVER_NAME, McpServer, chooseNotesBase, type DelegableAgent, type DelegationResult } from './mcp-server';
@@ -377,6 +379,9 @@ export class Hub {
     };
     const list: Provider[] = [
       claude,
+      // Agents « avec abonnement » facultatifs (masqués tant qu'ils ne sont pas installés et connectés).
+      new CodexProvider(),
+      new AntigravityProvider(),
       new OllamaProvider(() => this.settings.ollamaUrl),
       new ComfyUIProvider(this.images, () => this.settings.ollamaUrl, () => join(this.workspaceDir, 'images')),
     ];
@@ -1464,6 +1469,13 @@ export class Hub {
     claude?.openLogin();
   }
 
+  /** Fenêtre de connexion d'un agent en ligne de commande (Claude Code, Codex, Antigravity). */
+  providerLogin(providerId: string): void {
+    const p = this.providers.get(String(providerId)) as (Provider & { openLogin?: () => void }) | undefined;
+    if (!p?.openLogin) throw new Error('Connexion impossible pour cette IA');
+    p.openLogin();
+  }
+
   getClaudeAccess(): ClaudeAccess {
     return { servers: this.db.data.claudeMcpServers ?? [], allowed: [...this.settings.claudeAllowedMcp], extraDirs: [...this.settings.claudeExtraDirs] };
   }
@@ -1861,8 +1873,9 @@ export class Hub {
     const history = info.keepsOwnHistory || isImage ? [] : this.historyFor(info.id, previous);
     let addDirs: string[] | undefined;
     let numCtx: number | undefined;
-    // Claude : pièces jointes des messages précédents citées par leur chemin → dossier des pièces jointes lisible.
-    if (info.id === 'claude' && previous.some((m) => m.role === 'user' && (m.images?.length || m.files?.length))) {
+    // Agents (Claude, Codex, Antigravity) : pièces jointes des messages précédents citées par leur chemin → dossier
+    // des pièces jointes lisible.
+    if (info.usesWorkspace && previous.some((m) => m.role === 'user' && (m.images?.length || m.files?.length))) {
       const dir = this.attachmentsDir(conv.id);
       if (existsSync(dir)) addDirs = [dir];
     }
@@ -2317,6 +2330,16 @@ export class Hub {
     const s = this.settingsFile.data;
     s.webMic = { ...(s.webMic && typeof s.webMic === 'object' ? s.webMic : {}), [panelId]: choice };
     this.settingsFile.flush();
+  }
+
+  /** Sites de l'onglet IA web (comme webMic : hors formulaire des réglages, qui ne l'écrase donc pas). */
+  setWebPanelsShown(ids: string[]): string[] {
+    const known = WEB_PANEL_IDS as readonly string[];
+    const clean = known.filter((id) => (Array.isArray(ids) ? ids : []).includes(id));
+    if (!clean.length) throw new Error('Garde au moins un site dans l’onglet IA web');
+    this.settingsFile.data.webPanelsShown = clean;
+    this.settingsFile.flush();
+    return clean;
   }
 
   saveSettings(next: HubSettings): HubSettings {

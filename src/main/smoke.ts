@@ -14,6 +14,7 @@ import { smokeModules } from './smoke-modules';
 import { smokeFakeClaude } from './smoke-fakeclaude';
 import { smokeVaultSync } from './smoke-vaultsync';
 import { smokeMobile } from './smoke-mobile';
+import { smokeAgents } from './smoke-agents';
 import { cpSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -561,6 +562,7 @@ export async function runSmoke(win: BrowserWindow, outDir: string, getWeb: () =>
     return;
   }
   if (only === 'mobile') return smokeMobile(win, outDir, shot, js);
+  if (only === 'agents') return smokeAgents(shot, js);
   if (only === 'web') return smokeWeb(win, outDir, getWeb, shot, js);
   if (only === 'webmic') return smokeWebMic(win, outDir, getWeb, shot, js);
   if (only === 'weblogout') return smokeWebLogout(win, outDir, getWeb, shot, js);
@@ -1193,9 +1195,61 @@ async function smokeWeb(
   await wait(9000);
   await shot('6-web-barre');
   await capture('chatgpt', '6-web-chatgpt');
-  await js(`(() => { const c = document.getElementById('web-split'); c.checked = true; c.dispatchEvent(new Event('change')); })()`);
+  // Plus de case « Côte à côte » : les sites cochés s'affichent ensemble (1, 2 ou 3), double-clic = ce site seul.
+  let failures = 0;
+  const check = (ok: boolean, label: string) => {
+    console.log(`${ok ? '  ✔' : '  ✘'} ${label}`);
+    if (!ok) failures++;
+  };
+  const layout = () =>
+    js(`(() => {
+      const area = document.getElementById('web-area');
+      const slots = [...document.querySelectorAll('.web-slot')].map((s) => { const r = s.getBoundingClientRect(); return { id: s.dataset.id, x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width) }; });
+      return { tabs: [...document.querySelectorAll('[data-web-tab]')].map((b) => b.dataset.webTab + (b.classList.contains('active') ? '*' : '')), slots, cols: getComputedStyle(area).gridTemplateColumns.split(' ').length, split: !!document.getElementById('web-split'), pills: [...document.querySelectorAll('.web-pill')].map((p) => p.dataset.web) };
+    })()`);
+  let l = await layout();
+  console.log(`IA web : ${JSON.stringify(l)}`);
+  check(!l.split, 'Case « Côte à côte » retirée');
+  check(l.slots.length === 1 && l.tabs.length === 2 && !l.tabs.some((t: string) => t.startsWith('claude')), '1 site affiché, Claude web non proposé par défaut');
+  await js(`document.querySelector('[data-web-tab="gemini"]').click()`);
+  await wait(600);
+  l = await layout();
+  check(l.slots.length === 2 && l.slots[0].y === l.slots[1].y && l.slots[0].x < l.slots[1].x, `Gemini coché → 2 sites côte à côte (${JSON.stringify(l.slots)})`);
+  await js(`(async () => {
+    document.getElementById('web-sites-btn').click();
+    await new Promise((r) => setTimeout(r, 200));
+    document.querySelector('[data-web-site="claude"]').click();
+  })()`);
+  await wait(1500);
+  l = await layout();
+  const hub = (globalThis as { __hubSmoke?: { settings: { webPanelsShown?: string[] } } }).__hubSmoke;
+  check(!!hub?.settings.webPanelsShown?.includes('claude'), 'Sites ▾ › Claude : réglage enregistré');
+  check(l.tabs.includes('claude*') && l.pills.includes('claude'), 'Claude web proposé, coché et dans la barre du haut');
+  await js(`document.body.click()`);
   await wait(9000);
-  await shot('7-web-cote-a-cote-barre');
-  await capture('chatgpt', '7-web-split-chatgpt');
-  await capture('gemini', '7-web-split-gemini');
+  l = await layout();
+  check(l.slots.length === 3 && new Set(l.slots.map((s: any) => s.y)).size === 1 && l.cols === 3, `3 sites cochés → les 3 côte à côte (${JSON.stringify(l.slots)})`);
+  await shot('7-web-trois-barre');
+  await capture('chatgpt', '7-web-trois-chatgpt');
+  await capture('gemini', '7-web-trois-gemini');
+  await capture('claude', '7-web-trois-claude');
+  await js(`document.querySelector('[data-web-tab="claude"]').dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);
+  await wait(600);
+  l = await layout();
+  check(l.slots.length === 1 && l.slots[0].id === 'claude', 'Double-clic → Claude seul');
+  await js(`document.querySelector('[data-web-tab="claude"]').click()`);
+  await wait(300);
+  l = await layout();
+  check(l.slots.length === 1, 'Le dernier site affiché ne se décoche pas');
+  await js(`(async () => {
+    document.getElementById('web-sites-btn').click();
+    await new Promise((r) => setTimeout(r, 200));
+    document.querySelector('[data-web-site="claude"]').click();
+    await new Promise((r) => setTimeout(r, 600));
+    document.body.click();
+  })()`);
+  await wait(800);
+  l = await layout();
+  check(!l.tabs.some((t: string) => t.startsWith('claude')) && l.slots.length === 1 && !l.pills.includes('claude'), `Claude retiré des sites → repli sur un site proposé (${JSON.stringify(l.tabs)})`);
+  if (failures) throw new Error(`IA web : ${failures} vérification(s) en échec`);
 }
