@@ -196,6 +196,17 @@ export async function smokeFakeClaude(win: BrowserWindow, outDir: string, shot: 
     const w3 = (await js(`window.hub.refreshLimits('claude')`))?.providers?.claude?.windows ?? [];
     const r3 = lastStart();
     check('A3 actualiser les limites : requête haiku sans MCP, fenêtres relevées', w3.length === 2 && r3?.args?.model === 'haiku' && !r3?.args?.mcpConfig?.length, { windows: w3.length, model: r3?.args?.model, mcp: r3?.args?.mcpConfig });
+    // A4. Relevé périmé (99 % sur 5 h, réinitialisation passée, aucune nouvelle réponse) : la jauge repart à 0 %.
+    win.webContents.send('hub:event', {
+      type: 'limits',
+      limits: { providers: { claude: { providerId: 'claude', capturedAt: Date.now() - 6 * 3600e3, windows: [
+        { id: 'five_hour', label: '5 h', usedPct: 99, resetsAt: Date.now() - 60e3, status: 'allowed_warning' },
+        { id: 'seven_day', label: 'Semaine', usedPct: 40, resetsAt: Date.now() + 86400e3, status: 'allowed' },
+      ] } } },
+    });
+    await wait(300);
+    const stale = await js(`(() => { const b = document.getElementById('usage-btn'); return { pill: b.textContent.trim(), title: b.title }; })()`);
+    check('A4 quota réinitialisé depuis le dernier relevé : jauge 5 h à 0 % (plus 99 %), semaine inchangée', /5 h\s*0 %/.test(stale.pill) && /7 j\s*40 %/.test(stale.pill) && !/99 %/.test(stale.pill) && /réinitialisée/.test(stale.title), stale);
 
     // ---------- E. --resume (même session) ----------
     const before = (await conv(c.id))?.providerSessions?.claude;

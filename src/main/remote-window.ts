@@ -40,6 +40,8 @@ export class RemoteWindow {
   ) {
     const name = conn.entry.name;
     const ses = session.fromPartition(`remote-hub-${conn.entry.id}`);
+    // Même session à chaque réouverture du même hub : l'ancien gestionnaire (lié à l'ancienne connexion) est remplacé.
+    if (ses.protocol.isProtocolHandled('hub-file')) ses.protocol.unhandle('hub-file');
     ses.protocol.handle('hub-file', async (req) => {
       try {
         const res = await conn.fetchFile('file', remotePathFromHubFileUrl(req.url));

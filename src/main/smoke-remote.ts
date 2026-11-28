@@ -172,6 +172,22 @@ export async function smokeRemote(win: BrowserWindow, outDir: string, shot: (nam
   };
   await shotRemote('remote-03-fenetre-de-pilotage');
 
+  // Fermer puis rouvrir (même session) : plus d'erreur « failed to register protocol hub-file », images toujours là.
+  rw.close();
+  check(await until(() => remote.remoteWindows.size === 0), 'Fenêtre de pilotage fermée');
+  const reopenErr = await js(`window.hub.openRemoteHub(${JSON.stringify(entry.id)}).then(() => '', (e) => String(e.message))`);
+  check(reopenErr === '', `Réouverture sans erreur${reopenErr ? ` (${reopenErr})` : ''}`);
+  check(await until(() => remote.remoteWindows.size === 1, 8000), 'Fenêtre de pilotage rouverte');
+  const rw2 = [...remote.remoteWindows.values()][0];
+  const imgSrc = JSON.stringify(`hub-file:///${imgPath.replace(/\\/g, '/').replace(/^\/+/, '')}`);
+  const img2 =
+    !!rw2 &&
+    (await until(
+      () => rw2.webContents.executeJavaScript(`new Promise((res) => { const i = new Image(); i.onload = () => res(i.naturalWidth === 2); i.onerror = () => res(false); i.src = ${imgSrc}; })`, true),
+      8000,
+    ));
+  check(img2, 'Après réouverture : images du hub distant toujours affichées');
+
   // ---------- 4. Version différente en cours de route ----------
   const stored = remote.remoteHubs.find(entry.id);
   const wrong = new RemoteConnection(stored, '0.0.0-autre');

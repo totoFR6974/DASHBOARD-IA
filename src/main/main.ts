@@ -315,6 +315,8 @@ const ASSET_TYPES: Record<string, string> = {
 
 function registerHubAssetProtocol(proto: Protocol = protocol): void {
   const rendererDir = resolve(join(__dirname, 'renderer'));
+  // Fenêtre de pilotage rouverte : sa session (même partition) a déjà le gestionnaire.
+  if (proto !== protocol && proto.isProtocolHandled('hub-asset')) proto.unhandle('hub-asset');
   proto.handle('hub-asset', async (req) => {
     const cors = { 'Access-Control-Allow-Origin': '*' };
     try {

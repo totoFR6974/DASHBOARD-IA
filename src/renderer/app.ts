@@ -63,6 +63,7 @@ import type {
   UpdateState,
 } from '../shared/types';
 import { CLAUDE_EFFORTS } from '../shared/types';
+import { currentLimitWindows } from '../shared/limits';
 
 declare global {
   interface Window {
@@ -4893,8 +4894,10 @@ function fmtReset(ts: number): string {
   const at = new Date(ts);
   const when = at.toLocaleString('fr-FR', ms > 20 * 3600e3 ? { weekday: 'long', hour: '2-digit', minute: '2-digit' } : { hour: '2-digit', minute: '2-digit' });
   if (ms <= 0) return 'réinitialisée';
-  const h2 = Math.floor(ms / 3600e3);
-  const m = Math.round((ms % 3600e3) / 60e3);
+  // Minutes arrondies d'abord (sinon « 1 h 60 » au lieu de « 2 h 00 »).
+  const totalMin = Math.round(ms / 60e3);
+  const h2 = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
   const left = h2 >= 24 ? `${Math.floor(h2 / 24)} j ${h2 % 24} h` : h2 ? `${h2} h ${String(m).padStart(2, '0')}` : `${m} min`;
   return `se réinitialise dans ${left} (${when})`;
 }
@@ -4907,12 +4910,13 @@ function fmtAgo(ts: number): string {
 function renderLimitsPill(): void {
   const btn = $('usage-btn');
   const claude = usageUi.limits.providers.claude;
+  const windows = currentLimitWindows(claude);
   const parts: HTMLElement[] = [h('span', { class: 'lim-ico' }, icon('bolt'))];
-  if (!claude?.windows.length) {
+  if (!windows.length) {
     parts.push(h('span', { class: 'muted' }, 'Restant : ?'));
   } else {
     // La jauge se remplit de gauche à droite au fil de la consommation (couleur selon ce qui reste).
-    for (const w of claude.windows.slice(0, 2)) {
+    for (const w of windows.slice(0, 2)) {
       const left = Math.max(0, 100 - w.usedPct);
       parts.push(
         h(
@@ -4926,8 +4930,8 @@ function renderLimitsPill(): void {
     }
   }
   btn.replaceChildren(...parts);
-  btn.title = claude?.windows.length
-    ? `Claude — utilisé : ${claude.windows.map((w) => `${w.label} ${Math.round(w.usedPct)} % (reste ${Math.round(100 - w.usedPct)} %)`).join(' · ')}\nCliquer pour le détail`
+  btn.title = windows.length
+    ? `Claude — utilisé : ${windows.map((w) => `${w.label} ${Math.round(w.usedPct)} % (reste ${Math.round(100 - w.usedPct)} %)${w.reset ? ' — réinitialisée' : ''}`).join(' · ')}\nCliquer pour le détail`
     : 'Limites restantes — cliquer pour les relever';
   if (usageUi.open) renderLimitsMenu();
 }
@@ -4940,8 +4944,9 @@ function renderLimitsMenu(): void {
   const claude = usageUi.limits.providers.claude;
   const comfy = state.providers.find((p) => p.id === 'comfyui');
   const ollama = state.providers.find((p) => p.id === 'ollama');
-  const claudeBody: (HTMLElement | null)[] = claude?.windows.length
-    ? claude.windows.map((w) => {
+  const windows = currentLimitWindows(claude);
+  const claudeBody: (HTMLElement | null)[] = windows.length
+    ? windows.map((w) => {
         const left = Math.max(0, 100 - w.usedPct);
         const cls = remainingClass(left);
         return h(
@@ -4952,7 +4957,7 @@ function renderLimitsMenu(): void {
           h(
             'div',
             { class: 'usage-sub muted' },
-            `${Math.round(left)} % restant · ${fmtReset(w.resetsAt)}`,
+            w.reset ? `${Math.round(left)} % restant · réinitialisée depuis le dernier relevé (Actualiser pour la valeur exacte)` : `${Math.round(left)} % restant · ${fmtReset(w.resetsAt)}`,
             w.status.includes('warning') ? h('span', { class: 'usage-alert' }, ' · ', icon('warn', 12), ' limite bientôt atteinte') : w.status === 'rejected' ? h('span', { class: 'usage-alert' }, ' · ', icon('stop', 12), ' limite atteinte') : null,
           ),
         );
@@ -6330,8 +6335,8 @@ async function init(): Promise<void> {
   const upd = await hub.getUpdateState().catch(() => null);
   if (upd) onUpdateState(upd);
   $('upd-check').addEventListener('click', () => void checkUpdatesNow());
-  // Le compte à rebours de réinitialisation reste juste.
-  setInterval(() => usageUi.open && renderLimitsMenu(), 30000);
+  // Le compte à rebours reste juste, et une fenêtre dont l'heure de réinitialisation passe repart à 0 % (jauge comprise).
+  setInterval(renderLimitsPill, 30000);
   renderFolderButton();
   renderPills();
   renderConvList();

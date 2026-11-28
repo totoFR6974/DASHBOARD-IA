@@ -7,6 +7,7 @@ import type { Conversation, Task, WorkflowRun } from '../shared/types';
 import { HUB_METHODS } from '../shared/types';
 import { decodeWire, encodeWire, parseHostInput, remoteAttachmentName, remotePathFromHubFileUrl, remoteRoute, REMOTE_DENIED_METHODS } from '../shared/remote-hub';
 import { broadcastAddresses } from './remote-hubs';
+import { currentLimitWindows } from '../shared/limits';
 import { isPrivateAddress } from './net-addresses';
 import { claudeEnv, compactWindowSetting, fixClaudeUsageCosts, Hub, isSlashCommand, mergeClaudeDuplicates, samePath } from './hub';
 import { turnCostUsd } from './claude-logs';
@@ -914,6 +915,22 @@ async function testClaudeLogs(): Promise<void> {
         remotePathFromHubFileUrl('hub-file://local/Users/moi/Library/x.png') === '/Users/moi/Library/x.png' &&
         remoteAttachmentName('C:\\x\\1764000000000-abcdef12-rapport.pdf') === 'rapport.pdf',
       'contrôle à distance : chemins d’images et noms de pièces jointes de l’autre système (Windows ↔ Mac)',
+    );
+  }
+  // Quota Claude : une fenêtre dont l'heure de réinitialisation est passée repart à 0 % sans attendre un nouveau relevé.
+  {
+    const now = 1_800_000_000_000;
+    const cur = currentLimitWindows(
+      { providerId: 'claude', capturedAt: now - 6 * 3600e3, windows: [
+        { id: 'five_hour', label: '5 h', usedPct: 99, resetsAt: now - 60e3, status: 'allowed_warning' },
+        { id: 'seven_day', label: 'Semaine', usedPct: 40, resetsAt: now + 3600e3, status: 'allowed' },
+        { id: 'other', label: 'x', usedPct: 10, resetsAt: 0, status: 'allowed' },
+      ] },
+      now,
+    );
+    check(
+      cur[0].usedPct === 0 && cur[0].reset && cur[0].status === 'allowed' && cur[1].usedPct === 40 && !cur[1].reset && cur[2].usedPct === 10 && !cur[2].reset && currentLimitWindows(undefined).length === 0,
+      'quota Claude : fenêtre réinitialisée affichée à 0 % (99 % périmé ignoré), les autres inchangées',
     );
   }
   // Commandes de Claude Code : reconnues au début du message (pas un chemin), liste propre (internes masquées, alias).
