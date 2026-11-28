@@ -2,12 +2,26 @@
 // installe Ollama (Windows : winget ; macOS : Ollama.app depuis ollama.com, ou Homebrew) et télécharge un modèle
 // local. Sans Electron (testable avec le selftest).
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { createWriteStream, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir, totalmem } from 'node:os';
-import { join } from 'node:path';
-import type { ProviderInfo, SetupProgress, SetupStatus } from '../shared/types';
+import { dirname, join } from 'node:path';
+import type { OllamaUpdateInfo, ProviderInfo, SetupProgress, SetupStatus } from '../shared/types';
 import { obsidianStatus } from './obsidian';
-import { ensureOllamaAutostart, isLocalOllamaUrl, launchOllama } from './ollama-autostart';
+import { ensureOllamaAutostart, isLocalOllamaUrl, launchOllama, macOllamaApp } from './ollama-autostart';
+import {
+  cleanOllamaVersion,
+  isAllowedOllamaDownload,
+  OLLAMA_RELEASES_API,
+  OLLAMA_RELEASES_PAGE,
+  OLLAMA_SETUP_SILENT_ARGS,
+  OLLAMA_WINGET_UPGRADE_ARGS,
+  ollamaUpdateAvailable,
+  pickOllamaRelease,
+  type OllamaAsset,
+  type OllamaLatest,
+} from './ollama-update';
+import { readableUpdateError, type GithubRelease } from './update-check';
 import { brewPath, detectAppleChip, findInPath, firstExisting, killProcessTree, macApplicationsDir, ollamaCandidates, openUrlCommand, treeSpawnOptions } from './platform';
 
 /** Liens que l'appli accepte d'ouvrir dans le navigateur (sites officiels uniquement). */
@@ -334,33 +348,42 @@ export class Setup {
     }
   }
 
-  /** Télécharge, vérifie et copie Ollama.app ; renvoie son chemin (déjà installée : rien n'est téléchargé). */
-  private async installOllamaApp(signal: AbortSignal, emit: (state: SetupProgress['state'], message: string, extra?: Partial<SetupProgress>) => void): Promise<string> {
-    const appsDir = macApplicationsDir();
-    const dest = join(appsDir, 'Ollama.app');
-    if (existsSync(dest)) return dest;
+  /**
+   * Télécharge, vérifie et copie Ollama.app ; renvoie son chemin.
+   * Sans `update` : déjà installée → rien n'est téléchargé. Avec `update` (fichier de la dernière release GitHub,
+   * empreinte sha256 vérifiée) : l'appli existante est remplacée (Ollama doit avoir été quitté avant).
+   */
+  private async installOllamaApp(signal: AbortSignal, emit: (state: SetupProgress['state'], message: string, extra?: Partial<SetupProgress>) => void, update?: OllamaAsset): Promise<string> {
+    const existing = update ? macOllamaApp(ollamaExe()) : null;
+    const appsDir = existing ? dirname(existing) : macApplicationsDir();
+    const dest = existing ?? join(appsDir, 'Ollama.app');
+    if (!update && existsSync(dest)) return dest;
     const tmp = mkdtempSync(join(tmpdir(), 'hub-ia-ollama-'));
     try {
       const zip = join(tmp, 'Ollama-darwin.zip');
       emit('running', 'Téléchargement d’Ollama pour Mac…');
-      const res = await fetch(OLLAMA_MAC_ZIP_URL, { redirect: 'follow', signal, headers: { 'User-Agent': 'hub-ia' } });
-      if (!res.ok || !res.body) throw new Error(`ollama.com a répondu ${res.status}`);
-      const total = Number(res.headers.get('content-length')) || undefined;
-      const out = createWriteStream(zip);
-      let received = 0;
-      let last = 0;
-      try {
-        for await (const chunk of res.body as any as AsyncIterable<Uint8Array>) {
-          received += chunk.length;
-          if (!out.write(chunk)) await new Promise<void>((r) => out.once('drain', () => r()));
-          const now = Date.now();
-          if (now - last > 400) {
-            last = now;
-            emit('running', 'Téléchargement d’Ollama pour Mac…', { completed: received, total });
+      if (update) {
+        await this.downloadOllamaAsset(update, zip, signal, (completed, total) => emit('running', 'Téléchargement d’Ollama pour Mac…', { completed, total }));
+      } else {
+        const res = await fetch(OLLAMA_MAC_ZIP_URL, { redirect: 'follow', signal, headers: { 'User-Agent': 'hub-ia' } });
+        if (!res.ok || !res.body) throw new Error(`ollama.com a répondu ${res.status}`);
+        const total = Number(res.headers.get('content-length')) || undefined;
+        const out = createWriteStream(zip);
+        let received = 0;
+        let last = 0;
+        try {
+          for await (const chunk of res.body as any as AsyncIterable<Uint8Array>) {
+            received += chunk.length;
+            if (!out.write(chunk)) await new Promise<void>((r) => out.once('drain', () => r()));
+            const now = Date.now();
+            if (now - last > 400) {
+              last = now;
+              emit('running', 'Téléchargement d’Ollama pour Mac…', { completed: received, total });
+            }
           }
+        } finally {
+          await new Promise<void>((r) => out.end(() => r()));
         }
-      } finally {
-        await new Promise<void>((r) => out.end(() => r()));
       }
       if (signal.aborted) throw new Error('Installation annulée');
       emit('running', 'Décompression et vérification de la signature…');
@@ -375,6 +398,8 @@ export class Setup {
       const info = spawnSync('codesign', ['-dv', '--verbose=2', unpacked], { encoding: 'utf8', timeout: 30000 });
       if (!/Authority=Developer ID Application:/.test(`${info.stderr}${info.stdout}`)) throw new Error('Ollama.app n’est pas signée par un développeur identifié');
       mkdirSync(appsDir, { recursive: true });
+      // Mise à jour : l'ancienne appli est retirée seulement maintenant (nouvelle version téléchargée et vérifiée).
+      if (update && existsSync(dest)) rmSync(dest, { recursive: true, force: true });
       if ((await this.runStreaming('ditto', [unpacked, dest], () => undefined)) !== 0) throw new Error(`copie dans ${appsDir} impossible`);
       emit('running', `Ollama installé dans ${appsDir}.`);
       return dest;
@@ -407,6 +432,209 @@ export class Setup {
   /** Une installation ou un téléchargement de l'assistant est en cours (un seul à la fois). */
   get busy(): boolean {
     return !!this.abort;
+  }
+
+  // ---------- Mise à jour d'Ollama ----------
+
+  private updateCache: { at: number; latest: OllamaLatest | null; error?: string } | null = null;
+
+  /** Version du serveur Ollama local (null s'il ne répond pas). */
+  private async ollamaVersion(): Promise<string | null> {
+    try {
+      return cleanOllamaVersion((await fetchJson(this.url('/api/version'), 2500))?.version);
+    } catch {
+      return null;
+    }
+  }
+
+  /** Comment mettre Ollama à jour ici (undefined : pas de mise à jour intégrée, ex. serveur distant ou Linux). */
+  private ollamaUpdateMethod(latest: OllamaLatest | null): OllamaUpdateInfo['method'] {
+    if (!isLocalOllamaUrl(this.host.ollamaUrl())) return undefined;
+    const exe = ollamaExe();
+    if (process.platform === 'win32') {
+      if (!exe) return undefined;
+      return hasWinget() ? 'winget' : latest?.asset ? 'installer' : undefined;
+    }
+    if (process.platform === 'darwin') {
+      if (macOllamaApp(exe)) return 'app';
+      if (exe && /homebrew|\/usr\/local\/(bin|Cellar)/.test(exe) && brewPath()) return 'brew';
+    }
+    return undefined;
+  }
+
+  /** Version installée et dernière publiée (GitHub ollama/ollama, mise en cache 6 h ; force : nouvelle vérification). */
+  async ollamaUpdateInfo(force = false): Promise<OllamaUpdateInfo> {
+    const fresh = this.updateCache && Date.now() - this.updateCache.at < 6 * 3600_000;
+    if (force || !fresh) {
+      try {
+        let release: GithubRelease;
+        // Tests visuels : release simulée (fichier JSON), pour ne pas dépendre du réseau ni de GitHub.
+        const fake = process.env.HUB_FAKE_OLLAMA_RELEASE;
+        if (fake && existsSync(fake)) release = JSON.parse(readFileSync(fake, 'utf8')) as GithubRelease;
+        else {
+          const res = await fetch(OLLAMA_RELEASES_API, { headers: { 'User-Agent': 'hub-ia', Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(15000) });
+          if (res.status === 403 || res.status === 429) throw new Error('GitHub limite temporairement les vérifications : réessaie plus tard.');
+          if (!res.ok) throw new Error(`GitHub a répondu ${res.status}`);
+          release = (await res.json()) as GithubRelease;
+        }
+        const latest = pickOllamaRelease(release, process.platform);
+        this.updateCache = { at: Date.now(), latest, ...(latest ? {} : { error: 'Aucune version stable d’Ollama trouvée sur GitHub.' }) };
+      } catch (err) {
+        // On garde la dernière version connue, avec l'erreur (hors ligne…).
+        this.updateCache = { at: Date.now(), latest: this.updateCache?.latest ?? null, error: readableUpdateError(err) };
+      }
+    }
+    const latest = this.updateCache?.latest ?? null;
+    const installed = await this.ollamaVersion();
+    const method = this.ollamaUpdateMethod(latest);
+    return {
+      ...(installed ? { installed } : {}),
+      ...(latest ? { latest: latest.version, releaseUrl: latest.url } : { releaseUrl: OLLAMA_RELEASES_PAGE }),
+      available: ollamaUpdateAvailable(installed, latest?.version),
+      canUpdate: !!method,
+      ...(method ? { method } : {}),
+      checkedAt: this.updateCache?.at,
+      ...(this.updateCache?.error ? { error: this.updateCache.error } : {}),
+    };
+  }
+
+  /** Arrête Ollama (icône + serveur + moteur) et attend qu'il ne réponde plus. */
+  private async stopOllama(): Promise<void> {
+    if (process.platform === 'win32') {
+      for (const im of ['ollama app.exe', 'ollama.exe', 'llama-server.exe']) spawnSync('taskkill', ['/IM', im, '/T', '/F'], { windowsHide: true, timeout: 15000 });
+    } else {
+      for (const name of ['Ollama', 'ollama']) spawnSync('pkill', ['-x', name], { timeout: 10000 });
+    }
+    const end = Date.now() + 15000;
+    while (Date.now() < end && (await this.ollamaVersion())) await new Promise((r) => setTimeout(r, 700));
+  }
+
+  /** Relance Ollama et attend qu'il réponde ; renvoie sa version (null s'il ne répond pas). */
+  private async restartOllama(signal: AbortSignal): Promise<string | null> {
+    launchOllama(ollamaExe());
+    return (await this.waitOllama(90000, signal)) ? this.ollamaVersion() : null;
+  }
+
+  /** Télécharge un fichier officiel d'Ollama (liens et redirections vérifiés, empreinte sha256 contrôlée si connue). */
+  private async downloadOllamaAsset(asset: OllamaAsset, dest: string, signal: AbortSignal, onProgress: (received: number, total?: number) => void): Promise<void> {
+    if (!isAllowedOllamaDownload(asset.url)) throw new Error('lien de téléchargement non autorisé');
+    const res = await fetch(asset.url, { redirect: 'follow', signal, headers: { 'User-Agent': 'hub-ia' } });
+    if (!isAllowedOllamaDownload(res.url || asset.url)) throw new Error('redirection vers un site non autorisé');
+    if (!res.ok || !res.body) throw new Error(`le téléchargement a échoué (HTTP ${res.status})`);
+    const total = Number(res.headers.get('content-length')) || asset.size || undefined;
+    const hash = createHash('sha256');
+    const out = createWriteStream(dest);
+    let received = 0;
+    let last = 0;
+    try {
+      for await (const chunk of res.body as any as AsyncIterable<Uint8Array>) {
+        hash.update(chunk);
+        received += chunk.length;
+        if (!out.write(chunk)) await new Promise<void>((r) => out.once('drain', () => r()));
+        if (Date.now() - last > 400) {
+          last = Date.now();
+          onProgress(received, total);
+        }
+      }
+    } finally {
+      await new Promise<void>((r) => out.end(() => r()));
+    }
+    if (signal.aborted) throw new Error('Mise à jour annulée');
+    if (asset.sha256 && hash.digest('hex') !== asset.sha256) throw new Error('le fichier téléchargé ne correspond pas à l’empreinte publiée par Ollama');
+  }
+
+  /**
+   * Met Ollama à jour vers la dernière version publiée, puis le relance (et garde son démarrage automatique).
+   * - Windows : winget upgrade ; repli : installeur officiel (OllamaSetup.exe) en mode silencieux.
+   * - macOS : Ollama.app remplacée par la dernière (zip officiel, signature vérifiée) ; Homebrew : brew upgrade.
+   * busy() : raison de refuser (une réponse d'Ollama en cours…), ou null.
+   */
+  async updateOllama(busy?: () => string | null): Promise<void> {
+    if (this.abort) throw new Error('Une installation est déjà en cours');
+    const why = busy?.();
+    if (why) throw new Error(why);
+    const emit = (state: SetupProgress['state'], message: string, extra: Partial<SetupProgress> = {}) => this.host.emit({ task: 'ollama-update', state, message, ...extra });
+    emit('running', 'Recherche de la dernière version d’Ollama…');
+    const info = await this.ollamaUpdateInfo(true);
+    const latest = this.updateCache?.latest ?? null;
+    if (!info.canUpdate || !latest) {
+      const msg = info.error ?? 'Mise à jour automatique d’Ollama impossible ici : télécharge la dernière version sur ollama.com/download.';
+      emit('error', msg);
+      throw new Error(msg);
+    }
+    if (info.installed && !info.available) {
+      emit('done', `Ollama est déjà à jour (v${info.installed}).`);
+      return;
+    }
+    this.abort = new AbortController();
+    const signal = this.abort.signal;
+    let stopped = false;
+    try {
+      emit('running', 'Arrêt d’Ollama…');
+      await this.stopOllama();
+      stopped = true;
+      let version: string | null = null;
+      if (process.platform === 'win32') {
+        if (info.method === 'winget') {
+          emit('running', 'Mise à jour avec winget…');
+          try {
+            await this.runStreaming('winget', OLLAMA_WINGET_UPGRADE_ARGS, (line) => emit('running', line.slice(0, 160)));
+          } catch {
+            /* winget n'a pas pu être lancé : l'installeur officiel prend le relais ci-dessous */
+          }
+          if (signal.aborted) throw new Error('Mise à jour annulée');
+          emit('running', 'Redémarrage d’Ollama…');
+          version = await this.restartOllama(signal);
+        }
+        // winget absent, en échec, ou pas encore au courant de la nouvelle version : installeur officiel.
+        if ((!version || ollamaUpdateAvailable(version, latest.version)) && latest.asset) {
+          if (version) await this.stopOllama();
+          const tmp = mkdtempSync(join(tmpdir(), 'hub-ia-ollama-update-'));
+          try {
+            const setupExe = join(tmp, latest.asset.name);
+            await this.downloadOllamaAsset(latest.asset, setupExe, signal, (completed, total) => emit('running', `Téléchargement d’Ollama v${latest.version}…`, { completed, total }));
+            emit('running', 'Installation de la nouvelle version…');
+            const code = await this.runStreaming(setupExe, OLLAMA_SETUP_SILENT_ARGS, () => undefined);
+            if (signal.aborted) throw new Error('Mise à jour annulée');
+            if (code !== 0) throw new Error(`l’installeur d’Ollama a échoué (code ${code})`);
+          } finally {
+            rmSync(tmp, { recursive: true, force: true });
+          }
+          await this.stopOllama(); // l'installeur relance parfois Ollama lui-même : un seul lancement, le nôtre
+          emit('running', 'Redémarrage d’Ollama…');
+          version = await this.restartOllama(signal);
+        }
+      } else if (info.method === 'app') {
+        // Fichier de la release GitHub (empreinte vérifiée) ; à défaut, le lien officiel d'ollama.com (signature vérifiée).
+        const zip = latest.asset ?? { name: 'Ollama-darwin.zip', url: OLLAMA_MAC_ZIP_URL };
+        await this.installOllamaApp(signal, (state, message, extra) => emit(state, message, extra), zip);
+        emit('running', 'Redémarrage d’Ollama…');
+        version = await this.restartOllama(signal);
+      } else if (info.method === 'brew') {
+        emit('running', 'Mise à jour avec Homebrew…');
+        const code = await this.runStreaming(brewPath()!, ['upgrade', 'ollama'], (line) => emit('running', line.slice(0, 160)));
+        if (code !== 0) throw new Error(`Homebrew a échoué (code ${code})`);
+        emit('running', 'Redémarrage d’Ollama…');
+        version = await this.restartOllama(signal);
+      }
+      if (!version) throw new Error('Ollama ne répond plus après la mise à jour : lance-le depuis le menu Démarrer (ou le dossier Applications).');
+      stopped = false;
+      const auto = this.configureAutostart();
+      const msg = ollamaUpdateAvailable(version, latest.version)
+        ? `Ollama redémarré en v${version}, mais la v${latest.version} n’a pas pu être installée : réessaie plus tard ou télécharge-la sur ollama.com/download.`
+        : `Ollama est à jour : v${version}.`;
+      emit('done', auto ? `${msg} ${auto}` : msg);
+      await this.host.refreshProviders();
+    } catch (err: any) {
+      const message = signal.aborted ? 'Mise à jour annulée' : (err?.message ?? String(err));
+      emit('error', message);
+      throw new Error(message);
+    } finally {
+      // Jamais laisser Ollama arrêté : même en cas d'échec ou d'annulation, on le relance.
+      if (stopped && !(await this.ollamaVersion())) launchOllama(ollamaExe());
+      this.child = null;
+      this.abort = null;
+    }
   }
 
   /**

@@ -505,6 +505,8 @@ export interface HubSettings {
   /** Dictée vocale : modèle ('auto' = selon la machine) et langue. */
   voiceModel?: VoiceModelId | 'auto';
   voiceLanguage?: VoiceLanguage;
+  /** Vérifier au lancement si une version plus récente d'Ollama est publiée (défaut : oui). */
+  ollamaUpdateCheck?: boolean;
   /**
    * Base de connaissances (dossier de notes .md = vault Obsidian), propre au hub.
    * Chemin relatif = relatif au dossier de l'appli (portable). Idem pour workspaceDir.
@@ -568,8 +570,25 @@ export interface SetupStatus {
   obsidian?: { installed: boolean; version?: string; running: boolean };
 }
 
+/** Mise à jour d'Ollama : versions et façon de mettre à jour sur ce système. */
+export interface OllamaUpdateInfo {
+  /** Version installée (serveur en marche), sinon absente. */
+  installed?: string;
+  /** Dernière version stable publiée (GitHub ollama/ollama). */
+  latest?: string;
+  available: boolean;
+  /** Mise à jour intégrée possible sur ce système (sinon : lien vers la page des versions). */
+  canUpdate: boolean;
+  /** Comment la mise à jour se fera : winget, installeur officiel, appli Mac, Homebrew. */
+  method?: 'winget' | 'installer' | 'app' | 'brew';
+  releaseUrl?: string;
+  checkedAt?: number;
+  /** Vérification impossible (hors ligne, GitHub indisponible…). */
+  error?: string;
+}
+
 export interface SetupProgress {
-  task: 'ollama' | 'model' | 'obsidian';
+  task: 'ollama' | 'model' | 'obsidian' | 'ollama-update';
   state: 'running' | 'done' | 'error';
   message: string;
   /** Octets reçus / total (téléchargement d'un modèle). */
@@ -944,6 +963,8 @@ export type HubEvent =
   /** Accès mobile : état du serveur local, appareils associés, appairage en cours. */
   | { type: 'mobile'; state: MobileState }
   | { type: 'setup'; progress: SetupProgress }
+  /** Résultat d'une vérification des mises à jour d'Ollama (au lancement ou à la demande). */
+  | { type: 'ollamaUpdate'; info: OllamaUpdateInfo }
   /** Une session Claude Code est apparue ou a changé (surveillance de ~/.claude/projects). */
   | { type: 'claudeSessions' }
   /** Nouveau calcul de conso Claude Code prêt. */
@@ -1184,6 +1205,10 @@ export interface HubApi {
   setupStatus(): Promise<SetupStatus>;
   /** Installe Ollama via winget (progression : événements 'setup'). */
   installOllama(): Promise<void>;
+  /** Version d'Ollama installée / dernière publiée (force : ignore le cache de quelques heures). */
+  ollamaUpdateInfo(force?: boolean): Promise<OllamaUpdateInfo>;
+  /** Met Ollama à jour (progression : événements 'setup', tâche 'ollama-update'). */
+  updateOllama(): Promise<void>;
   /** Télécharge un modèle Ollama (progression : événements 'setup'). */
   pullModel(name: string): Promise<void>;
   cancelSetup(): Promise<void>;
@@ -1386,6 +1411,8 @@ export const HUB_METHODS = [
   'setModuleEnv',
   'setupStatus',
   'installOllama',
+  'ollamaUpdateInfo',
+  'updateOllama',
   'pullModel',
   'cancelSetup',
   'openExternal',

@@ -51,7 +51,7 @@ import { isRealPathInside } from './path-guard';
 import { findCitedImagePaths, isCitableImage, MAX_CITED_IMAGES } from './cited-images';
 import { isVoiceModel, isVoiceVariant, VoiceModels } from './voice';
 import { Cutout, isCutoutPath, isCutoutVariant, wantsTransparent } from './cutout';
-import type { CutoutStatus, CutoutVariant, PermissionDecision, PermissionRequest, QueuedMessage } from '../shared/types';
+import type { CutoutStatus, CutoutVariant, OllamaUpdateInfo, PermissionDecision, PermissionRequest, QueuedMessage } from '../shared/types';
 import { ClaudeLogs, priceFor } from './claude-logs';
 import { BUILTIN_TEMPLATES, isBuiltinTemplate } from './builtin-templates';
 import { checkClaudePath } from './claude-launch';
@@ -710,6 +710,40 @@ export class Hub {
       }
     } catch (err) {
       console.error('Démarrage d’Ollama au lancement du hub impossible :', err);
+    }
+  }
+
+  /** Versions d'Ollama (installée / dernière publiée), pour Réglages › Ollama. */
+  async ollamaUpdateInfo(force = false): Promise<OllamaUpdateInfo> {
+    const info = await this.setup.ollamaUpdateInfo(!!force);
+    this.emit({ type: 'ollamaUpdate', info });
+    return info;
+  }
+
+  /** Une IA travaille-t-elle avec Ollama en ce moment ? (on n'arrête pas Ollama sous ses pieds) */
+  private ollamaBusyReason(): string | null {
+    const n = this.listTasks().filter((t) => (t.status === 'running' || t.status === 'queued') && (t.providerId === 'ollama' || t.providerId === 'comfyui')).length;
+    if (n) return `${n > 1 ? `${n} réponses utilisent` : 'Une réponse utilise'} Ollama en ce moment : attends qu’elle${n > 1 ? 's soient finies' : ' soit finie'} (ou arrête-la), puis relance la mise à jour.`;
+    if (this.setup.busy) return 'Un téléchargement (modèle ou installation) est en cours : attends qu’il soit fini, puis relance la mise à jour.';
+    return null;
+  }
+
+  /** Met Ollama à jour (refusé si une réponse l'utilise), puis renvoie l'état à jour aux fenêtres. */
+  async updateOllama(): Promise<void> {
+    try {
+      await this.setup.updateOllama(() => this.ollamaBusyReason());
+    } finally {
+      void this.ollamaUpdateInfo(false).catch(() => undefined);
+    }
+  }
+
+  /** Au lancement (si l'option est cochée) : vérifie s'il existe une version plus récente d'Ollama, sans rien installer. */
+  async checkOllamaUpdateAtLaunch(): Promise<void> {
+    if (this.settings.ollamaUpdateCheck === false || !this.setup.ollamaInstalled()) return;
+    try {
+      await this.ollamaUpdateInfo(false);
+    } catch (err) {
+      console.error('Vérification des mises à jour d’Ollama impossible :', err);
     }
   }
 
@@ -3027,6 +3061,7 @@ export class Hub {
     if (typeof next.delegationEnabled === 'boolean') s.delegationEnabled = next.delegationEnabled;
     if (typeof next.notesSearchAllBases === 'boolean') s.notesSearchAllBases = next.notesSearchAllBases;
     if (typeof next.conversationNotes === 'boolean') s.conversationNotes = next.conversationNotes;
+    if (typeof next.ollamaUpdateCheck === 'boolean') s.ollamaUpdateCheck = next.ollamaUpdateCheck;
     if (typeof next.autoUpdate === 'boolean') s.autoUpdate = next.autoUpdate;
     if (typeof next.updateIncludePrerelease === 'boolean') s.updateIncludePrerelease = next.updateIncludePrerelease;
     if (next.voiceModel === 'auto' || isVoiceModel(next.voiceModel)) s.voiceModel = next.voiceModel;
