@@ -24,6 +24,7 @@
 // Limites (hub fermé) : personne ne peut répondre aux demandes d'autorisation, et les outils du hub (MCP) ne
 // répondent plus.
 import { spawn, type ChildProcess } from 'node:child_process';
+import { turnCostUsd } from '../claude-logs';
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -126,7 +127,7 @@ function signature(ctx: RunContext): { user: string; derived: string } {
   return {
     user: JSON.stringify([ctx.cwd.toLowerCase(), ctx.model ?? '', ctx.permission, ctx.effort ?? '']),
     // Dossiers lus : ceux demandés + ceux des pièces jointes, une seule liste (comme --add-dir).
-    derived: JSON.stringify([ctx.systemAppend ?? '', ctx.mcpConfigPath ?? '', sorted(ctx.allowedTools), sorted([...new Set([...(ctx.addDirs ?? []), ...(ctx.images ?? []).map(dirOf), ...(ctx.files ?? []).map(dirOf)])])]),
+    derived: JSON.stringify([ctx.systemAppend ?? '', ctx.mcpConfigPath ?? '', ctx.extraEnv?.CLAUDE_CODE_AUTO_COMPACT_WINDOW ?? '', sorted(ctx.allowedTools), sorted([...new Set([...(ctx.addDirs ?? []), ...(ctx.images ?? []).map(dirOf), ...(ctx.files ?? []).map(dirOf)])])]),
   };
 }
 const dirOf = (p: string) => p.replace(/[\\/][^\\/]*$/, '');
@@ -171,6 +172,8 @@ class LiveSession {
   private awaiting: Turn[] = [];
   private background = new Set<string>();
   private firstInit = true;
+  /** Modèle annoncé par Claude au démarrage (tarif du coût par tour). */
+  private model?: string;
   private exited = false;
   /** Arrêt demandé (annulation dure) : plus aucun événement n'est traité, les tours ont déjà été annulés. */
   private stopping = false;
@@ -734,6 +737,7 @@ class LiveSession {
     }
     if (msg.type === 'system') {
       if (msg.subtype === 'init') {
+        if (msg.model) this.model = String(msg.model);
         if (this.firstInit) {
           this.firstInit = false;
           const servers = (msg.mcp_servers ?? []).filter((s: any) => s?.name).map((s: any) => ({ name: String(s.name), status: String(s.status ?? '') }));
@@ -807,7 +811,7 @@ class LiveSession {
           inputTokens: msg.usage?.input_tokens,
           outputTokens: msg.usage?.output_tokens,
           cacheTokens: (msg.usage?.cache_read_input_tokens ?? 0) + (msg.usage?.cache_creation_input_tokens ?? 0) || undefined,
-          costUsd: msg.total_cost_usd,
+          costUsd: turnCostUsd(msg, this.model),
         },
       });
     }
@@ -1029,6 +1033,12 @@ export class ClaudeLiveSessions {
     const s = this.sessions.get(key);
     this.sessions.delete(key);
     s?.stop();
+  }
+
+  /** Arrête vraiment toutes les sessions (tests : rien ne doit survivre au hub de test). */
+  closeAll(): void {
+    for (const s of this.sessions.values()) s.stop();
+    this.sessions.clear();
   }
 
   /** Fermeture du hub : les sessions continuent seules (voir l'en-tête), reprises au prochain démarrage. */

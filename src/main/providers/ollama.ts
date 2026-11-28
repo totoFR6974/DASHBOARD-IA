@@ -104,14 +104,16 @@ export class OllamaProvider implements Provider {
       res = await fetch(this.url('/api/chat'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        // Avec images : contexte de 8192 tokens (une capture d'écran en coûte 1 000 à 2 500 ; à 4096 par défaut,
-        // l'historique serait vite tronqué). Fichiers joints : contexte calculé par le hub (ctx.numCtx). Sinon, réglage
-        // par défaut d'Ollama (pas de rechargement du modèle).
+        // Contexte TOUJOURS fixé par le hub : 8192 tokens (historique, consignes de l'agent, notes ; une capture d'écran
+        // en coûte 1 000 à 2 500), plus si des fichiers sont joints (ctx.numCtx, 32k au plus). Sans ça, le réglage global
+        // d'Ollama s'applique : poussé au maximum (curseur « Context length » à 256k), qwen3:14b réserve 40 960 tokens,
+        // ne tient plus sur une carte de 16 Go et déborde sur le processeur et la RAM (lent, CPU à fond).
+        // Même valeur à chaque message : le modèle n'est pas rechargé.
         body: JSON.stringify({
           model: ctx.model,
           messages,
           stream: true,
-          ...(ctx.numCtx || budget < MAX_IMAGES ? { options: { num_ctx: Math.max(ctx.numCtx ?? 0, budget < MAX_IMAGES ? VISION_CTX : 0) } } : {}),
+          options: { num_ctx: chatContextSize(ctx.numCtx) },
         }),
         signal: ctx.signal,
       });
@@ -164,8 +166,15 @@ export class OllamaProvider implements Provider {
 
 /** Nombre maximal d'images envoyées dans une requête (historique compris). */
 const MAX_IMAGES = 6;
-/** Taille du contexte demandée quand la requête contient des images. */
-const VISION_CTX = 8192;
+/** Contexte demandé à chaque message (texte comme images) : tient sur la carte graphique avec un modèle 14B. */
+export const DEFAULT_CTX = 8192;
+/** Plafond (fichiers joints volumineux). */
+export const MAX_CTX = 32768;
+
+/** Taille de contexte envoyée à Ollama : au moins DEFAULT_CTX, plus si le hub l'a demandé, jamais au-delà de MAX_CTX. */
+export function chatContextSize(requested?: number): number {
+  return Math.min(MAX_CTX, Math.max(DEFAULT_CTX, requested ?? 0));
+}
 /** Taille maximale d'une image envoyée à Ollama. */
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 

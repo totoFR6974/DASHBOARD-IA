@@ -312,6 +312,8 @@ export interface LimitsState {
 /** Compteurs persistants (indépendants de l'historique des tâches) : jour 'AAAA-MM-JJ' → IA → cumul. */
 export interface UsageStats {
   days: Record<string, Record<string, UsageBucket>>;
+  /** 2 : coût Claude recalculé depuis les tokens (avant : cumul de session additionné à chaque message, très gonflé). */
+  costVersion?: number;
 }
 
 export interface Task {
@@ -468,6 +470,11 @@ export interface Conversation {
 export interface HubSettings {
   /** Chemin vers claude.exe ; vide = détection automatique. */
   claudePath: string;
+  /**
+   * Claude résume la conversation au-delà de ce nombre de tokens (CLAUDE_CODE_AUTO_COMPACT_WINDOW) ; 0 = défaut de
+   * Claude (fenêtre d'1 million : chaque message relit jusqu'à ~967k tokens). Absent = 300 000.
+   */
+  claudeCompactWindow?: number;
   ollamaUrl: string;
   /** Dossier de travail par défaut des agents qui manipulent des fichiers. */
   workspaceDir: string;

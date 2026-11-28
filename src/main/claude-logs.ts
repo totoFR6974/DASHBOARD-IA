@@ -125,6 +125,28 @@ function costOf(r: Reply): { input: number; output: number; cacheWrite: number; 
   return { input: (r[4] * p.in) / 1e6, output: (r[5] * p.out) / 1e6, cacheWrite: (r[9] * p.cw5m + r[8] * p.cw1h) / 1e6, cacheRead: (r[7] * p.cr) / 1e6 };
 }
 
+/** Tarif d'un modèle (« claude-opus-5-5[1m] », « opus », nom daté…) ; Opus 5.5 par défaut. */
+export function priceFor(model?: string): (typeof PRICES)[string] {
+  const m = (model ?? '').toLowerCase().replace(/\[1m\]$/, '');
+  const key = Object.keys(PRICES).find((k) => m.startsWith(k)) ?? Object.keys(PRICES).find((k) => m && k.includes(m));
+  return PRICES[key ?? 'claude-opus-5-5'];
+}
+
+/**
+ * Coût (équivalent API) d'UN tour d'une session Claude Code, calculé sur les tokens du message « result ».
+ * Ne pas utiliser total_cost_usd : c'est le cumul de TOUTE la session (il grossit à chaque message, reprises
+ * comprises) ; l'additionner tour après tour gonflait le coût affiché par le hub.
+ */
+export function turnCostUsd(msg: any, model?: string): number | undefined {
+  const u = msg?.usage;
+  if (!u) return undefined;
+  const p = priceFor(model ?? Object.keys(msg.modelUsage ?? {})[0]);
+  const write = u.cache_creation_input_tokens ?? 0;
+  const w1h = u.cache_creation?.ephemeral_1h_input_tokens ?? 0;
+  const w5m = u.cache_creation?.ephemeral_5m_input_tokens ?? Math.max(0, write - w1h);
+  return ((u.input_tokens ?? 0) * p.in + (u.output_tokens ?? 0) * p.out + w5m * p.cw5m + w1h * p.cw1h + (u.cache_read_input_tokens ?? 0) * p.cr) / 1e6;
+}
+
 export function modelLabel(raw: string): string {
   return NAMES[raw] ?? raw;
 }

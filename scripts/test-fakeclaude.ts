@@ -100,7 +100,9 @@ async function main(): Promise<void> {
     let streamed = '';
     const r = await p.run(base('[fake:simple] bonjour', { onDelta: (d) => (streamed += d) }));
     check(r.output.includes('[faux-claude]') && streamed === r.output, 'run() : texte en streaming = résultat final', { output: r.output, streamed });
-    check(r.usage?.costUsd === 0.0123 && r.usage.cacheTokens === 1200 && !!r.sessionId, 'run() : usage, coût et session', r.usage);
+    // Coût = tokens du tour au tarif du modèle (Opus 5.5 par défaut), PAS total_cost_usd (0.0123, cumul de la session).
+    const expectedCost = ((r.usage?.inputTokens ?? 0) * 4 + (r.usage?.outputTokens ?? 0) * 20 + 200 * 5 + 1000 * 0.2) / 1e6;
+    check(Math.abs((r.usage?.costUsd ?? -1) - expectedCost) < 1e-9 && r.usage?.cacheTokens === 1200 && !!r.sessionId, 'run() : usage, coût du tour (pas le cumul de session) et session', { ...r.usage, expectedCost });
     check(limits?.unifiedWindows?.five_hour?.utilization === 0.42, 'run() : rate_limit_event transmis à onLimits');
     const r2 = await p.run(base('[fake:session]', { sessionId: r.sessionId }));
     check(r2.sessionId === r.sessionId, '--resume : même session renvoyée');

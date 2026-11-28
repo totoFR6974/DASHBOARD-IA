@@ -52,7 +52,8 @@ import { findCitedImagePaths, isCitableImage, MAX_CITED_IMAGES } from './cited-i
 import { isVoiceModel, isVoiceVariant, VoiceModels } from './voice';
 import { Cutout, isCutoutPath, isCutoutVariant, wantsTransparent } from './cutout';
 import type { CutoutStatus, CutoutVariant, PermissionDecision, PermissionRequest, QueuedMessage } from '../shared/types';
-import { ClaudeLogs } from './claude-logs';
+import { ClaudeLogs, priceFor } from './claude-logs';
+import { BUILTIN_TEMPLATES, isBuiltinTemplate } from './builtin-templates';
 import { checkClaudePath } from './claude-launch';
 import { Setup } from './setup';
 import { Knowledge } from './knowledge';
@@ -182,6 +183,49 @@ export function importedMessage(m: ClaudeSessionMessage): ChatMessage {
  * (un message identique — même rôle, même heure, même texte — n'apparaît qu'une fois) ; les tâches et les messages
  * en attente des doublons sont rattachés à la discussion gardée. Rien n'est perdu.
  */
+/** Résumé automatique de Claude : valeurs proposées dans les Réglages (0 = défaut de Claude, 1 million). */
+export const COMPACT_WINDOWS = [200_000, 300_000, 400_000, 0];
+export const DEFAULT_COMPACT_WINDOW = 300_000;
+
+/** Valeur du réglage, nettoyée (une valeur inconnue revient au défaut). */
+export function compactWindowSetting(v: unknown): number {
+  const n = Number(v);
+  return COMPACT_WINDOWS.includes(n) ? n : DEFAULT_COMPACT_WINDOW;
+}
+
+/** Variables d'environnement passées à Claude : délai des outils MCP du hub, seuil du résumé automatique. */
+export function claudeEnv(s: Pick<HubSettings, 'claudeCompactWindow'>, mcp: boolean): Record<string, string> | undefined {
+  const env: Record<string, string> = {};
+  if (mcp) env.MCP_TOOL_TIMEOUT = String(DELEGATION_TIMEOUT_MS);
+  const w = s.claudeCompactWindow === undefined ? DEFAULT_COMPACT_WINDOW : compactWindowSetting(s.claudeCompactWindow);
+  if (w > 0) env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(w);
+  return Object.keys(env).length ? env : undefined;
+}
+
+/**
+ * Coût Claude estimé depuis les tokens d'une tâche ou d'un jour (anciennes données : lectures et écritures de cache
+ * confondues, comptées au tarif de lecture, de loin le plus fréquent ; tarif d'Opus 5.5).
+ */
+export function claudeCostFromTokens(u: { inputTokens?: number; outputTokens?: number; cacheTokens?: number }): number {
+  const p = priceFor('claude-opus-5-5');
+  return ((u.inputTokens ?? 0) * p.in + (u.outputTokens ?? 0) * p.out + (u.cacheTokens ?? 0) * p.cr) / 1e6;
+}
+
+/** Tâche Claude enregistrée avant la correction : son coût était le cumul de la session → recalculé depuis ses tokens. */
+export function fixClaudeTaskCost(t: Task): void {
+  if (t.providerId === 'claude' && t.usage?.costUsd !== undefined) t.usage.costUsd = claudeCostFromTokens(t.usage);
+}
+
+/** Compteurs par jour (gardés même si l'historique est vidé) : coût Claude recalculé depuis leurs tokens, une fois. */
+export function fixClaudeUsageCosts(usage: UsageStats, tasks: Task[]): void {
+  for (const t of tasks) fixClaudeTaskCost(t);
+  for (const day of Object.values(usage.days)) {
+    const b = day.claude;
+    if (b) b.costUsd = claudeCostFromTokens(b);
+  }
+  usage.costVersion = 2;
+}
+
 export function mergeClaudeDuplicates(conversations: Conversation[], tasks: Task[]): { conversations: Conversation[]; removed: number } {
   const groups = new Map<string, Conversation[]>();
   for (const c of conversations) {
@@ -375,7 +419,7 @@ export class Hub {
     this.knowledge = new Knowledge(
       () => this.vaultDir,
       (kind) => {
-        if (kind === 'templates') this.emit({ type: 'templates', templates: this.knowledge.listTemplates() });
+        if (kind === 'templates') this.emit({ type: 'templates', templates: this.listTemplates() });
         this.emit({ type: 'knowledgeChanged' });
       },
       () => this.knowledgeRootAvailable(),
@@ -447,8 +491,13 @@ export class Hub {
     if (!Array.isArray(this.db.data.workflows)) this.db.data.workflows = [];
     if (!this.db.data.usage) {
       // Première fois : on reconstitue les compteurs à partir des tâches déjà enregistrées.
-      this.db.data.usage = { days: {} };
+      this.db.data.usage = { days: {}, costVersion: 2 };
+      for (const t of this.db.data.tasks) fixClaudeTaskCost(t);
       for (const t of this.db.data.tasks) this.countUsage(t, false);
+    }
+    if ((this.db.data.usage.costVersion ?? 1) < 2) {
+      fixClaudeUsageCosts(this.db.data.usage, this.db.data.tasks);
+      this.db.save();
     }
 
     for (const conv of this.db.data.conversations) this.migrate(conv);
@@ -1216,7 +1265,8 @@ export class Hub {
           systemAppend,
           ...(run.transparent ? { transparent: true } : {}),
           ...(allowedTools.length ? { allowedTools } : {}),
-          ...(mcp ? { mcpConfigPath: mcp.configPath, extraEnv: { MCP_TOOL_TIMEOUT: String(DELEGATION_TIMEOUT_MS) } } : {}),
+          ...(mcp ? { mcpConfigPath: mcp.configPath } : {}),
+          ...(claudeEnv(this.settings, !!mcp) ? { extraEnv: claudeEnv(this.settings, !!mcp) } : {}),
           ...(liveKey ? { liveKey, liveTag: task.id } : {}),
           signal: controller.signal,
           onDelta: (delta) => {
@@ -2828,8 +2878,9 @@ export class Hub {
 
   // ---------- Modèles de workflows ----------
 
+  /** Modèles fournis avec le hub, puis ceux enregistrés dans la base de notes. */
   listTemplates(): WorkflowTemplate[] {
-    return this.knowledge.listTemplates();
+    return [...BUILTIN_TEMPLATES, ...this.knowledge.listTemplates()];
   }
 
   saveTemplate(runId: string, name: string, description?: string): WorkflowTemplate {
@@ -2839,6 +2890,7 @@ export class Hub {
   }
 
   deleteTemplate(id: string): void {
+    if (isBuiltinTemplate(id)) throw new Error('Ce modèle est fourni avec le hub : il ne peut pas être supprimé.');
     this.knowledge.deleteTemplate(id);
   }
 
@@ -2969,6 +3021,7 @@ export class Hub {
       this.knowledge.ensureVault();
     }
     if (['default', 'acceptEdits', 'bypassPermissions'].includes(next.claudePermission)) s.claudePermission = next.claudePermission;
+    if (next.claudeCompactWindow !== undefined) s.claudeCompactWindow = compactWindowSetting(next.claudeCompactWindow);
     if (Array.isArray(next.defaultParticipants)) s.defaultParticipants = next.defaultParticipants;
     if (typeof next.workflowAutoStart === 'boolean') s.workflowAutoStart = next.workflowAutoStart;
     if (typeof next.delegationEnabled === 'boolean') s.delegationEnabled = next.delegationEnabled;
@@ -2992,11 +3045,14 @@ export class Hub {
     return this.running.size;
   }
 
-  shutdown(): void {
+  /** `stopClaude` : tests seulement — les sessions Claude sont arrêtées au lieu de continuer seules. */
+  shutdown(opts: { stopClaude?: boolean } = {}): void {
     this.stopped = true;
     // Sessions Claude persistantes : jamais coupées à l'arrêt du hub.
     // Elles continuent SEULES (fin du tour en cours, agents d'arrière-plan) et sont reprises au prochain démarrage.
-    (this.providers.get('claude') as ClaudeProvider | undefined)?.live.detachAll();
+    const live = (this.providers.get('claude') as ClaudeProvider | undefined)?.live;
+    if (opts.stopClaude) live?.closeAll();
+    else live?.detachAll();
     for (const c of this.running.values()) c.abort();
     for (const id of [...this.delegation.keys()]) this.endDelegation(id);
     this.cutout.shutdown();

@@ -311,6 +311,15 @@
               </select>
             </label>
             <label>Dossier de travail par défaut <input name="workspaceDir" /></label>
+            <label>Résumer la conversation au-delà de
+              <select name="claudeCompactWindow">
+                <option value="200000">200 000 tokens (le plus économe)</option>
+                <option value="300000" selected>300 000 tokens (conseillé)</option>
+                <option value="400000">400 000 tokens</option>
+                <option value="0">1 million (réglage de Claude : chaque message relit tout l’historique)</option>
+              </select>
+            </label>
+            <p class="muted small">Plus la conversation est longue, plus chaque message consomme : Claude relit tout l’historique à chaque réponse. Au-delà du seuil, il résume les échanges anciens et continue. S’applique aux nouvelles sessions et aux sessions inactives.</p>
             <div class="access-block">
               <div class="access-title">Accès de Claude, même en mode « Prudent »</div>
               <p class="muted small">

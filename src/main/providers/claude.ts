@@ -8,6 +8,7 @@ import { checkClaudePath, claudeLaunchSpec, findClaudeOnWindowsPath, npmGlobalCl
 import { caseInsensitiveFs, claudeCandidates, findInPath, firstExisting, killProcessTree, openInMacTerminal, testOnlyEnv, treeSpawnOptions } from '../platform';
 import { CancelledError, type Provider, type RunContext, type RunResult } from './provider';
 import { ClaudeLiveSessions, type LiveHooks } from './claude-live';
+import { turnCostUsd } from '../claude-logs';
 
 /** Modèles proposés ; "default" = ne pas passer --model (Claude choisit). */
 const MODELS = ['default', 'opus', 'sonnet', 'haiku'];
@@ -193,6 +194,7 @@ export class ClaudeProvider implements Provider {
       let result: RunResult | null = null;
       let failure: string | null = null;
       let sawDelta = false;
+      let initModel: string | undefined;
 
       const emit = (text: string) => {
         output += text;
@@ -239,6 +241,7 @@ export class ClaudeProvider implements Provider {
           }
           sawDelta = false;
         } else if (msg.type === 'system' && msg.subtype === 'init') {
+          if (msg.model) initModel = String(msg.model);
           const servers = (msg.mcp_servers ?? []).filter((s: any) => s?.name).map((s: any) => ({ name: String(s.name), status: String(s.status ?? '') }));
           try {
             this.onMcpServers?.(servers);
@@ -259,7 +262,7 @@ export class ClaudeProvider implements Provider {
               inputTokens: msg.usage?.input_tokens,
               outputTokens: msg.usage?.output_tokens,
               cacheTokens: (msg.usage?.cache_read_input_tokens ?? 0) + (msg.usage?.cache_creation_input_tokens ?? 0) || undefined,
-              costUsd: msg.total_cost_usd,
+              costUsd: turnCostUsd(msg, initModel),
             },
           };
         }

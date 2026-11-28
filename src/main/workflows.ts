@@ -656,7 +656,7 @@ export class WorkflowEngine {
       // Agent vision (Observateur) : il reçoit les images produites par les étapes dont il dépend, et celles dont
       // les consignes citent le chemin.
       ...(role.id === OBSERVER_ID
-        ? { images: [...new Set([...step.dependsOn.flatMap((d) => run.steps.find((s) => s.id === d)?.images ?? []), ...imagePathsIn(step.instructions)])].slice(0, 6) }
+        ? { images: [...new Set([...step.dependsOn.flatMap((d) => run.steps.find((s) => s.id === d)?.images ?? []), ...imagePathsIn(step.instructions), ...imagePathsIn(run.goal)])].slice(0, 6) }
         : {}),
       // Agent d'images réglé sur « fond transparent », ou consigne qui le demande.
       ...(IMAGE_PROVIDERS.has(info.id) && (role.transparent || wantsTransparent(step.instructions)) ? { transparent: true } : {}),

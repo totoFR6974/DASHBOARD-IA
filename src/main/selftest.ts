@@ -4,11 +4,15 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFi
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Conversation, Task, WorkflowRun } from '../shared/types';
-import { Hub, mergeClaudeDuplicates, samePath } from './hub';
+import { claudeEnv, compactWindowSetting, fixClaudeUsageCosts, Hub, mergeClaudeDuplicates, samePath } from './hub';
+import { turnCostUsd } from './claude-logs';
+import { BUILTIN_TEMPLATES } from './builtin-templates';
+import { defaultRoles } from './workflows';
 import { imagePreset } from './image-models';
 import { macModelChoice } from './providers/comfyui';
 import { findCitedImagePaths } from './cited-images';
 import { approvalDisabled, isLocalOllamaUrl, macLaunchAgentPlist, macOllamaApp } from './ollama-autostart';
+import { chatContextSize } from './providers/ollama';
 import { detectExistingComfy, findComfyRoot, unpackedPath } from './image-engine';
 import { isAllowedExternalUrl, recommendModel } from './setup';
 import { compareSemver, fetchReleases, isPrereleaseVersion, pickLatestRelease, readableUpdateError } from './update-check';
@@ -152,7 +156,7 @@ async function testImageFix(): Promise<void> {
     check(st.dir === portable && st.customDirValid === true && !st.suggestedDir, `dossier choisi utilisé (${st.dir})`);
     st = await hub.setComfyuiDir(null);
     check(!st.customDir && st.dir === join(dataRoot, 'tools', 'ComfyUI'), 'retour au dossier de l’appli');
-    hub.shutdown();
+    hub.shutdown({ stopClaude: true });
     const diag = await new Hub(join(tmp, 'd2', 'data'), join(tmp, 'd2')).diagnoseImageTools();
     check(diag.ok, `7za se lance en dev (${diag.message})`);
   } finally {
@@ -548,7 +552,7 @@ function testPortability(): void {
   writeFileSync(join(dir2, 'data', 'settings.json'), JSON.stringify({ workspaceDir: join(dir2, 'workspace') }));
   const h2 = new Hub(join(dir2, 'data'), dir2);
   check(h2.settings.workspaceDir === 'workspace', `ancien chemin absolu migré en relatif (${h2.settings.workspaceDir})`);
-  h2.shutdown();
+  h2.shutdown({ stopClaude: true });
   rmSync(dir2, { recursive: true, force: true });
 }
 
@@ -809,6 +813,38 @@ async function testClaudeLogs(): Promise<void> {
     isLocalOllamaUrl('http://127.0.0.1:11434') && isLocalOllamaUrl('http://localhost:11434/') && isLocalOllamaUrl('http://[::1]:11434') && !isLocalOllamaUrl('http://192.168.1.20:11434') && !isLocalOllamaUrl('pas une url'),
     'Ollama n’est lancé par le hub que pour un serveur local (pas pour une adresse distante)',
   );
+  // Contexte Ollama toujours fixé par le hub (un réglage global à 256k ferait déborder le modèle sur le processeur).
+  check(
+    chatContextSize() === 8192 && chatContextSize(4096) === 8192 && chatContextSize(16384) === 16384 && chatContextSize(262144) === 32768,
+    'contexte Ollama fixé par le hub : 8192 par défaut, plus pour des fichiers joints, 32k au plus',
+  );
+  // Coût Claude par tour : calculé sur les tokens du tour, jamais sur total_cost_usd (cumul de toute la session).
+  const turn = { usage: { input_tokens: 10, output_tokens: 1000, cache_read_input_tokens: 1_000_000, cache_creation_input_tokens: 10_000 }, total_cost_usd: 93.95 };
+  const c1t = turnCostUsd(turn, 'claude-opus-5-5[1m]') ?? 0;
+  const cHaiku = turnCostUsd(turn, 'claude-haiku-5-5') ?? 0;
+  check(Math.abs(c1t - (10 * 4 + 1000 * 20 + 10_000 * 5 + 1_000_000 * 0.2) / 1e6) < 1e-9 && cHaiku < c1t / 10 && turnCostUsd({}) === undefined, `coût d’un tour Claude calculé sur ses tokens (${c1t.toFixed(3)} $, pas le cumul de session 93,95 $)`);
+  const oldUsage = { days: { '2026-11-27': { claude: { inputTokens: 1500, outputTokens: 617_000, cacheTokens: 269_000_000, tasks: 80, images: 0, costUsd: 8824.97 } } } };
+  const oldTasks = [{ providerId: 'claude', usage: { outputTokens: 1000, cacheTokens: 1_000_000, costUsd: 93.95 } }, { providerId: 'ollama', usage: { outputTokens: 5 } }] as unknown as Task[];
+  fixClaudeUsageCosts(oldUsage, oldTasks);
+  const fixedDay = oldUsage.days['2026-11-27'].claude.costUsd;
+  check(fixedDay > 50 && fixedDay < 100 && Math.abs((oldTasks[0].usage?.costUsd ?? 0) - 0.22) < 1e-9 && (oldUsage as { costVersion?: number }).costVersion === 2, `anciens compteurs corrigés : 8824,97 $ → ${fixedDay.toFixed(2)} $ pour 270 millions de tokens`);
+  // Résumé automatique plus tôt (réglage) : seuil passé à Claude, 0 = défaut de Claude (aucune variable).
+  const envDef = claudeEnv({}, false);
+  const envMcp = claudeEnv({ claudeCompactWindow: 200000 }, true);
+  check(
+    envDef?.CLAUDE_CODE_AUTO_COMPACT_WINDOW === '300000' && envMcp?.CLAUDE_CODE_AUTO_COMPACT_WINDOW === '200000' && !!envMcp?.MCP_TOOL_TIMEOUT &&
+      claudeEnv({ claudeCompactWindow: 0 }, false) === undefined && compactWindowSetting('123') === 300000,
+    'résumé automatique de Claude : 300 000 par défaut, réglable (200k/300k/400k), 0 = réglage de Claude',
+  );
+  // Modèles de workflows fournis : agents existants, dépendances vers des étapes précédentes, ids uniques.
+  const roleIds = new Set(defaultRoles().map((r) => r.id));
+  const badTpl = BUILTIN_TEMPLATES.filter(
+    (t) => !t.goal || !t.steps.length || t.steps.some((st, i) => !roleIds.has(st.roleId) || st.dependsOn.some((d) => !t.steps.slice(0, i).some((p) => p.id === d))),
+  );
+  check(
+    BUILTIN_TEMPLATES.length === 11 && badTpl.length === 0 && new Set(BUILTIN_TEMPLATES.map((t) => t.id)).size === 11 && hub.listTemplates().filter((t) => t.id.startsWith('builtin:')).length === 11,
+    `11 modèles de workflows fournis, valides et listés (${badTpl.map((t) => t.name).join(', ') || 'aucun invalide'})`,
+  );
   // Récupérer à nouveau la même session (copie ou reprise) : la discussion existante est rouverte, pas de doublon.
   const nBefore = h2.listConversations().length;
   const again = await h2.continueClaudeSession('s1', 'resume');
@@ -842,7 +878,7 @@ async function testClaudeLogs(): Promise<void> {
     refused = true;
   }
   check(refused, 'identifiant de session invalide refusé');
-  h2.shutdown();
+  h2.shutdown({ stopClaude: true });
 
   // Vrai dossier de l'utilisateur (lecture seule) : doit fonctionner et donner des totaux.
   const real = new ClaudeLogs({ cacheFile: join(dir, 'data', 'cl-real-cache.json') });
@@ -910,7 +946,7 @@ async function testClaudeArchive(): Promise<void> {
   const list1 = await h1.listClaudeSessions();
   const A1 = list1.find((s) => s.id === 'sA');
   check(!!A1?.archived && !!A1.archivedAt && !!A1.hasArchiveCopy && !list1.find((s) => s.id === 'sB')?.archived, 'session A marquée archivée (masquée), B inchangée');
-  h1.shutdown();
+  h1.shutdown({ stopClaude: true });
 
   const h2 = new Hub(dataDir, dir, { claudeLogsRoot: root });
   check(!!(await h2.listClaudeSessions()).find((s) => s.id === 'sA')?.archived, 'archivage gardé en mémoire après redémarrage du hub');
@@ -956,7 +992,7 @@ async function testClaudeArchive(): Promise<void> {
   const B = (await h2.listClaudeSessions()).find((s) => s.id === 'sB');
   check(!!B && !B.archived && !B.hasArchiveCopy && (await h2.claudeLogUsage(true)).totals.replies === t4.replies, 'original présent : supprimer la copie le remet dans la liste, conso inchangée');
   check(snapshot() === afterCleanup, 'dossier des journaux toujours intact après désarchivage et suppression des copies');
-  h2.shutdown();
+  h2.shutdown({ stopClaude: true });
 }
 
 main()
@@ -965,8 +1001,8 @@ main()
     failures++;
   })
   .finally(() => {
-    hub.shutdown();
-    rmSync(dir, { recursive: true, force: true });
+    hub.shutdown({ stopClaude: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
     console.log(failures ? `\n${failures} échec(s)` : '\nTout est OK');
     process.exit(failures ? 1 : 0);
   });
