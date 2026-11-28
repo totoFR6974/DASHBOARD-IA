@@ -134,3 +134,9 @@ Cas où l'installation automatique est refusée (bouton « Télécharger » manu
 - [ ] Quitter le hub sans rien en cours : au redémarrage, aucun doublon, rien de bloqué
 - [ ] Pendant une réponse de Claude à plusieurs étapes, écrire un message puis « ↑ Envoyer maintenant » : il s'affiche avec « Envoyé pendant la réponse », Claude en tient compte à l'étape suivante, la réponse n'est PAS arrêtée, un agent d'arrière-plan continue
 - [ ] Bouton ■ « Arrêter » : la réponse s'arrête tout de suite, le message suivant part sans redémarrer Claude (pas de nouvelle « Session démarrée » dans l'activité)
+
+## 16. Ollama démarre avec le Mac
+
+- [ ] Ollama installé, hub lancé une fois : le fichier ~/Library/LaunchAgents/com.hub-ia.ollama.plist existe (macOS peut afficher « Élément d’arrière-plan ajouté », c’est normal)
+- [ ] Quitter Ollama (icône de la barre des menus › Quit Ollama), fermer puis rouvrir la session : Ollama est de nouveau là, sans fenêtre au premier plan
+- [ ] Quitter Ollama puis ouvrir le hub : en quelques secondes, Ollama redémarre tout seul et la pastille « IA » repasse au vert

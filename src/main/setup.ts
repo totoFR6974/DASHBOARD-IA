@@ -7,6 +7,7 @@ import { tmpdir, totalmem } from 'node:os';
 import { join } from 'node:path';
 import type { ProviderInfo, SetupProgress, SetupStatus } from '../shared/types';
 import { obsidianStatus } from './obsidian';
+import { ensureOllamaAutostart, isLocalOllamaUrl, launchOllama } from './ollama-autostart';
 import { brewPath, detectAppleChip, findInPath, firstExisting, killProcessTree, macApplicationsDir, ollamaCandidates, openUrlCommand, treeSpawnOptions } from './platform';
 
 /** Liens que l'appli accepte d'ouvrir dans le navigateur (sites officiels uniquement). */
@@ -138,6 +139,40 @@ export class Setup {
 
   constructor(private host: SetupHost) {}
 
+  /**
+   * Ollama démarre avec l'ordinateur (raccourci de démarrage Windows réactivé / LaunchAgent macOS).
+   * Renvoie un message lisible, ou null s'il n'y avait rien à faire. N'échoue jamais (l'installation reste valable).
+   */
+  configureAutostart(): string | null {
+    try {
+      const res = ensureOllamaAutostart(ollamaExe());
+      return res.changes.length ? `Ollama démarrera avec l’ordinateur : ${res.changes.join(', ')}.` : null;
+    } catch (err: any) {
+      return `Démarrage automatique d’Ollama non configuré : ${err?.message ?? err}. Lance Ollama depuis le menu Démarrer si besoin.`;
+    }
+  }
+
+  /** Ollama est-il installé sur cette machine ? (sans lancer Claude ni interroger le serveur) */
+  ollamaInstalled(): boolean {
+    return !!ollamaExe();
+  }
+
+  /** Ollama installé mais arrêté (serveur local muet) : on le lance, détaché du hub. Renvoie ce qui a été lancé. */
+  async startIfStopped(): Promise<string | null> {
+    if (this.abort || !isLocalOllamaUrl(this.host.ollamaUrl())) return null;
+    try {
+      await fetchJson(this.url('/api/version'), 2000);
+      return null; // déjà en marche
+    } catch {
+      /* arrêté : on le lance ci-dessous */
+    }
+    const launched = launchOllama(ollamaExe());
+    if (!launched) return null;
+    const up = await this.waitOllama(60000, new AbortController().signal);
+    if (up) await this.host.refreshProviders();
+    return up ? launched : null;
+  }
+
   private url(path: string): string {
     return `${this.host.ollamaUrl().replace(/\/+$/, '')}${path}`;
   }
@@ -240,7 +275,8 @@ export class Setup {
       }
       if (signal.aborted) throw new Error('Installation annulée');
       if (!up) throw new Error('Ollama est installé mais son serveur ne répond pas : redémarre le PC ou lance Ollama depuis le menu Démarrer, puis « Revérifier ».');
-      emit('done', 'Ollama est installé et prêt.');
+      const auto = this.configureAutostart();
+      emit('done', auto ? `Ollama est installé et prêt. ${auto}` : 'Ollama est installé et prêt.');
       await this.host.refreshProviders();
     } catch (err: any) {
       emit('error', err.message ?? String(err));
@@ -285,7 +321,8 @@ export class Setup {
       }
       if (signal.aborted) throw new Error('Installation annulée');
       if (!up) throw new Error('Ollama est installé mais son serveur ne répond pas : ouvre « Ollama » depuis le dossier Applications (son icône apparaît dans la barre des menus), puis « Revérifier ».');
-      emit('done', 'Ollama est installé et prêt.');
+      const auto = this.configureAutostart();
+      emit('done', auto ? `Ollama est installé et prêt. ${auto}` : 'Ollama est installé et prêt.');
       await this.host.refreshProviders();
     } catch (err: any) {
       const message = signal.aborted ? 'Installation annulée' : (err.message ?? String(err));

@@ -339,6 +339,8 @@ function start(): void {
   const claudeLogsRoot = smoke && !app.isPackaged && process.env.HUB_CLAUDE_LOGS_ROOT ? resolve(process.env.HUB_CLAUDE_LOGS_ROOT) : undefined;
   hub = new Hub(dataDir, smoke ? dataDir : rootDir, { toolsDir, ...(claudeLogsRoot ? { claudeLogsRoot } : {}) });
   if (smoke) (globalThis as { __hubSmoke?: Hub }).__hubSmoke = hub; // tests (smoke-vaultsync.ts) : écrire des notes sans IA
+  // Ollama installé mais arrêté : démarré en arrière-plan (et, une fois, activé au démarrage de l'ordinateur). Pas en test.
+  if (!smoke) setTimeout(() => void hub.startOllamaAtLaunch(), 1500);
   // macOS : menu d'application (⌘C ⌘V ⌘Q ⌘W…) ; icône du Dock en dev (la version packagée a son .icns).
   installAppMenu();
   if (process.platform === 'darwin' && !app.isPackaged && existsSync(windowIcon)) app.dock?.setIcon(windowIcon);

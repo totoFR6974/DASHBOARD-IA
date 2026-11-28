@@ -643,6 +643,27 @@ export class Hub {
     return this.setup.installOllama();
   }
 
+  /**
+   * Au lancement du hub : Ollama installé mais arrêté → on le démarre (détaché : il reste ouvert après le hub).
+   * Une seule fois par installation du hub : on active aussi son démarrage avec l'ordinateur (raccourci Windows
+   * désactivé ou absent, LaunchAgent macOS). Une fois fait, on ne revient plus dessus : si l'utilisateur le désactive
+   * ensuite lui-même dans Windows, son choix est respecté.
+   */
+  async startOllamaAtLaunch(): Promise<void> {
+    const marker = join(this.dataDir, 'ollama-autostart.json');
+    try {
+      const launched = await this.setup.startIfStopped();
+      if (launched) console.log(`Ollama était arrêté : lancé (${launched}).`);
+      if (!existsSync(marker) && this.setup.ollamaInstalled()) {
+        const msg = this.setup.configureAutostart();
+        if (msg) console.log(msg);
+        writeFileSync(marker, JSON.stringify({ configuredAt: new Date().toISOString(), result: msg ?? 'déjà configuré' }, null, 2));
+      }
+    } catch (err) {
+      console.error('Démarrage d’Ollama au lancement du hub impossible :', err);
+    }
+  }
+
   pullModel(name: string): Promise<void> {
     return this.setup.pullModel(name);
   }

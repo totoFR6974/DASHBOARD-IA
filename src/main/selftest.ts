@@ -8,6 +8,7 @@ import { Hub, mergeClaudeDuplicates, samePath } from './hub';
 import { imagePreset } from './image-models';
 import { macModelChoice } from './providers/comfyui';
 import { findCitedImagePaths } from './cited-images';
+import { approvalDisabled, isLocalOllamaUrl, macLaunchAgentPlist, macOllamaApp } from './ollama-autostart';
 import { detectExistingComfy, findComfyRoot, unpackedPath } from './image-engine';
 import { isAllowedExternalUrl, recommendModel } from './setup';
 import { compareSemver, fetchReleases, isPrereleaseVersion, pickLatestRelease, readableUpdateError } from './update-check';
@@ -790,6 +791,23 @@ async function testClaudeLogs(): Promise<void> {
   check(
     cited.length === 3 && cited[0] === 'C:\\Projet X\\captures\\maquette A.png' && cited[1] === 'C:\\Projet X\\docs\\captures\\b.png' && cited[2] === 'C:\\Projet X\\img\\c d.jpg',
     `images citées dans une réponse reconnues (${cited.join(' | ')})`,
+  );
+  // Démarrage automatique d'Ollama : état Windows lu dans StartupApproved, LaunchAgent macOS, URL locale seulement.
+  const regOff = '\r\nHKEY_CURRENT_USER\\…\\StartupFolder\r\n    Ollama.lnk    REG_BINARY    010000000000000000000000\r\n';
+  const regOff3 = '    Ollama.lnk    REG_BINARY    03000000E0F15A7AB037DC01';
+  const regOn = '    Ollama.lnk    REG_BINARY    020000000000000000000000';
+  check(approvalDisabled(regOff) && approvalDisabled(regOff3) && !approvalDisabled(regOn) && !approvalDisabled(''), 'démarrage d’Ollama : raccourci désactivé dans Windows reconnu (01/03 désactivé, 02 activé, absent = libre)');
+  const plistApp = macLaunchAgentPlist({ app: '/Applications/Ollama.app', exe: '/Applications/Ollama.app/Contents/Resources/ollama' }) ?? '';
+  const plistBrew = macLaunchAgentPlist({ exe: '/opt/homebrew/bin/ollama' }) ?? '';
+  check(
+    /<string>\/usr\/bin\/open<\/string>[\s\S]*<string>-g<\/string>[\s\S]*<string>\/Applications\/Ollama\.app<\/string>/.test(plistApp) && /RunAtLoad<\/key><true\/>/.test(plistApp) &&
+      /<string>\/opt\/homebrew\/bin\/ollama<\/string>\s*<string>serve<\/string>/.test(plistBrew) && macLaunchAgentPlist({}) === null &&
+      macOllamaApp('/Users/x/Applications/Ollama.app/Contents/Resources/ollama') === '/Users/x/Applications/Ollama.app',
+    'démarrage d’Ollama sur Mac : LaunchAgent qui ouvre Ollama.app en arrière-plan (ou « ollama serve » pour Homebrew)',
+  );
+  check(
+    isLocalOllamaUrl('http://127.0.0.1:11434') && isLocalOllamaUrl('http://localhost:11434/') && isLocalOllamaUrl('http://[::1]:11434') && !isLocalOllamaUrl('http://192.168.1.20:11434') && !isLocalOllamaUrl('pas une url'),
+    'Ollama n’est lancé par le hub que pour un serveur local (pas pour une adresse distante)',
   );
   // Récupérer à nouveau la même session (copie ou reprise) : la discussion existante est rouverte, pas de doublon.
   const nBefore = h2.listConversations().length;
