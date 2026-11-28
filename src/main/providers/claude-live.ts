@@ -25,6 +25,9 @@
 // répondent plus.
 import { spawn, type ChildProcess } from 'node:child_process';
 import { turnCostUsd } from '../claude-logs';
+import type { ClaudeCommand } from '../../shared/types';
+
+const INIT_REQUEST_ID = 'hub-initialize';
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -77,6 +80,29 @@ export interface LiveHooks {
    * l'utilisateur et résout avec sa réponse ('always' = autoriser et ne plus demander pour ce type d'action dans la session).
    */
   permission(key: string, req: { tool: string; detail: string; canAlways: boolean }): Promise<'allow' | 'deny' | 'always'>;
+  /** Commandes de Claude Code annoncées au démarrage de la session (noms, descriptions, arguments). */
+  commands?(list: ClaudeCommand[]): void;
+}
+
+/** Réponse de Claude à « initialize » (+ noms réels de « init », préfixés pour les plugins) → liste propre. */
+export function parseClaudeCommands(raw: unknown, initNames?: string[]): ClaudeCommand[] {
+  const list = Array.isArray(raw) ? raw : [];
+  const out: ClaudeCommand[] = [];
+  for (const c of list) {
+    const name = typeof c?.name === 'string' ? c.name.trim().replace(/^\//, '') : '';
+    if (!name || name.startsWith('_') || !/^[\w:.-]+$/.test(name)) continue;
+    // Nom court (« pdf ») accepté par Claude ; le nom préfixé du plugin (« anthropic-skills:pdf », vu dans « init »)
+    // est gardé comme alias, avec ceux qu'annonce Claude (« review » pour code-review).
+    const aliases = [...new Set([...(Array.isArray(c.aliases) ? c.aliases.map(String) : []), ...(initNames ?? []).filter((n) => n !== name && n.endsWith(`:${name}`))])].filter((a) => /^[\w:.-]+$/.test(a)).slice(0, 6);
+    out.push({
+      name,
+      description: String(c.description ?? '').trim().slice(0, 400),
+      ...(c.argumentHint ? { argumentHint: String(c.argumentHint).slice(0, 120) } : {}),
+      ...(aliases.length ? { aliases } : {}),
+      ...(c.builtin === true ? { builtin: true } : {}),
+    });
+  }
+  return out;
 }
 
 /** État d'une session noté sur disque (<données>/live/<…>.json) pour la reprendre après un redémarrage du hub. */
@@ -174,6 +200,9 @@ class LiveSession {
   private firstInit = true;
   /** Modèle annoncé par Claude au démarrage (tarif du coût par tour). */
   private model?: string;
+  /** Commandes annoncées par Claude (réponse à « initialize ») et leurs vrais noms (message « init »). */
+  private rawCommands?: unknown;
+  private initNames?: string[];
   private exited = false;
   /** Arrêt demandé (annulation dure) : plus aucun événement n'est traité, les tours ont déjà été annulés. */
   private stopping = false;
@@ -320,6 +349,8 @@ class LiveSession {
     this.saveMeta();
     this.discoverPid();
     this.schedule();
+    // Comme le SDK officiel : « initialize » d'abord. La réponse liste les commandes (aucun appel au modèle).
+    this.write({ type: 'control_request', request_id: INIT_REQUEST_ID, request: { subtype: 'initialize' } });
   }
 
   /** Pid (et nom) de Claude lui-même : retrouvé derrière cmd.exe sous Windows, vérifié ailleurs. */
@@ -698,7 +729,16 @@ class LiveSession {
       void this.answerControl(msg);
       return;
     }
-    if (msg.type === 'control_response') return; // accusé de réception (interruption)
+    if (msg.type === 'control_response') {
+      // Réponse à « initialize » (envoyé au lancement) : la liste des commandes, pour l'autocomplétion du hub.
+      const r = msg.response;
+      if (r?.request_id === INIT_REQUEST_ID && r.subtype === 'success') {
+        this.rawCommands = r.response?.commands;
+        const list = parseClaudeCommands(this.rawCommands, this.initNames);
+        if (list.length) this.hooks.commands?.(list);
+      }
+      return; // sinon : accusé de réception (interruption)
+    }
     if (typeof msg.session_id === 'string' && msg.session_id) this.sessionId = msg.session_id;
     if (msg.type === 'rate_limit_event' && msg.rate_limit_info) {
       try {
@@ -738,6 +778,11 @@ class LiveSession {
     if (msg.type === 'system') {
       if (msg.subtype === 'init') {
         if (msg.model) this.model = String(msg.model);
+        if (Array.isArray(msg.slash_commands) && !this.initNames) {
+          this.initNames = msg.slash_commands.map(String);
+          const list = parseClaudeCommands(this.rawCommands, this.initNames);
+          if (list.length) this.hooks.commands?.(list);
+        }
         if (this.firstInit) {
           this.firstInit = false;
           const servers = (msg.mcp_servers ?? []).filter((s: any) => s?.name).map((s: any) => ({ name: String(s.name), status: String(s.status ?? '') }));

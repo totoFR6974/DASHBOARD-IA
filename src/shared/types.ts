@@ -310,6 +310,17 @@ export interface LimitsState {
 }
 
 /** Compteurs persistants (indépendants de l'historique des tâches) : jour 'AAAA-MM-JJ' → IA → cumul. */
+/** Commande de Claude Code proposée à la saisie (« / » au début du message). */
+export interface ClaudeCommand {
+  name: string;
+  description: string;
+  argumentHint?: string;
+  /** Autres noms acceptés (« review » pour code-review, « anthropic-skills:pdf » pour pdf). */
+  aliases?: string[];
+  /** Commande intégrée à Claude Code (sinon : skill ou plugin). */
+  builtin?: boolean;
+}
+
 export interface UsageStats {
   days: Record<string, Record<string, UsageBucket>>;
   /** 2 : coût Claude recalculé depuis les tokens (avant : cumul de session additionné à chaque message, très gonflé). */
@@ -973,6 +984,7 @@ export type HubEvent =
   | { type: 'claudeLogProgress'; done: number; total: number }
   /** Agents Claude d'arrière-plan en cours dans la session persistante d'une discussion. */
   | { type: 'claudeBackground'; conversationId: string; count: number }
+  | { type: 'claudeCommands'; commands: ClaudeCommand[] }
   /** Claude demande une autorisation / la demande est réglée (répondue, annulée, session fermée). */
   | { type: 'permission'; request: PermissionRequest }
   | { type: 'permissionDone'; id: string; conversationId: string; decision: PermissionDecision };
@@ -1179,6 +1191,8 @@ export interface HubApi {
   sendQueuedNow(conversationId: string, id: string): Promise<Task[]>;
   /** Ferme la session Claude de la discussion et la rouvre dans un terminal (`claude --resume`), dans son dossier. */
   continueClaudeInTerminal(conversationId: string, force?: boolean): Promise<void>;
+  /** Commandes de Claude Code (« /compact »…), telles que Claude les annonce au début de chaque session. */
+  getClaudeCommands(): Promise<ClaudeCommand[]>;
   /** Redémarre la session Claude de la discussion (fermée maintenant, rouverte avec tout l'historique au prochain message). */
   closeClaudeSession(conversationId: string): Promise<void>;
   /** Demandes d'autorisation de Claude en attente. */
@@ -1397,6 +1411,7 @@ export const HUB_METHODS = [
   'removeQueuedMessage',
   'sendQueuedNow',
   'continueClaudeInTerminal',
+  'getClaudeCommands',
   'closeClaudeSession',
   'listPermissions',
   'answerPermission',

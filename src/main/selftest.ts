@@ -4,8 +4,9 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFi
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Conversation, Task, WorkflowRun } from '../shared/types';
-import { claudeEnv, compactWindowSetting, fixClaudeUsageCosts, Hub, mergeClaudeDuplicates, samePath } from './hub';
+import { claudeEnv, compactWindowSetting, fixClaudeUsageCosts, Hub, isSlashCommand, mergeClaudeDuplicates, samePath } from './hub';
 import { turnCostUsd } from './claude-logs';
+import { parseClaudeCommands } from './providers/claude-live';
 import { BUILTIN_TEMPLATES } from './builtin-templates';
 import { defaultRoles } from './workflows';
 import { imagePreset } from './image-models';
@@ -879,6 +880,25 @@ async function testClaudeLogs(): Promise<void> {
     'mise à jour d’Ollama : téléchargement limité aux fichiers officiels (GitHub ollama/ollama, ollama.com)',
   );
   check(OLLAMA_SETUP_SILENT_ARGS.includes('/VERYSILENT') && OLLAMA_SETUP_SILENT_ARGS.includes('/NORESTART'), 'mise à jour d’Ollama : installeur Windows lancé sans fenêtre ni redémarrage');
+  // Commandes de Claude Code : reconnues au début du message (pas un chemin), liste propre (internes masquées, alias).
+  check(
+    isSlashCommand('/compact') && isSlashCommand(' /compact garde les décisions ') && isSlashCommand('/anthropic-skills:pdf') &&
+      !isSlashCommand('/Users/moi/fichier.txt') && !isSlashCommand('Lance /compact') && !isSlashCommand('/') && !isSlashCommand('//x'),
+    'commande Claude reconnue seulement en début de message (« /compact … », pas un chemin ni une phrase)',
+  );
+  const parsed = parseClaudeCommands(
+    [
+      { name: 'compact', description: 'Free up context', argumentHint: '<instructions>', builtin: true },
+      { name: 'pdf', description: 'PDF skill (claude.ai sync)', aliases: ['anthropic-skills:pdf'] },
+      { name: '__remote', description: 'interne' },
+      { name: 'bad name', description: 'espace' },
+    ],
+    ['compact', 'anthropic-skills:pdf'],
+  );
+  check(
+    parsed.length === 2 && parsed[0].builtin === true && parsed[0].argumentHint === '<instructions>' && parsed[1].name === 'pdf' && parsed[1].aliases?.[0] === 'anthropic-skills:pdf',
+    'liste des commandes de Claude lue proprement (internes et noms invalides écartés, alias gardés)',
+  );
   // Récupérer à nouveau la même session (copie ou reprise) : la discussion existante est rouverte, pas de doublon.
   const nBefore = h2.listConversations().length;
   const again = await h2.continueClaudeSession('s1', 'resume');

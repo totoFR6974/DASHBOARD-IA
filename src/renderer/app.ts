@@ -1,5 +1,9 @@
 // Interface du hub : discussions, IA web, liste des tâches, réglages.
 import { initOnboarding, isOnboardingOpen, openOnboarding } from './onboarding';
+import { attachSlashMenu, type SlashMenu } from './slash-menu';
+
+/** Autocomplétion des commandes de Claude Code (créée avec la saisie). */
+let slashMenu: SlashMenu | null = null;
 import { applyPlatformToDom, IS_MAC, modText } from './platform';
 import { attachMic, initVoice, micButton, onVoiceStatus, renderVoiceSettings } from './voice';
 import { renderWebMicSettings } from './web-mic-settings';
@@ -4752,6 +4756,9 @@ function onHubEvent(ev: HubEvent): void {
       void onKnowledgeChanged();
       break;
     }
+    case 'claudeCommands':
+      slashMenu?.setCommands(ev.commands);
+      break;
     case 'templates': {
       state.templates = ev.templates;
       if (state.view === 'workflows' && (state.wfNew || !activeRun())) renderNewWorkflow();
@@ -6127,6 +6134,16 @@ function bindUi(): void {
   });
 
   const prompt = $<HTMLTextAreaElement>('prompt');
+  // « / » au début du message : commandes de Claude Code (avant l'envoi par Entrée : écouteur en phase de capture).
+  slashMenu = attachSlashMenu({
+    input: prompt,
+    anchor: document.querySelector<HTMLElement>('.composer-field')!,
+    enabled: () => {
+      const conv = activeConv();
+      return !!conv && participantsOf(conv).some((p) => p.providerId === 'claude');
+    },
+    load: () => hub.getClaudeCommands(),
+  });
   prompt.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();

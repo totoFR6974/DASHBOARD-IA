@@ -3,11 +3,11 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import type { ProviderInfo } from '../../shared/types';
+import type { ClaudeCommand, ProviderInfo } from '../../shared/types';
 import { checkClaudePath, claudeLaunchSpec, findClaudeOnWindowsPath, npmGlobalClaude, windowsLoginCommand } from '../claude-launch';
 import { caseInsensitiveFs, claudeCandidates, findInPath, firstExisting, killProcessTree, openInMacTerminal, testOnlyEnv, treeSpawnOptions } from '../platform';
 import { CancelledError, type Provider, type RunContext, type RunResult } from './provider';
-import { ClaudeLiveSessions, type LiveHooks } from './claude-live';
+import { ClaudeLiveSessions, parseClaudeCommands, type LiveHooks } from './claude-live';
 import { turnCostUsd } from '../claude-logs';
 
 /** Modèles proposés ; "default" = ne pas passer --model (Claude choisit). */
@@ -133,6 +133,54 @@ export class ClaudeProvider implements Provider {
    * (versions récentes ; false si la commande n'existe pas ou échoue). Sert à prévenir avant de reprendre la même
    * session dans le hub (deux suites différentes sinon).
    */
+  /**
+   * Liste des commandes de Claude Code (« /compact »…) sans session : Claude est lancé, reçoit « initialize »
+   * (comme avec le SDK officiel), répond la liste, puis est refermé. Aucun message, aucun appel au modèle.
+   */
+  probeCommands(cwd: string, timeoutMs = 20000): Promise<ClaudeCommand[]> {
+    return new Promise((resolve) => {
+      let c: ReturnType<ClaudeProvider['command']>;
+      try {
+        c = this.command(['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose']);
+      } catch {
+        return resolve([]);
+      }
+      const child = spawn(c.cmd, c.args, { cwd, env: c.env, windowsHide: true, windowsVerbatimArguments: !!c.verbatim, ...treeSpawnOptions() });
+      let buf = '';
+      let done = false;
+      const finish = (list: ClaudeCommand[]) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        child.stdin?.end();
+        setTimeout(() => {
+          if (child.exitCode === null && child.pid) killProcessTree(child.pid);
+        }, 1500);
+        resolve(list);
+      };
+      const timer = setTimeout(() => finish([]), timeoutMs);
+      child.on('error', () => finish([]));
+      child.on('close', () => finish([]));
+      child.stdin?.on('error', () => undefined);
+      child.stdout?.setEncoding('utf8');
+      child.stdout?.on('data', (d: string) => {
+        buf += d;
+        let i: number;
+        while ((i = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, i);
+          buf = buf.slice(i + 1);
+          try {
+            const m = JSON.parse(line);
+            if (m.type === 'control_response' && m.response?.request_id === 'hub-probe') finish(parseClaudeCommands(m.response.response?.commands));
+          } catch {
+            /* ligne non JSON */
+          }
+        }
+      });
+      child.stdin?.write(JSON.stringify({ type: 'control_request', request_id: 'hub-probe', request: { subtype: 'initialize' } }) + '\n');
+    });
+  }
+
   openElsewhere(sessionId: string): Promise<boolean> {
     return new Promise((done) => {
       let c: ReturnType<ClaudeProvider['command']>;

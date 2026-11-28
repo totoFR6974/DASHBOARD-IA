@@ -51,7 +51,7 @@ import { isRealPathInside } from './path-guard';
 import { findCitedImagePaths, isCitableImage, MAX_CITED_IMAGES } from './cited-images';
 import { isVoiceModel, isVoiceVariant, VoiceModels } from './voice';
 import { Cutout, isCutoutPath, isCutoutVariant, wantsTransparent } from './cutout';
-import type { CutoutStatus, CutoutVariant, OllamaUpdateInfo, PermissionDecision, PermissionRequest, QueuedMessage } from '../shared/types';
+import type { ClaudeCommand, CutoutStatus, CutoutVariant, OllamaUpdateInfo, PermissionDecision, PermissionRequest, QueuedMessage } from '../shared/types';
 import { ClaudeLogs, priceFor } from './claude-logs';
 import { BUILTIN_TEMPLATES, isBuiltinTemplate } from './builtin-templates';
 import { checkClaudePath } from './claude-launch';
@@ -86,6 +86,8 @@ interface Db {
   usage?: UsageStats;
   /** Dernières limites d'abonnement connues. */
   limits?: LimitsState;
+  /** Commandes de Claude Code annoncées par la dernière session (autocomplétion « / » de la saisie). */
+  claudeCommands?: { at: number; list: ClaudeCommand[] };
   /** Serveurs MCP vus par Claude (pour les proposer dans Réglages › Accès de Claude). */
   claudeMcpServers?: { name: string; status: string }[];
   /** Sessions Claude Code archivées dans le hub (masquées de la liste ; copies dans <data>/claude-archive). */
@@ -183,6 +185,14 @@ export function importedMessage(m: ClaudeSessionMessage): ChatMessage {
  * (un message identique — même rôle, même heure, même texte — n'apparaît qu'une fois) ; les tâches et les messages
  * en attente des doublons sont rattachés à la discussion gardée. Rien n'est perdu.
  */
+/**
+ * Commande Claude Code tapée dans le hub : « /nom » au tout début (lettres, chiffres, « - », « _ », « : » pour les
+ * plugins), éventuellement suivie d'arguments. Un chemin (« /Users/… ») n'en est pas une.
+ */
+export function isSlashCommand(text: string): boolean {
+  return /^\/[A-Za-z][\w:.-]*(\s[\s\S]*)?$/.test(String(text ?? '').trim());
+}
+
 /** Résumé automatique de Claude : valeurs proposées dans les Réglages (0 = défaut de Claude, 1 million). */
 export const COMPACT_WINDOWS = [200_000, 300_000, 400_000, 0];
 export const DEFAULT_COMPACT_WINDOW = 300_000;
@@ -560,6 +570,8 @@ export class Hub {
         this.dropPermissions(convId);
         if (info.attached) setTimeout(() => this.drainQueue(convId), 0);
       },
+      // Commandes annoncées au démarrage d'une session : gardées (mises à jour de Claude comprises) pour la saisie.
+      commands: (list) => this.storeClaudeCommands(list),
       // Demande d'autorisation de Claude : montrée dans le hub (et sur le téléphone) jusqu'à la réponse.
       permission: (convId, r) =>
         new Promise((resolve) => {
@@ -2082,6 +2094,32 @@ export class Hub {
    * fois), puis rouverte dans une fenêtre de terminal, dans le dossier de la discussion (`claude --resume <id>`).
    * Refusé pendant une réponse ; des agents d'arrière-plan en cours seraient coupés → il faut confirmer (force).
    */
+  /** Liste reçue d'une session Claude : enregistrée (et envoyée à l'interface) si elle a changé. */
+  private storeClaudeCommands(list: ClaudeCommand[]): void {
+    const prev = this.db.data.claudeCommands;
+    const same = !!prev && JSON.stringify(prev.list) === JSON.stringify(list);
+    this.db.data.claudeCommands = { at: Date.now(), list };
+    this.db.save();
+    if (!same) this.emit({ type: 'claudeCommands', commands: list });
+  }
+
+  private commandsProbe: Promise<ClaudeCommand[]> | null = null;
+
+  /**
+   * Commandes de Claude Code pour l'autocomplétion. Liste gardée de la dernière session ; aucune encore (premier
+   * lancement) ou plus vieille qu'un jour : Claude est interrogé une fois, sans message ni appel au modèle.
+   */
+  async getClaudeCommands(): Promise<ClaudeCommand[]> {
+    const cached = this.db.data.claudeCommands;
+    if (cached?.list.length && Date.now() - cached.at < 24 * 3600 * 1000) return cached.list;
+    const claude = this.providers.get('claude') as ClaudeProvider | undefined;
+    if (!claude) return cached?.list ?? [];
+    this.commandsProbe ??= claude.probeCommands(this.workspaceDir).finally(() => (this.commandsProbe = null));
+    const list = await this.commandsProbe;
+    if (list.length) this.storeClaudeCommands(list);
+    return list.length ? list : (cached?.list ?? []);
+  }
+
   async continueClaudeInTerminal(conversationId: string, force = false): Promise<void> {
     const conv = this.conversation(conversationId);
     const sessionId = conv.providerSessions?.claude;
@@ -2408,7 +2446,9 @@ export class Hub {
       return [];
     }
     const infos = await this.listProviders();
-    const plan = conv.participants.map((p) => ({ p, info: infos.find((i) => i.id === p.providerId) }));
+    // Commande Claude Code (« /compact », « /context »…) : envoyée à Claude seul (les autres IA ne la connaissent pas).
+    const slash = !all.length && isSlashCommand(typed) && conv.participants.some((p) => p.providerId === 'claude');
+    const plan = conv.participants.filter((p) => !slash || p.providerId === 'claude').map((p) => ({ p, info: infos.find((i) => i.id === p.providerId) }));
     if (!plan.some((x) => x.info?.available)) {
       throw new Error('Aucune des IA cochées n’est disponible (voir Réglages)');
     }
@@ -2521,9 +2561,12 @@ export class Hub {
   private runTask(conv: Conversation, task: Task, info: ProviderInfo, previous: ChatMessage[], turnId: string, images: string[] = [], files: string[] = []): void {
     const sessionId = info.keepsOwnHistory ? conv.providerSessions[info.id] : undefined;
     const isImage = IMAGE_PROVIDERS.has(info.id);
-    let runPrompt = info.keepsOwnHistory ? this.promptFor(info.id, previous, task.prompt, !!sessionId) : task.prompt;
+    // Commande Claude Code : transmise TELLE QUELLE (rien devant : ni contexte, ni base de connaissances), sinon Claude
+    // la lit comme un message ordinaire. Elle s'exécute dans la session de CETTE discussion.
+    const slash = info.id === 'claude' && !images.length && !files.length && isSlashCommand(task.prompt);
+    let runPrompt = slash ? task.prompt.trim() : info.keepsOwnHistory ? this.promptFor(info.id, previous, task.prompt, !!sessionId) : task.prompt;
     // Secours si la session Claude a disparu : toute la discussion (réponses de Claude comprises) en contexte.
-    let freshPrompt = info.id === 'claude' && sessionId ? this.freshClaudePrompt(previous, task.prompt) : undefined;
+    let freshPrompt = info.id === 'claude' && sessionId && !slash ? this.freshClaudePrompt(previous, task.prompt) : undefined;
     const history = info.keepsOwnHistory || isImage ? [] : this.historyFor(info.id, previous);
     let addDirs: string[] | undefined;
     let numCtx: number | undefined;
@@ -2535,7 +2578,7 @@ export class Hub {
     }
     let contextReady: Promise<void> = Promise.resolve();
     // Base de connaissances liée à la discussion : Claude la lit lui-même ; les IA sans fichiers reçoivent les passages utiles.
-    if (conv.useKnowledge && !isImage) {
+    if (conv.useKnowledge && !isImage && !slash) {
       const { id: baseId, kb } = this.vaults.forConversation(conv);
       if (info.usesWorkspace) {
         addDirs = [...(addDirs ?? []), kb.dir];

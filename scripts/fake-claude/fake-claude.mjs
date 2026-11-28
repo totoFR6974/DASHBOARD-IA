@@ -223,6 +223,7 @@ function logStart(turn = 1) {
     promptTail: prompt.slice(-400),
     prompt: prompt.slice(0, 20000),
     mcpToolTimeout: env.MCP_TOOL_TIMEOUT ?? null,
+    autoCompactWindow: env.CLAUDE_CODE_AUTO_COMPACT_WINDOW ?? null,
     electronRunAsNode: env.ELECTRON_RUN_AS_NODE ?? null,
   });
 }
@@ -328,8 +329,19 @@ function systemInit() {
   permissionMode: opts['permission-mode'] ?? 'default',
   apiKeySource: 'none',
   claude_code_version: '9.9.9',
+  slash_commands: FAKE_COMMANDS.map((c) => c.init ?? c.name),
   });
 }
+
+/** Commandes annoncées (réponse à « initialize ») ; « init » donne le nom préfixé des plugins. */
+const FAKE_COMMANDS = [
+  { name: 'compact', description: 'Clear conversation history but keep a summary in context', argumentHint: '<optional custom summarization instructions>', builtin: true },
+  { name: 'context', description: 'Visualize current context usage', argumentHint: '', builtin: true },
+  { name: 'clear', description: 'Clear conversation history and free up context', argumentHint: '', builtin: true },
+  { name: 'faux-skill', description: 'Skill de test du faux Claude (user)', argumentHint: '' },
+  { name: 'pdf', description: 'Work with PDF files (claude.ai sync)', argumentHint: '', aliases: ['anthropic-skills:pdf'], init: 'anthropic-skills:pdf' },
+  { name: '__interne', description: 'Commande interne (jamais montrée)', argumentHint: '' },
+];
 
 function rateLimit(kind = 'unified', status = 'allowed') {
   const now = Math.floor(Date.now() / 1000);
@@ -736,6 +748,11 @@ if (!LIVE) {
           controlWaiters.delete(id);
           wake(msg.response);
         }
+        continue;
+      }
+      if (msg.type === 'control_request' && msg.request?.subtype === 'initialize') {
+        log({ event: 'initialize' });
+        out({ type: 'control_response', response: { subtype: 'success', request_id: msg.request_id, response: { commands: FAKE_COMMANDS.map(({ init, ...c }) => c), claude_code_version: '9.9.9' } } });
         continue;
       }
       if (msg.type === 'control_request' && msg.request?.subtype === 'interrupt') {

@@ -155,7 +155,8 @@ export async function smokeFakeClaude(win: BrowserWindow, outDir: string, shot: 
     const [done] = await waitDone([t?.id ?? 'x']);
     const start = lastStart();
     check('A simple : tâche terminée avec la réponse du faux Claude', done?.status === 'done' && done.output.includes(SIGNATURE), { status: done?.status, error: done?.error, output: done?.output?.slice(0, 160) });
-    check('A simple : usage et coût relevés', done?.usage?.costUsd === 0.0123 && done.usage.inputTokens > 0 && done.usage.outputTokens > 0 && done.usage.cacheTokens === 1200, done?.usage);
+    // Coût du TOUR (tokens × tarif), pas total_cost_usd (0.0123 = cumul de la session du faux Claude).
+    check('A simple : usage et coût du tour relevés', (done?.usage?.costUsd ?? 0) > 0 && done.usage.costUsd < 0.0123 && done.usage.inputTokens > 0 && done.usage.outputTokens > 0 && done.usage.cacheTokens === 1200, done?.usage);
     check('A simple : activité « Session démarrée » avec le serveur MCP du hub connecté', done?.activity?.some((a: any) => /Session démarrée \(modèle claude-faux-1 · MCP hub:connected\)/.test(a.text)), done?.activity?.map((a: any) => a.text));
     const a = start?.args ?? {};
     check(
@@ -399,6 +400,29 @@ export async function smokeFakeClaude(win: BrowserWindow, outDir: string, shot: 
       return { heads, listBefore, listAfter, followed, stayedUp, followedAgain, scrollable: box.scrollHeight > box.clientHeight };
     })()`);
     check('Q3 activité : une seule ligne par réponse, la liste se déplie au clic', sc?.heads === 1 && sc?.listBefore === 0 && sc?.listAfter >= 1, sc);
+    // Beaucoup d'actions (agent qui enchaîne les commandes) : la liste dépliée ne doit pas écraser ses lignes à 0 px.
+    const many = await js(`(() => {
+      const box = document.createElement('div');
+      box.className = 'activity open';
+      const list = document.createElement('div');
+      list.className = 'act-list';
+      for (let i = 0; i < 120; i++) {
+        const row = document.createElement('div');
+        row.className = 'act tool';
+        const span = document.createElement('span');
+        span.className = 'act-text';
+        span.textContent = 'Bash · commande numéro ' + i;
+        row.append(span);
+        list.append(row);
+      }
+      box.append(list);
+      document.querySelector('#messages .msg.assistant .msg-body, #messages .msg.assistant')?.append(box);
+      const hs = [...list.children].map((r) => r.getBoundingClientRect().height);
+      const res = { rows: hs.length, minH: Math.min(...hs), scrolls: list.scrollHeight > list.clientHeight, boxH: Math.round(list.getBoundingClientRect().height) };
+      box.remove();
+      return res;
+    })()`);
+    check('Q3 activité : 120 actions dépliées restent lisibles (lignes non écrasées, liste qui défile)', many?.rows === 120 && many?.minH >= 12 && many?.scrolls === true, many);
     check('Q3 défilement : suit la réponse en bas, ne redescend pas si on a remonté, reprend en revenant en bas', sc?.scrollable === true && sc?.followed === true && sc?.stayedUp === true && sc?.followedAgain === true, sc);
     await js(`[...document.querySelectorAll('#queue-strip button')].find((b) => b.textContent.includes('Envoyer maintenant'))?.click()`);
     check('Q2 interface : « Mettre en attente » pendant la réponse, file affichée au-dessus de la saisie', ui?.sendLabel === 'Mettre en attente' && ui?.stripShown === true, ui);
@@ -745,6 +769,76 @@ export async function smokeFakeClaude(win: BrowserWindow, outDir: string, shot: 
     );
     check('H « Renommer » met le titre en édition ; Échap ferme le menu', after?.renaming === true && after?.closedByEscape === true, after);
     void hc;
+  }
+
+  // ---------- SL. Commandes de Claude Code : autocomplétion « / » et envoi TEL QUEL dans la bonne session ----------
+  {
+    const sc = await newConv('FC · commandes slash');
+    await js(`window.hub.updateConversation(${JSON.stringify(sc.id)}, { useKnowledge: true })`);
+    await select('FC · commandes slash');
+    const menu = await js(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const input = document.getElementById('prompt');
+      const type = async (v) => { input.focus(); input.value = v; input.setSelectionRange(v.length, v.length); input.dispatchEvent(new Event('input', { bubbles: true })); await sleep(400); };
+      const key = (k) => input.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+      const m = () => document.querySelector('.slash-menu');
+      const names = () => [...m().querySelectorAll('.slash-name')].map((e) => e.textContent);
+      // La liste peut demander à Claude (faux) ses commandes : on attend qu'elle arrive.
+      await type('/');
+      for (let i = 0; i < 40 && !names().length; i++) await sleep(250);
+      const all = names();
+      const open = !m().classList.contains('hidden');
+      await type('/co');
+      const co = names();
+      const fr = m().querySelector('.slash-item.active .slash-desc')?.textContent ?? '';
+      const arg = m().querySelector('.slash-item.active .slash-arg')?.textContent ?? '';
+      key('ArrowDown');
+      const active2 = m().querySelector('.slash-item.active .slash-name')?.textContent;
+      key('Tab');
+      await sleep(150);
+      const completed = input.value;
+      const closedAfter = m().classList.contains('hidden');
+      await type('/pdf');
+      const plugin = names();
+      await type('/anthropic-skills');
+      const byAlias = names();
+      const skillTag = (await (async () => { await type('/faux'); return m().querySelector('.slash-tag')?.textContent; })());
+      key('Escape');
+      await sleep(100);
+      const escClosed = m().classList.contains('hidden');
+      // Envoi de « /context » complété au clavier : Entrée envoie (commande déjà complète).
+      await type('/cont');
+      key('Enter'); // complète en « /context »
+      await sleep(150);
+      const afterComplete = input.value;
+      input.value = '/context';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      await sleep(200);
+      key('Enter'); // déjà complète : part
+      await sleep(600);
+      return { open, all, byAlias, co, fr, arg, active2, completed, closedAfter, plugin, skillTag, escClosed, afterComplete, cleared: input.value === '' };
+    })()`);
+    await shot('fc-slash-menu');
+    check(
+      'SL « / » : liste des commandes annoncées par Claude (internes masquées, plugin retrouvé par son alias)',
+      menu?.open === true && menu?.all?.includes('/compact') && menu?.all?.includes('/context') && !menu?.all?.some((n: string) => n.includes('__')) && menu?.plugin?.[0] === '/pdf' && menu?.byAlias?.[0] === '/pdf',
+      menu,
+    );
+    check(
+      'SL filtre et clavier : « /co » → compact puis context, description en français, ↓ puis Tab complète, Échap ferme, étiquette « skill »',
+      menu?.co?.[0] === '/compact' && menu?.co?.[1] === '/context' && /Résume la conversation/.test(menu?.fr ?? '') && /summarization/.test(menu?.arg ?? '') &&
+        menu?.active2 === '/context' && menu?.completed === '/context ' && menu?.closedAfter === true && menu?.skillTag === 'skill' && menu?.escClosed === true && menu?.afterComplete === '/context ',
+      menu,
+    );
+    await wait(2500);
+    const sent = readLog().filter((e) => e.event === 'start' && typeof e.prompt === 'string' && e.prompt.trim() === '/context').pop();
+    const anyPrefixed = readLog().some((e) => e.event === 'start' && typeof e.prompt === 'string' && e.prompt.includes('/context') && e.prompt.trim() !== '/context');
+    check(
+      'SL envoi : « /context » transmis TEL QUEL à Claude (rien devant, même base de connaissances activée), dans la session de cette discussion',
+      menu?.cleared === true && !!sent && !anyPrefixed && (await conv(sc.id))?.providerSessions?.claude === sent?.sessionOut,
+      { sent: sent?.prompt, sessionOut: sent?.sessionOut, conv: (await conv(sc.id))?.providerSessions, anyPrefixed },
+    );
+    check('SL résumé automatique : seuil de 300 000 tokens transmis à Claude (CLAUDE_CODE_AUTO_COMPACT_WINDOW)', sent?.autoCompactWindow === '300000', { autoCompactWindow: sent?.autoCompactWindow });
   }
 
   // ---------- T. Barre du haut : une pastille « N IA », filtre de dossier en tête des listes ----------
