@@ -13,6 +13,7 @@ import { smokeIcons } from './smoke-icons';
 import { smokeModules } from './smoke-modules';
 import { smokeFakeClaude } from './smoke-fakeclaude';
 import { smokeAppearance } from './smoke-appearance';
+import { smokeOllamaUpdate } from './smoke-ollama-update';
 import { smokeVaultSync } from './smoke-vaultsync';
 import { smokeMobile } from './smoke-mobile';
 import { smokeAgents } from './smoke-agents';
@@ -576,7 +577,8 @@ export async function runSmoke(win: BrowserWindow, outDir: string, getWeb: () =>
   if (only === 'search') return smokeSearch(shot, js);
   if (only === 'ui') {
     await smokeShell(shot, js);
-    return smokeAppearance(win, shot, js); // AP. Réglages › Apparence
+    await smokeAppearance(win, shot, js); // AP. Réglages › Apparence
+    return smokeOllamaUpdate(win, outDir, shot, js); // OU. Réglages › Ollama : mise à jour
   }
   if (only === 'vision') return smokeVision(win, outDir, shot, js);
   if (only === 'files') return smokeFiles(win, outDir, shot, js);

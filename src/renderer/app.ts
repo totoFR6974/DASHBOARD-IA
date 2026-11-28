@@ -13,6 +13,7 @@ import { hydrateIcons, icon, iconSelect, iconText, type IconName } from './icons
 import { initModules, moduleHintForError, moduleOptionsBox, openModuleCard, renderModulesSettings } from './module-offer';
 import { wikiLinks } from './wikilinks';
 import { initMobileSettings, refreshMobileSettings } from './mobile-settings';
+import { initOllamaUpdate, renderOllamaUpdate } from './ollama-update';
 import { initAppearance, renderAppearanceSettings } from './appearance';
 import type {
   AgentRole,
@@ -4441,6 +4442,7 @@ async function renderSettings(): Promise<void> {
   renderWebAccountSettings(webPanels, state.web.panels, toast);
   renderVisionSettings($('vision-settings-body'));
   renderUpdateSettings();
+  renderOllamaUpdate();
   renderAppearanceSettings();
   refreshMobileSettings();
   try {
@@ -6177,6 +6179,7 @@ function bindUi(): void {
   });
   initVaultSync({ hub, toast: (msg) => toast(msg), openNoteIn: (baseId, path) => void openNoteIn(baseId, path) });
   initMobileSettings(hub, toast);
+  initOllamaUpdate({ hub, toast: (msg) => toast(msg) });
   $('kn-new-btn').addEventListener('click', () => openNewNoteRow());
   $('kn-new-cancel').addEventListener('click', () => closeNewNoteRow());
   const createFromRow = () => {

@@ -341,6 +341,8 @@ function start(): void {
   if (smoke) (globalThis as { __hubSmoke?: Hub }).__hubSmoke = hub; // tests (smoke-vaultsync.ts) : écrire des notes sans IA
   // Ollama installé mais arrêté : démarré en arrière-plan (et, une fois, activé au démarrage de l'ordinateur). Pas en test.
   if (!smoke) setTimeout(() => void hub.startOllamaAtLaunch(), 1500);
+  // Nouvelle version d'Ollama publiée ? (option de Réglages › Ollama ; repère discret, rien n'est installé seul)
+  if (!smoke) setTimeout(() => void hub.checkOllamaUpdateAtLaunch(), 20000);
   // macOS : menu d'application (⌘C ⌘V ⌘Q ⌘W…) ; icône du Dock en dev (la version packagée a son .icns).
   installAppMenu();
   if (process.platform === 'darwin' && !app.isPackaged && existsSync(windowIcon)) app.dock?.setIcon(windowIcon);

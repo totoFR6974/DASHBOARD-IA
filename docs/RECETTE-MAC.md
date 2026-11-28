@@ -140,3 +140,13 @@ Cas où l'installation automatique est refusée (bouton « Télécharger » manu
 - [ ] Ollama installé, hub lancé une fois : le fichier ~/Library/LaunchAgents/com.hub-ia.ollama.plist existe (macOS peut afficher « Élément d’arrière-plan ajouté », c’est normal)
 - [ ] Quitter Ollama (icône de la barre des menus › Quit Ollama), fermer puis rouvrir la session : Ollama est de nouveau là, sans fenêtre au premier plan
 - [ ] Quitter Ollama puis ouvrir le hub : en quelques secondes, Ollama redémarre tout seul et la pastille « IA » repasse au vert
+
+## 17. Mettre à jour Ollama depuis le hub
+
+- [ ] Réglages › Ollama : la ligne affiche « Ollama vX.Y.Z », suivie de « — à jour » ou d’une pastille « vA.B.C disponible »
+- [ ] Version plus récente publiée : un point d’accent apparaît sur « Réglages » dans le menu de gauche, sans fenêtre surgissante
+- [ ] « Mettre à jour vers vA.B.C » : progression du téléchargement (Mo), puis « Ollama est à jour : vA.B.C » ; Ollama.app est remplacée dans Applications, l’icône revient dans la barre des menus, la pastille « IA » repasse au vert
+- [ ] Pendant une réponse d’Ollama, « Mettre à jour » est refusé avec un message clair ; une fois la réponse finie, la mise à jour passe
+- [ ] Après la mise à jour, ~/Library/LaunchAgents/com.hub-ia.ollama.plist existe toujours (Ollama démarre avec le Mac)
+- [ ] Version Homebrew d’Ollama : « Mettre à jour » lance « brew upgrade ollama », puis relance le serveur
+- [ ] Décocher « Vérifier les mises à jour d’Ollama au lancement du hub », relancer le hub : aucun point sur « Réglages »

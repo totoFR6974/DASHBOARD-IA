@@ -373,3 +373,19 @@ legend .ico { vertical-align: -0.2em; margin-right: 2px; }
 /* Carte d'une discussion à plusieurs IA : les pastilles passent à la ligne au lieu de déborder (plus de barre horizontale). */
 .conv-item .conv-meta { flex-wrap: wrap; row-gap: 4px; min-width: 0; }
 .conv-item .conv-meta > * { white-space: nowrap; }
+
+/* Réglages › Ollama : version installée / disponible, mise à jour en un clic. */
+.ollama-upd { display: flex; flex-direction: column; gap: 9px; margin-top: 4px; }
+.ollama-upd-line { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13px; }
+.ollama-upd-line .ico { color: var(--muted); }
+.ollama-upd-chip { font-size: 11.5px; font-weight: 600; padding: 2px 9px; border-radius: 99px; color: var(--accent-light, var(--accent)); background: rgb(var(--accent-rgb) / 0.14); border: 1px solid rgb(var(--accent-rgb) / 0.4); }
+.ollama-upd-err { flex-basis: 100%; }
+.ollama-upd-actions { justify-content: flex-start; gap: 8px; flex-wrap: wrap; }
+.ollama-upd-actions .btn .ico { vertical-align: -0.2em; }
+.ollama-upd-msg { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ollama-upd-progress.error .ollama-upd-msg { color: #ffb4a8; white-space: normal; }
+.ollama-upd-progress.done .ollama-upd-msg { color: var(--ok, #7fd99a); white-space: normal; }
+.ollama-upd-progress .ico { vertical-align: -0.2em; }
+/* Repère discret sur « Réglages » : une version plus récente d'Ollama est publiée. */
+.nav button.has-update-dot { position: relative; }
+.nav button.has-update-dot::after { content: ''; position: absolute; top: 9px; left: 26px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--bg-2, #15171c); }

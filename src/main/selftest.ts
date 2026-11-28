@@ -9,6 +9,7 @@ import { imagePreset } from './image-models';
 import { macModelChoice } from './providers/comfyui';
 import { findCitedImagePaths } from './cited-images';
 import { approvalDisabled, isLocalOllamaUrl, macLaunchAgentPlist, macOllamaApp } from './ollama-autostart';
+import { isAllowedOllamaDownload, OLLAMA_SETUP_SILENT_ARGS, ollamaUpdateAvailable, pickOllamaRelease } from './ollama-update';
 import { detectExistingComfy, findComfyRoot, unpackedPath } from './image-engine';
 import { isAllowedExternalUrl, recommendModel } from './setup';
 import { compareSemver, fetchReleases, isPrereleaseVersion, pickLatestRelease, readableUpdateError } from './update-check';
@@ -809,6 +810,39 @@ async function testClaudeLogs(): Promise<void> {
     isLocalOllamaUrl('http://127.0.0.1:11434') && isLocalOllamaUrl('http://localhost:11434/') && isLocalOllamaUrl('http://[::1]:11434') && !isLocalOllamaUrl('http://192.168.1.20:11434') && !isLocalOllamaUrl('pas une url'),
     'Ollama n’est lancé par le hub que pour un serveur local (pas pour une adresse distante)',
   );
+  // Mise à jour d'Ollama : versions, fichier officiel selon le système, liens autorisés.
+  check(
+    ollamaUpdateAvailable('0.40.18', 'v0.40.19') && ollamaUpdateAvailable('0.9.6', '0.10.0') && !ollamaUpdateAvailable('0.40.19', '0.40.19') && !ollamaUpdateAvailable('0.41.0', '0.40.19') &&
+      !ollamaUpdateAvailable(undefined, '0.40.19') && !ollamaUpdateAvailable('0.40.18', 'pas une version'),
+    'mise à jour d’Ollama : versions comparées (0.40.18 < v0.40.19, 0.9.6 < 0.10.0, inconnue = rien proposé)',
+  );
+  const olRel = {
+    tag_name: 'v0.40.19',
+    html_url: 'https://github.com/ollama/ollama/releases/tag/v0.40.19',
+    assets: [
+      { name: 'OllamaSetup.exe', browser_download_url: 'https://github.com/ollama/ollama/releases/download/v0.40.19/OllamaSetup.exe', size: 10, digest: `sha256:${'a'.repeat(64)}` },
+      { name: 'Ollama-darwin.zip', browser_download_url: 'https://github.com/ollama/ollama/releases/download/v0.40.19/Ollama-darwin.zip' },
+      { name: 'ollama-windows-amd64.zip', browser_download_url: 'https://github.com/ollama/ollama/releases/download/v0.40.19/ollama-windows-amd64.zip' },
+    ],
+  };
+  const olWin = pickOllamaRelease(olRel, 'win32');
+  const olMac = pickOllamaRelease(olRel, 'darwin');
+  check(
+    olWin?.version === '0.40.19' && olWin.asset?.name === 'OllamaSetup.exe' && olWin.asset.sha256 === 'a'.repeat(64) &&
+      olMac?.asset?.name === 'Ollama-darwin.zip' && !olMac.asset.sha256 && !pickOllamaRelease(olRel, 'linux')?.asset &&
+      pickOllamaRelease({ ...olRel, prerelease: true }, 'win32') === null && pickOllamaRelease({ ...olRel, tag_name: 'v0.41.0-rc1' }, 'win32') === null &&
+      !pickOllamaRelease({ ...olRel, assets: [{ name: 'OllamaSetup.exe', browser_download_url: 'https://exemple.com/OllamaSetup.exe' }] }, 'win32')?.asset,
+    'mise à jour d’Ollama : installeur Windows / zip Mac de la release stable choisis, empreinte lue, lien étranger refusé',
+  );
+  check(
+    isAllowedOllamaDownload('https://github.com/ollama/ollama/releases/download/v0.40.19/OllamaSetup.exe') &&
+      isAllowedOllamaDownload('https://release-assets.githubusercontent.com/github-production-release-asset/1/x?sig=1') &&
+      isAllowedOllamaDownload('https://objects.githubusercontent.com/x') && isAllowedOllamaDownload('https://ollama.com/download/Ollama-darwin.zip') &&
+      !isAllowedOllamaDownload('https://github.com/autre/ollama/releases/download/v1/OllamaSetup.exe') && !isAllowedOllamaDownload('http://ollama.com/x') &&
+      !isAllowedOllamaDownload('https://ollama.com.exemple.net/x') && !isAllowedOllamaDownload('https://u:p@ollama.com/x'),
+    'mise à jour d’Ollama : téléchargement limité aux fichiers officiels (GitHub ollama/ollama, ollama.com)',
+  );
+  check(OLLAMA_SETUP_SILENT_ARGS.includes('/VERYSILENT') && OLLAMA_SETUP_SILENT_ARGS.includes('/NORESTART'), 'mise à jour d’Ollama : installeur Windows lancé sans fenêtre ni redémarrage');
   // Récupérer à nouveau la même session (copie ou reprise) : la discussion existante est rouverte, pas de doublon.
   const nBefore = h2.listConversations().length;
   const again = await h2.continueClaudeSession('s1', 'resume');
