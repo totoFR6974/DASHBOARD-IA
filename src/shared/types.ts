@@ -1,5 +1,6 @@
 // Types partagés entre le process principal et l'interface.
 import type { Appearance } from './appearance';
+import type { RemoteDiscovered, RemoteHubsState } from './remote-hub';
 // Réglages › Apparence : type, valeur par défaut et validation dans appearance.ts (réexportés ici).
 export { DEFAULT_APPEARANCE, sanitizeAppearance, type Appearance } from './appearance';
 
@@ -973,6 +974,10 @@ export type HubEvent =
   | { type: 'update'; state: UpdateState }
   /** Accès mobile : état du serveur local, appareils associés, appairage en cours. */
   | { type: 'mobile'; state: MobileState }
+  /** Hubs distants associés (contrôle à distance d'un autre hub) : liste ou état changé. */
+  | { type: 'remoteHubs'; state: RemoteHubsState }
+  /** Fenêtre de pilotage d'un hub distant : connexion perdue / rétablie, ou versions devenues différentes. */
+  | { type: 'remoteStatus'; connected: boolean; name: string; message?: string }
   | { type: 'setup'; progress: SetupProgress }
   /** Résultat d'une vérification des mises à jour d'Ollama (au lancement ou à la demande). */
   | { type: 'ollamaUpdate'; info: OllamaUpdateInfo }
@@ -1236,6 +1241,17 @@ export interface HubApi {
   cancelMobilePairing(): Promise<MobileState>;
   revokeMobileDevice(id: string): Promise<MobileState>;
   setMobileKeepAwake(on: boolean): Promise<MobileState>;
+  /** Code pour autoriser un AUTRE HUB à piloter celui-ci (valable 5 minutes). */
+  startHubPairing(): Promise<MobileState>;
+  /** Contrôle d'un autre hub : hubs associés. */
+  remoteHubsState(): Promise<RemoteHubsState>;
+  /** Recherche des hubs sur le réseau local (quelques secondes). */
+  discoverRemoteHubs(): Promise<RemoteDiscovered[]>;
+  /** Associe un hub distant avec le code affiché sur lui (adresse « 192.168.1.20 » ou « 192.168.1.20:8770 »). */
+  pairRemoteHub(address: string, code: string): Promise<RemoteHubsState>;
+  removeRemoteHub(id: string): Promise<RemoteHubsState>;
+  /** Ouvre la fenêtre de pilotage du hub distant (versions identiques exigées). */
+  openRemoteHub(id: string): Promise<void>;
   /** Ouvre la fenêtre de connexion d'un agent en ligne de commande (claude, codex, antigravity). */
   providerLogin(providerId: string): Promise<void>;
   onEvent(listener: (event: HubEvent) => void): () => void;
@@ -1247,6 +1263,8 @@ export interface MobileDevice {
   name: string;
   createdAt: number;
   lastSeenAt?: number;
+  /** Autre hub (contrôle à distance complet) ; absent = téléphone. */
+  kind?: 'mobile' | 'hub';
 }
 
 export interface MobileState {
@@ -1262,7 +1280,9 @@ export interface MobileState {
   error?: string;
   devices: MobileDevice[];
   /** Appairage en cours : lien à ouvrir sur le téléphone, QR code (SVG), code à taper (ABCD-EFGH) et échéance. */
-  pairing?: { url: string; qrSvg: string; code: string; expiresAt: number };
+  pairing?: { url: string; qrSvg: string; code: string; expiresAt: number; mode?: 'mobile' | 'hub' };
+  /** Version de ce hub (un autre hub ne peut le piloter qu'avec la même). */
+  version?: string;
 }
 
 // ---------- Panneaux web (vrais sites ChatGPT, Gemini… affichés dans l'appli) ----------
@@ -1442,6 +1462,12 @@ export const HUB_METHODS = [
   'cancelMobilePairing',
   'revokeMobileDevice',
   'setMobileKeepAwake',
+  'startHubPairing',
+  'remoteHubsState',
+  'discoverRemoteHubs',
+  'pairRemoteHub',
+  'removeRemoteHub',
+  'openRemoteHub',
   'providerLogin',
 ] as const;
 export type HubMethod = (typeof HUB_METHODS)[number];

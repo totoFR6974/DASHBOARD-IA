@@ -1,7 +1,7 @@
 {
   "name": "hub-ia",
   "productName": "Hub IA",
-  "version": "0.1.0-alpha.21",
+  "version": "0.1.0-alpha.22",
   "private": true,
   "description": "Hub local pour piloter plusieurs IA (Claude Code, Ollama...) depuis un seul endroit",
   "author": "Hub IA",
@@ -117,7 +117,8 @@
       "darkModeSupport": true,
       "minimumSystemVersion": "12.0",
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "Hub IA utilise le micro uniquement pour la dictée vocale, reconnue sur ce Mac (rien n'est envoyé sur internet)."
+        "NSMicrophoneUsageDescription": "Hub IA utilise le micro uniquement pour la dictée vocale, reconnue sur ce Mac (rien n'est envoyé sur internet).",
+        "NSLocalNetworkUsageDescription": "Hub IA se connecte aux autres hubs de ton réseau local (contrôle à distance d'un autre ordinateur) et aux téléphones associés."
       }
     },
     "dmg": {

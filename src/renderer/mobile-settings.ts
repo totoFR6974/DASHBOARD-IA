@@ -31,7 +31,7 @@ function box(): HTMLElement {
     const set = el('fieldset', 'info-card');
     set.id = 'mobile-settings';
     const legend = el('legend');
-  legend.append(icon('phone'), ' Accès mobile');
+  legend.append(icon('phone'), ' Accès à distance (téléphone, autre hub)');
   set.append(legend, body);
     const updates = document.getElementById('upd-version')?.closest('fieldset');
     if (updates) updates.before(set);
@@ -63,7 +63,7 @@ export function render(state: MobileState): void {
   const intro = el(
     'p',
     'muted small',
-    'Pilote tes discussions depuis ton téléphone, sur le Wi-Fi de la maison ou à distance via ton VPN. Le PC doit rester allumé avec le hub ouvert.',
+    'Pilote tes discussions depuis ton téléphone, ou tout le hub depuis un autre ordinateur (ex. ton Mac), sur le Wi-Fi de la maison ou via ton VPN. Le PC doit rester allumé avec le hub ouvert.',
   );
 
   // Activation + port
@@ -79,7 +79,7 @@ export function render(state: MobileState): void {
   port.style.width = '7em';
   enable.onchange = () => void run(() => hubApi.setMobileEnabled(enable.checked, Number(port.value)));
   const enableLabel = el('label', 'check');
-  enableLabel.append(enable, ' Activer l’accès mobile');
+  enableLabel.append(enable, ' Activer l’accès à distance');
   const portLabel = el('label', 'check');
   portLabel.append('Port ', port);
   const applyPort = button('Appliquer', () => void run(() => hubApi.setMobileEnabled(enable.checked, Number(port.value))));
@@ -93,8 +93,8 @@ export function render(state: MobileState): void {
   awake.dataset.mobileAwake = '';
   awake.onchange = () => void run(() => hubApi.setMobileKeepAwake(awake.checked));
   const awakeLabel = el('label', 'check');
-  awakeLabel.title = 'Le PC ne se met plus en veille tout seul tant que l’accès mobile est en service (l’écran, lui, s’éteint normalement). Indispensable pour l’utiliser à distance.';
-  awakeLabel.append(awake, ' Empêcher la mise en veille du PC tant que l’accès mobile est activé');
+  awakeLabel.title = 'Le PC ne se met plus en veille tout seul tant que l’accès à distance est en service (l’écran, lui, s’éteint normalement). Indispensable pour l’utiliser à distance.';
+  awakeLabel.append(awake, ' Empêcher la mise en veille du PC tant que l’accès à distance est activé');
 
   const parts: Node[] = [intro, enableLabel, awakeLabel, portRow];
 
@@ -108,8 +108,29 @@ export function render(state: MobileState): void {
       : 'En service, mais ce PC n’est connecté à aucun réseau local.';
     parts.push(where);
 
-    // Appairage
-    if (state.pairing) {
+    // Appairage d'un autre hub : code seul (à taper dans Réglages › Piloter un autre hub de l'autre ordinateur).
+    if (state.pairing?.mode === 'hub') {
+      const p = state.pairing;
+      const card = el('div', 'mobile-pairing');
+      card.dataset.hubPairing = '';
+      const info = el('div', 'mobile-pairing-info');
+      const code = el('div', 'mobile-code', p.code);
+      code.dataset.mobileCode = p.code;
+      const timer = el('div', 'muted small', `Expire dans ${remaining(p.expiresAt)}`);
+      info.append(
+        el('div', '', 'Sur l’autre ordinateur : Réglages › Piloter un autre hub, choisis ce PC (ou tape son adresse) puis ce code :'),
+        code,
+        el('div', 'muted small', `Adresse de ce PC : ${state.addresses.map((a) => (state.port === 8770 ? a : `${a}:${state.port}`)).join('  ou  ')} · version ${state.version ?? '?'} (l’autre hub doit avoir la même)`),
+        timer,
+        button('Annuler', () => void run(() => hubApi.cancelMobilePairing())),
+      );
+      card.append(info);
+      parts.push(card);
+      countdown = window.setInterval(() => {
+        if (!timer.isConnected) return clearInterval(countdown);
+        timer.textContent = `Expire dans ${remaining(p.expiresAt)}`;
+      }, 1000);
+    } else if (state.pairing) {
       const p = state.pairing;
       const card = el('div', 'mobile-pairing');
       card.dataset.mobilePairing = '';
@@ -152,6 +173,12 @@ export function render(state: MobileState): void {
       pair.disabled = !state.addresses.length;
       row.append(pair);
       if (select) row.append(select);
+      // Autre hub (ex. le Mac) qui pilote celui-ci : même réseau, même version.
+      const pairHub = button('Autoriser un autre hub', () => void run(() => hubApi.startHubPairing()));
+      pairHub.dataset.hubPair = '';
+      pairHub.title = 'Un autre ordinateur avec le hub (même version) pourra piloter entièrement ce hub : discussions, workflows, réglages';
+      pairHub.disabled = !state.addresses.length;
+      row.append(pairHub);
       parts.push(row);
     }
   }
@@ -164,16 +191,16 @@ export function render(state: MobileState): void {
     for (const d of state.devices) {
       const card = el('div', 'provider-card');
       card.dataset.mobileDevice = d.id;
-      const detail = `associé le ${fmtDate(d.createdAt)}${d.lastSeenAt ? ` · vu le ${fmtDate(d.lastSeenAt)}` : ''}`;
+      const detail = `${d.kind === 'hub' ? 'hub (contrôle complet) · ' : ''}associé le ${fmtDate(d.createdAt)}${d.lastSeenAt ? ` · vu le ${fmtDate(d.lastSeenAt)}` : ''}`;
       const revoke = button('Révoquer', () => {
-        if (!confirm(`Révoquer « ${d.name} » ?\n\nCe téléphone n’aura plus accès au hub ; il faudra l’associer à nouveau.`)) return;
+        if (!confirm(`Révoquer « ${d.name} » ?\n\n${d.kind === 'hub' ? 'Ce hub' : 'Ce téléphone'} n’aura plus accès au hub ; il faudra l’associer à nouveau.`)) return;
         void run(() => hubApi.revokeMobileDevice(d.id));
       });
       revoke.style.marginLeft = 'auto';
       card.append(el('span', 'dot on'), el('span', 'name', d.name), el('span', 'detail', detail), revoke);
       list.append(card);
     }
-    parts.push(el('div', 'access-title', 'Téléphones associés'), list);
+    parts.push(el('div', 'access-title', 'Appareils associés'), list);
   }
 
   parts.push(

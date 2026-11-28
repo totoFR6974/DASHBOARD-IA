@@ -4,6 +4,10 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFi
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Conversation, Task, WorkflowRun } from '../shared/types';
+import { HUB_METHODS } from '../shared/types';
+import { decodeWire, encodeWire, parseHostInput, remoteAttachmentName, remotePathFromHubFileUrl, remoteRoute, REMOTE_DENIED_METHODS } from '../shared/remote-hub';
+import { broadcastAddresses } from './remote-hubs';
+import { isPrivateAddress } from './net-addresses';
 import { claudeEnv, compactWindowSetting, fixClaudeUsageCosts, Hub, isSlashCommand, mergeClaudeDuplicates, samePath } from './hub';
 import { turnCostUsd } from './claude-logs';
 import { parseClaudeCommands } from './providers/claude-live';
@@ -880,6 +884,38 @@ async function testClaudeLogs(): Promise<void> {
     'mise à jour d’Ollama : téléchargement limité aux fichiers officiels (GitHub ollama/ollama, ollama.com)',
   );
   check(OLLAMA_SETUP_SILENT_ARGS.includes('/VERYSILENT') && OLLAMA_SETUP_SILENT_ARGS.includes('/NORESTART'), 'mise à jour d’Ollama : installeur Windows lancé sans fenêtre ni redémarrage');
+  // Contrôle à distance d'un autre hub : octets transportés, aiguillage des méthodes, adresses.
+  {
+    const back = decodeWire(JSON.parse(JSON.stringify(encodeWire(['c1', new Uint8Array([0, 1, 254, 255]), { n: 'x.png', d: new Uint8Array([7]) }])))) as any[];
+    check(back[0] === 'c1' && back[1] instanceof Uint8Array && [...back[1]].join() === '0,1,254,255' && back[2].d instanceof Uint8Array && back[2].n === 'x.png', 'contrôle à distance : pièces jointes (octets) transportées intactes en JSON');
+    const poisoned = decodeWire(JSON.parse('{"__proto__":{"x":1},"a":2}')) as any;
+    check(poisoned.a === 2 && ({} as any).x === undefined && !Object.prototype.hasOwnProperty.call(poisoned, '__proto__'), 'contrôle à distance : clé __proto__ ignorée au décodage');
+    const all = HUB_METHODS.map((m) => remoteRoute(m));
+    check(
+      remoteRoute('sendMessage') === 'remote' && remoteRoute('listConversations') === 'remote' && remoteRoute('saveAttachment') === 'remote' &&
+        remoteRoute('voiceStatus') === 'local' && remoteRoute('openExternal') === 'local' && remoteRoute('pasteClipboardFiles') === 'client' &&
+        remoteRoute('pickFolder') === 'denied' && remoteRoute('openRemoteHub') === 'denied' && remoteRoute('startHubPairing') === 'denied' && remoteRoute('setMobileEnabled') === 'denied' &&
+        remoteRoute('inexistante') === 'denied' && all.every((r) => ['remote', 'local', 'client', 'denied'].includes(r)),
+      'contrôle à distance : méthodes aiguillées (hub distant / cet ordinateur / refusées : dossiers, accès à distance)',
+    );
+    check(REMOTE_DENIED_METHODS.every((m) => (HUB_METHODS as readonly string[]).includes(m)), 'contrôle à distance : liste des méthodes refusées à jour (noms existants)');
+    const a = parseHostInput('192.168.1.20', 8770);
+    const b = parseHostInput('http://pc-salon.local:9000/', 8770);
+    check(a?.host === '192.168.1.20' && a.port === 8770 && b?.host === 'pc-salon.local' && b.port === 9000 && parseHostInput('a b', 8770) === null && parseHostInput('x:99999', 8770) === null, 'contrôle à distance : adresse saisie lue (IP, nom, port facultatif)');
+    const bc = broadcastAddresses({ eth: [{ address: '192.168.1.20', netmask: '255.255.255.0', family: 'IPv4', internal: false, mac: '', cidr: null }] } as any);
+    check(
+      ['127.0.0.1', '::ffff:192.168.1.20', '10.0.0.5', '172.20.1.1', '100.101.102.103', '::1', 'fd12:3456::1', 'fe80::1'].every(isPrivateAddress) &&
+        !['8.8.8.8', '::ffff:81.2.3.4', '172.32.0.1', '100.128.0.1', '2a01:cb00::1'].some(isPrivateAddress),
+      'contrôle à distance : API complète réservée au réseau local et aux VPN (adresses publiques refusées)',
+    );
+    check(bc.includes('192.168.1.255') && bc.includes('255.255.255.255'), 'contrôle à distance : recherche diffusée sur le réseau local (192.168.1.255)');
+    check(
+      remotePathFromHubFileUrl('hub-file:///C:/Users/moi/AppData/a%20b.png') === 'C:/Users/moi/AppData/a b.png' &&
+        remotePathFromHubFileUrl('hub-file://local/Users/moi/Library/x.png') === '/Users/moi/Library/x.png' &&
+        remoteAttachmentName('C:\\x\\1764000000000-abcdef12-rapport.pdf') === 'rapport.pdf',
+      'contrôle à distance : chemins d’images et noms de pièces jointes de l’autre système (Windows ↔ Mac)',
+    );
+  }
   // Commandes de Claude Code : reconnues au début du message (pas un chemin), liste propre (internes masquées, alias).
   check(
     isSlashCommand('/compact') && isSlashCommand(' /compact garde les décisions ') && isSlashCommand('/anthropic-skills:pdf') &&

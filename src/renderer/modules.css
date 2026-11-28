@@ -407,3 +407,18 @@ legend .ico { vertical-align: -0.2em; margin-right: 2px; }
 .slash-tag { flex-shrink: 0; padding: 0 6px; border-radius: 99px; font-size: 10.5px; color: var(--muted); border: 1px solid var(--line); }
 .slash-desc { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--muted); }
 .slash-none { padding: 8px 9px; font-size: 12.5px; color: var(--muted); }
+
+/* ---------- Contrôle à distance d'un autre hub ---------- */
+.remote-pair-row input { min-width: 0; }
+.remote-pair-row input[data-remote-address] { flex: 1 1 14em; max-width: 22em; }
+.nav-remote .nav-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Fenêtre de pilotage : bandeau d'état, éléments propres à l'ordinateur local masqués. */
+.remote-banner {
+  margin: 8px 18px 0; padding: 7px 14px; border-radius: 10px; font-size: 12.5px; font-weight: 500;
+  background: rgb(var(--accent-rgb) / 0.13); border: 1px solid rgb(var(--accent-rgb) / 0.4); color: var(--text);
+}
+.remote-banner.lost { background: rgba(245, 165, 36, 0.14); border-color: rgba(245, 165, 36, 0.5); }
+.remote-mode .local-only,
+.remote-mode .tabs button[data-view='web'],
+.remote-mode #quick-folder,
+.remote-mode #quick-obsidian { display: none !important; }

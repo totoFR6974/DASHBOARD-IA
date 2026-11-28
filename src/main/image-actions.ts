@@ -61,6 +61,8 @@ export interface ImageActionsDeps {
   roots(): string[];
   /** Dossier proposé par défaut pour « Enregistrer sous » (ex. Téléchargements). */
   saveDir(): string;
+  /** Fenêtre de pilotage d'un hub distant : ses images sont demandées au hub distant (remote-window.ts). */
+  remote?(sender: Electron.WebContents): { imageAction(action: ImageAction, arg: unknown): Promise<unknown> } | undefined;
 }
 
 /**
@@ -72,6 +74,8 @@ export interface ImageActionsDeps {
  */
 export function registerImageActions(deps: ImageActionsDeps): void {
   deps.ipcMain.handle(IMAGE_CHANNEL, async (e, action: ImageAction, arg: unknown) => {
+    const remote = deps.remote?.(e.sender);
+    if (remote) return remote.imageAction(action, arg);
     const win = deps.getWindow();
     // Seule la fenêtre principale du hub peut appeler ces actions (pas les panneaux web).
     if (!win || win.isDestroyed() || e.sender !== win.webContents) throw new Error('Appel refusé');

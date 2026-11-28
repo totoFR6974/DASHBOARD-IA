@@ -13,21 +13,27 @@
 // HTTP simple (pas de HTTPS) : prévu pour le réseau local / un VPN, pas pour être exposé sur internet.
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
-import { networkInterfaces } from 'node:os';
+import { createSocket, type Socket } from 'node:dgram';
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
 import qrcode from 'qrcode-generator';
 import { JsonFile } from './store';
+import { isPrivateAddress, localAddresses } from './net-addresses';
 import { IMAGE_TYPES, isAllowedImagePath } from './image-actions';
 import { isRealPathInside } from './path-guard';
 import { CLAUDE_EFFORTS, type ClaudeEffort, type Conversation, type ConversationPatch, type HubEvent, type MobileDevice, type MobileState, type NewConversationInput, type Participant, type PermissionDecision, type PermissionRequest, type ProviderInfo, type Task } from '../shared/types';
 import type { MobileConversation, MobileConversationResponse, MobileEvent, MobileListResponse, MobileProvidersResponse } from '../shared/mobile-api';
 import { normalizeHex } from '../shared/appearance';
+import { decodeWire, encodeWire, hostAccepts, REMOTE_DISCOVERY_PORT, REMOTE_DISCOVERY_PROBE, REMOTE_PROTOCOL, REMOTE_VERSION_HEADER, versionMismatchMessage, type RemoteHello } from '../shared/remote-hub';
+
+export { localAddresses };
 
 export const MOBILE_DEFAULT_PORT = 8770;
 const PAIRING_MS = 5 * 60_000;
 const MAX_BODY = 64 * 1024;
+/** Appels d'un hub distant : pièces jointes comprises (50 Mo au plus, en base64). */
+const MAX_HUB_BODY = 80 * 1024 * 1024;
 const MAX_TEXT = 20_000;
 const MAX_MESSAGES = 150;
 const FAIL_WINDOW_MS = 10 * 60_000;
@@ -66,6 +72,19 @@ export function parseParticipants(raw: unknown): Participant[] | null {
 interface StoredDevice extends MobileDevice {
   tokenHash: string;
 }
+
+/** Contrôle à distance par un autre hub (Réglages › Accès à distance › « Autoriser un autre hub »). */
+export interface RemoteHost {
+  /** Version de l'appli : un autre hub ne pilote celui-ci qu'avec exactement la même. */
+  version: string;
+  /** Nom affiché sur l'autre hub (nom de l'ordinateur). */
+  name: string;
+  platform: string;
+  /** Appel d'une méthode du hub (déjà filtrée : hostAccepts). */
+  invoke(method: string, args: unknown[]): Promise<unknown>;
+  /** Chemin vérifié d'une pièce jointe à envoyer (dossier des pièces jointes uniquement, cf. hub.attachmentToOpen). */
+  attachmentPath(path: string): string;
+}
 interface MobileFile {
   enabled: boolean;
   port: number;
@@ -99,6 +118,10 @@ export interface MobileServerOptions {
   emit: (state: MobileState) => void;
   /** Empêcher (true) ou de nouveau permettre (false) la mise en veille du PC (powerSaveBlocker côté Electron). */
   keepAwake?: (on: boolean) => void;
+  /** Pilotage par un autre hub (absent = téléphones seulement). */
+  remote?: RemoteHost;
+  /** Répondre à la recherche des hubs sur le réseau (UDP). Désactivé en test. */
+  discovery?: boolean;
   /** Tests : port imposé (0 = port libre choisi par le système) et adresse d'écoute. */
   forcePort?: number;
   host?: string;
@@ -119,26 +142,6 @@ const CSP =
   "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest();
-
-/** Cartes réseau virtuelles (machines virtuelles, WSL, Docker…) : un téléphone n'y est jamais. */
-const VIRTUAL_IFACE = /vmware|virtualbox|vbox|hyper-v|vethernet|wsl|docker|loopback|npcap|utun|bridge\d|vmnet/i;
-
-/**
- * Adresses IPv4 de ce PC sur un réseau local, les plus probables d'abord : vraies cartes avant les cartes virtuelles,
- * puis 192.168, 10, 172.16-31, et le reste (ex. 100.x d'un VPN maillé).
- */
-export function localAddresses(ifaces = networkInterfaces()): string[] {
-  const out: { ip: string; virtual: boolean }[] = [];
-  for (const [name, list] of Object.entries(ifaces)) {
-    for (const a of list ?? []) {
-      if (a.family !== 'IPv4' || a.internal || a.address.startsWith('169.254.')) continue;
-      out.push({ ip: a.address, virtual: VIRTUAL_IFACE.test(name) });
-    }
-  }
-  const rank = (x: { ip: string; virtual: boolean }) =>
-    (x.virtual ? 10 : 0) + (x.ip.startsWith('192.168.') ? 0 : x.ip.startsWith('10.') ? 1 : /^172\.(1[6-9]|2\d|3[01])\./.test(x.ip) ? 2 : 3);
-  return [...new Set(out.sort((a, b) => rank(a) - rank(b)).map((x) => x.ip))];
-}
 
 /** QR code en SVG (modules noirs sur fond blanc, marge de 4 modules). */
 export function qrSvg(text: string): string {
@@ -162,8 +165,10 @@ export class MobileServer {
   private running = false;
   private actualPort = 0;
   private error: string | undefined;
-  private pairing: { code: string; url: string; qrSvg: string; expiresAt: number; timer: NodeJS.Timeout; failures: number } | null = null;
+  private pairing: { code: string; url: string; qrSvg: string; expiresAt: number; timer: NodeJS.Timeout; failures: number; mode: 'mobile' | 'hub' } | null = null;
   private streams = new Map<ServerResponse, string>(); // flux d'événements → id de l'appareil
+  private hubStreams = new Map<ServerResponse, string>(); // flux complets des hubs distants → id de l'appareil
+  private udp: Socket | null = null;
   private failures = new Map<string, { count: number; since: number }>();
   private unsubscribe: (() => void) | null = null;
   private providerNames: Record<string, string> = {};
@@ -191,10 +196,19 @@ export class MobileServer {
       port: this.running ? this.actualPort : d.port,
       addresses: localAddresses(),
       ...(this.error ? { error: this.error } : {}),
-      devices: d.devices.map(({ id, name, createdAt, lastSeenAt }) => ({ id, name, createdAt, ...(lastSeenAt ? { lastSeenAt } : {}) })),
+      devices: d.devices.map(({ id, name, createdAt, lastSeenAt, kind }) => ({ id, name, createdAt, ...(lastSeenAt ? { lastSeenAt } : {}), ...(kind === 'hub' ? { kind } : {}) })),
       ...(this.pairing
-        ? { pairing: { url: this.pairing.url, qrSvg: this.pairing.qrSvg, code: `${this.pairing.code.slice(0, 4)}-${this.pairing.code.slice(4)}`, expiresAt: this.pairing.expiresAt } }
+        ? {
+            pairing: {
+              url: this.pairing.url,
+              qrSvg: this.pairing.qrSvg,
+              code: `${this.pairing.code.slice(0, 4)}-${this.pairing.code.slice(4)}`,
+              expiresAt: this.pairing.expiresAt,
+              mode: this.pairing.mode,
+            },
+          }
         : {}),
+      ...(this.opts.remote ? { version: this.opts.remote.version } : {}),
     };
   }
 
@@ -230,8 +244,9 @@ export class MobileServer {
   }
 
   /** Nouveau code d'appairage (remplace le précédent), valable 5 minutes. */
-  startPairing(address?: string): MobileState {
-    if (!this.running) throw new Error("Active d'abord l'accès mobile");
+  startPairing(address?: string, mode: 'mobile' | 'hub' = 'mobile'): MobileState {
+    if (!this.running) throw new Error("Active d'abord l'accès à distance");
+    if (mode === 'hub' && !this.opts.remote) throw new Error('Contrôle par un autre hub indisponible');
     const addresses = localAddresses();
     const host = address && addresses.includes(address) ? address : addresses[0];
     if (!host) throw new Error('Ce PC n’est connecté à aucun réseau local');
@@ -240,8 +255,13 @@ export class MobileServer {
     const url = `http://${host}:${this.actualPort}/#pair=${code}`;
     const timer = setTimeout(() => this.cancelPairing(true), PAIRING_MS);
     timer.unref?.();
-    this.pairing = { code, url, qrSvg: qrSvg(url), expiresAt: Date.now() + PAIRING_MS, timer, failures: 0 };
+    this.pairing = { code, url, qrSvg: qrSvg(url), expiresAt: Date.now() + PAIRING_MS, timer, failures: 0, mode };
     return this.changed();
+  }
+
+  /** Code pour autoriser un autre hub (même réseau, même version) à piloter celui-ci. */
+  startHubPairing(): MobileState {
+    return this.startPairing(undefined, 'hub');
   }
 
   cancelPairing(emit = true): MobileState {
@@ -255,6 +275,7 @@ export class MobileServer {
     d.devices = d.devices.filter((x) => x.id !== id);
     this.store.flush();
     for (const [res, dev] of this.streams) if (dev === id) res.end();
+    for (const [res, dev] of this.hubStreams) if (dev === id) res.end();
     return this.changed();
   }
 
@@ -262,6 +283,14 @@ export class MobileServer {
     this.cancelPairing(false);
     for (const res of this.streams.keys()) res.end();
     this.streams.clear();
+    for (const res of this.hubStreams.keys()) res.end();
+    this.hubStreams.clear();
+    try {
+      this.udp?.close();
+    } catch {
+      /* déjà fermé */
+    }
+    this.udp = null;
     this.unsubscribe?.();
     this.unsubscribe = null;
     if (this.heartbeat) clearInterval(this.heartbeat);
@@ -300,8 +329,39 @@ export class MobileServer {
     this.unsubscribe = this.opts.hub.onEvent((ev) => this.relay(ev));
     this.heartbeat = setInterval(() => {
       for (const res of [...this.streams.keys()]) this.write(res, null);
+      for (const res of [...this.hubStreams.keys()]) this.writeHub(res, null);
     }, 25_000);
     this.heartbeat.unref?.();
+    if (this.opts.discovery && this.opts.remote) this.startDiscovery();
+  }
+
+  /** Recherche des hubs : un hub du réseau envoie une sonde UDP, on répond par notre nom, version et port. */
+  private startDiscovery(): void {
+    try {
+      const sock = createSocket({ type: 'udp4', reuseAddr: true });
+      sock.on('error', () => {
+        try {
+          sock.close();
+        } catch {
+          /* déjà fermé */
+        }
+        if (this.udp === sock) this.udp = null;
+      });
+      sock.on('message', (msg, rinfo) => {
+        if (msg.length > 64 || msg.toString('utf8') !== REMOTE_DISCOVERY_PROBE || !this.running) return;
+        const reply = Buffer.from(JSON.stringify({ ...this.hello(), port: this.actualPort }));
+        sock.send(reply, rinfo.port, rinfo.address);
+      });
+      sock.bind(REMOTE_DISCOVERY_PORT, '0.0.0.0');
+      this.udp = sock;
+    } catch {
+      this.udp = null; // recherche indisponible : l'adresse se tape à la main
+    }
+  }
+
+  private hello(): RemoteHello {
+    const r = this.opts.remote!;
+    return { app: 'hub-ia', name: r.name, version: r.version, protocol: REMOTE_PROTOCOL, platform: r.platform };
   }
 
   // ---------- HTTP ----------
@@ -355,12 +415,12 @@ export class MobileServer {
     return dev;
   }
 
-  private async body(req: IncomingMessage): Promise<any> {
+  private async body(req: IncomingMessage, max = MAX_BODY): Promise<any> {
     const chunks: Buffer[] = [];
     let size = 0;
     for await (const chunk of req) {
       size += (chunk as Buffer).length;
-      if (size > MAX_BODY) throw Object.assign(new Error('Requête trop grande'), { status: 413 });
+      if (size > max) throw Object.assign(new Error('Requête trop grande'), { status: 413 });
       chunks.push(chunk as Buffer);
     }
     if (!size) return {};
@@ -397,6 +457,11 @@ export class MobileServer {
 
     try {
       if (method === 'POST' && path === '/api/pair') return await this.pair(req, res, ip);
+      // Présentation (sans authentification) : nom, version et plateforme, pour reconnaître le hub avant de l'associer.
+      if (method === 'GET' && path === '/api/hub/hello') {
+        if (!this.opts.remote) return this.send(res, 404, { error: 'Introuvable' });
+        return this.send(res, 200, this.hello());
+      }
 
       const dev = this.authenticate(req);
       if (!dev) {
@@ -404,6 +469,11 @@ export class MobileServer {
         return this.send(res, 401, { error: 'Téléphone non associé (ou associé puis révoqué)' });
       }
 
+      if (path.startsWith('/api/hub/')) {
+        // Contrôle complet : seulement depuis le réseau local ou un VPN (jamais depuis internet, même via la box).
+        if (!isPrivateAddress(ip)) return this.send(res, 403, { error: 'Contrôle complet réservé au réseau local et aux VPN' });
+        return await this.hubRoute(req, res, dev, method, path, url);
+      }
       if (method === 'GET' && path === '/api/events') return this.openStream(res, dev);
       if (method === 'GET' && path === '/api/conversations') return this.send(res, 200, await this.list());
       if (method === 'GET' && path === '/api/providers') return this.send(res, 200, await this.providers());
@@ -461,7 +531,7 @@ export class MobileServer {
   }
 
   private async pair(req: IncomingMessage, res: ServerResponse, ip: string): Promise<void> {
-    const { code, name } = await this.body(req);
+    const { code, name, kind, version } = await this.body(req);
     const p = this.pairing;
     const given = Buffer.from(normalizeCode(code));
     const expected = p ? Buffer.from(p.code) : Buffer.alloc(0);
@@ -471,18 +541,100 @@ export class MobileServer {
       if (p && ++p.failures >= PAIR_FAIL_LIMIT) this.cancelPairing(true);
       return this.send(res, 403, { error: 'Code d’appairage invalide ou expiré : affiche un nouveau code sur le PC' });
     }
+    // Un autre hub : code « Autoriser un autre hub » obligatoire, et même version (le code reste valable sinon).
+    const mode = p!.mode;
+    if (kind === 'hub' || mode === 'hub') {
+      if (kind !== 'hub' || mode !== 'hub') {
+        return this.send(res, 403, {
+          error:
+            kind === 'hub'
+              ? 'Ce code sert à associer un téléphone. Sur le hub à piloter, clique sur « Autoriser un autre hub » pour obtenir le bon code.'
+              : 'Ce code sert à associer un autre hub, pas un téléphone.',
+        });
+      }
+      const local = this.opts.remote!.version;
+      if (String(version ?? '') !== local) {
+        return this.send(res, 409, { error: versionMismatchMessage(String(version ?? '?'), local, 'le hub à piloter'), version: local });
+      }
+    }
     const token = randomBytes(32).toString('base64url');
     const cleanName =
       String(name ?? '')
         .replace(/[\u0000-\u001f\u007f]/g, '')
         .trim()
-        .slice(0, 40) || 'Téléphone';
-    const dev: StoredDevice = { id: randomUUID(), name: cleanName, createdAt: Date.now(), lastSeenAt: Date.now(), tokenHash: sha256(token).toString('hex') };
+        .slice(0, 40) || (mode === 'hub' ? 'Hub' : 'Téléphone');
+    const dev: StoredDevice = {
+      id: randomUUID(),
+      name: cleanName,
+      createdAt: Date.now(),
+      lastSeenAt: Date.now(),
+      tokenHash: sha256(token).toString('hex'),
+      ...(mode === 'hub' ? { kind: 'hub' as const } : {}),
+    };
     this.store.data.devices.push(dev);
     this.store.flush();
     this.cancelPairing(false);
     this.changed();
-    return this.send(res, 200, { token, device: dev.name });
+    return this.send(res, 200, { token, device: dev.name, ...(mode === 'hub' ? { hello: this.hello() } : {}) });
+  }
+
+  // ---------- Pilotage par un autre hub ----------
+
+  private async hubRoute(req: IncomingMessage, res: ServerResponse, dev: StoredDevice, method: string, path: string, url: URL): Promise<void> {
+    const remote = this.opts.remote;
+    if (!remote) return this.send(res, 404, { error: 'Introuvable' });
+    if (dev.kind !== 'hub') return this.send(res, 403, { error: 'Appareil associé comme téléphone : le contrôle complet est réservé aux hubs' });
+    // L'autre hub retire ce hub de sa liste : on oublie son accès (même si les versions diffèrent).
+    if (method === 'POST' && path === '/api/hub/forget') {
+      this.revokeDevice(dev.id);
+      return this.send(res, 200, { ok: true });
+    }
+    const theirs = String(req.headers[REMOTE_VERSION_HEADER] ?? '');
+    if (theirs !== remote.version) {
+      return this.send(res, 409, { error: versionMismatchMessage(theirs || '?', remote.version, 'le hub piloté'), version: remote.version });
+    }
+    if (method === 'GET' && path === '/api/hub/events') return this.openHubStream(res, dev);
+    if (method === 'GET' && path === '/api/hub/file') return await this.image(res, url.searchParams.get('path') ?? '');
+    if (method === 'GET' && path === '/api/hub/attachment') {
+      const abs = remote.attachmentPath(url.searchParams.get('path') ?? '');
+      const data = await readFile(abs);
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+      return void res.end(data);
+    }
+    if (method === 'POST' && path === '/api/hub/invoke') {
+      const body = await this.body(req, MAX_HUB_BODY);
+      const name = String(body?.method ?? '');
+      if (!hostAccepts(name)) return this.send(res, 403, { error: `Action indisponible à distance : ${name}` });
+      const args = Array.isArray(body?.args) ? (decodeWire(body.args) as unknown[]) : [];
+      try {
+        const result = await remote.invoke(name, args);
+        return this.send(res, 200, { ok: true, result: encodeWire(result ?? null) });
+      } catch (err: any) {
+        // Erreur du hub (message affiché tel quel dans l'interface du client), pas une erreur du transport.
+        return this.send(res, 200, { ok: false, error: String(err?.message ?? err) });
+      }
+    }
+    return this.send(res, 404, { error: 'Introuvable' });
+  }
+
+  private openHubStream(res: ServerResponse, dev: StoredDevice): void {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-store',
+      Connection: 'keep-alive',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    res.socket?.setNoDelay(true);
+    res.socket?.setKeepAlive(true, 20_000);
+    this.hubStreams.set(res, dev.id);
+    res.on('close', () => this.hubStreams.delete(res));
+    res.on('error', () => this.hubStreams.delete(res));
+    res.write(': hello\n\n');
+  }
+
+  private writeHub(res: ServerResponse, ev: HubEvent | null): void {
+    if (res.writableEnded || res.destroyed) return void this.hubStreams.delete(res);
+    res.write(ev ? `data: ${JSON.stringify(encodeWire(ev))}\n\n` : ': ping\n\n');
   }
 
   private async names(): Promise<Record<string, string>> {
@@ -592,6 +744,9 @@ export class MobileServer {
   }
 
   private relay(ev: HubEvent): void {
+    // Hubs distants : tous les événements (l'interface complète tourne de l'autre côté), sauf les demandes de
+    // détourage, traitées par la fenêtre de ce PC.
+    if (this.hubStreams.size && ev.type !== 'cutoutRequest') for (const res of [...this.hubStreams.keys()]) this.writeHub(res, ev);
     if (!this.streams.size) return;
     let out: MobileEvent | null = null;
     if (ev.type === 'delta' && ev.conversationId) {

@@ -17,6 +17,8 @@ import { hydrateIcons, icon, iconSelect, iconText, type IconName } from './icons
 import { initModules, moduleHintForError, moduleOptionsBox, openModuleCard, renderModulesSettings } from './module-offer';
 import { wikiLinks } from './wikilinks';
 import { initMobileSettings, refreshMobileSettings } from './mobile-settings';
+import { initRemoteSettings } from './remote-settings';
+import { applyRemoteMode, onRemoteEvent, REMOTE_NAME, remoteWebPanels } from './remote-mode';
 import { initOllamaUpdate, renderOllamaUpdate } from './ollama-update';
 import { initAppearance, renderAppearanceSettings } from './appearance';
 import type {
@@ -69,7 +71,8 @@ declare global {
   }
 }
 const hub = window.hub;
-const webPanels = window.webPanels;
+// Fenêtre de pilotage d'un autre hub : pas de sites web intégrés (vues natives de cet ordinateur).
+const webPanels = REMOTE_NAME ? remoteWebPanels() : window.webPanels;
 
 type View = 'chat' | 'workflows' | 'knowledge' | 'web' | 'tasks' | 'claude' | 'stats' | 'settings';
 type SortKey = 'status' | 'title' | 'providerId' | 'model' | 'agent' | 'createdAt' | 'duration';
@@ -4590,6 +4593,7 @@ function renderProvidersDetail(): void {
 // ---------- Événements du hub ----------
 
 function onHubEvent(ev: HubEvent): void {
+  onRemoteEvent(ev);
   switch (ev.type) {
     case 'delta': {
       const t = state.tasks.get(ev.taskId);
@@ -6195,7 +6199,11 @@ function bindUi(): void {
     rerenderSide: () => renderKnowledgeSide(),
   });
   initVaultSync({ hub, toast: (msg) => toast(msg), openNoteIn: (baseId, path) => void openNoteIn(baseId, path) });
-  initMobileSettings(hub, toast);
+  // Accès à distance et pilotage d'autres hubs : réglages de CET ordinateur, absents d'une fenêtre de pilotage.
+  if (!REMOTE_NAME) {
+    initMobileSettings(hub, toast);
+    initRemoteSettings(hub, toast);
+  }
   initOllamaUpdate({ hub, toast: (msg) => toast(msg) });
   $('kn-new-btn').addEventListener('click', () => openNewNoteRow());
   $('kn-new-cancel').addEventListener('click', () => closeNewNoteRow());
@@ -6281,6 +6289,7 @@ function bindUi(): void {
 }
 
 async function init(): Promise<void> {
+  applyRemoteMode(); // fenêtre de pilotage d'un autre hub : bandeau, éléments propres à l'ordinateur masqués
   applyPlatformToDom(); // Mac : « ⌘ » au lieu de « Ctrl », place des feux tricolores (sans effet sous Windows)
   bindUi();
   hub.onEvent(onHubEvent);

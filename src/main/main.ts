@@ -1,5 +1,5 @@
 // Process principal Electron : fenêtre, sécurité, pont IPC vers le Hub.
-import { app, BrowserWindow, dialog, ipcMain, Notification, powerSaveBlocker, protocol, screen, session, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Notification, powerSaveBlocker, protocol, screen, session, shell, type Protocol } from 'electron';
 import { readFile } from 'node:fs/promises';
 import { copyFileSync, createReadStream, existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import { Readable } from 'node:stream';
@@ -17,6 +17,8 @@ import { clipboardFilePaths } from './clipboard-files';
 import { IMAGE_TYPES, isAllowedImagePath, registerImageActions } from './image-actions';
 import { checkOpenPath, isRealPathInside, mainWindowPermission } from './path-guard';
 import { MobileServer } from './mobile-server';
+import { machineName, RemoteHubs } from './remote-hubs';
+import { RemoteWindow } from './remote-window';
 
 const appDir = app.getAppPath();
 
@@ -77,6 +79,9 @@ let win: BrowserWindow | null = null;
 let webPanels: WebPanels | null = null;
 let updater: Updater | null = null;
 let mobile: MobileServer | null = null;
+/** Contrôle d'un autre hub : hubs associés et fenêtres de pilotage ouvertes (id du hub → fenêtre). */
+let remoteHubs: RemoteHubs | null = null;
+const remoteWindows = new Map<string, RemoteWindow>();
 /** powerSaveBlocker actif pendant que l'accès mobile est en service (option « empêcher la veille »). */
 let keepAwakeId: number | null = null;
 /** Fermeture déjà confirmée (tâches en cours) : pas de seconde question. */
@@ -160,6 +165,10 @@ function createWindow(): void {
       win!.close();
     }
   });
+  // Fenêtre principale fermée : les fenêtres de pilotage d'autres hubs se ferment aussi (l'appli se quitte).
+  win.on('closed', () => {
+    for (const rw of [...remoteWindows.values()]) rw.close();
+  });
   // En test, ?smoke=1 active les crochets de test de l'interface (ex. transcription d'un fichier audio).
   // ?ap= : apparence enregistrée, appliquée par appearance-boot.js dans <head> AVANT le premier affichage (pas de flash
   // orange puis bleu). Revalidée par la page (listes fermées, couleur #rrggbb).
@@ -216,6 +225,53 @@ function isMainWindowSender(e: Electron.IpcMainInvokeEvent | Electron.IpcMainEve
   return !!frame && frame === win.webContents.mainFrame && frame.url.startsWith('file:');
 }
 
+/** Fenêtre de pilotage d'un autre hub dont vient l'appel (cadre principal, page du hub chargée depuis file://). */
+function remoteWindowSender(e: Electron.IpcMainInvokeEvent): RemoteWindow | undefined {
+  const rw = remoteWindowOf(e.sender);
+  const frame = e.senderFrame;
+  if (!rw || !frame || frame !== rw.webContents.mainFrame || !frame.url.startsWith('file:')) return undefined;
+  return rw;
+}
+
+function remoteWindowOf(sender: Electron.WebContents): RemoteWindow | undefined {
+  for (const rw of remoteWindows.values()) if (!rw.win.isDestroyed() && rw.webContents === sender) return rw;
+  return undefined;
+}
+
+/** Ouvre (ou ramène devant) la fenêtre de pilotage d'un hub associé : il doit répondre, avec la même version. */
+async function openRemote(id: string): Promise<void> {
+  const existing = remoteWindows.get(id);
+  if (existing && !existing.win.isDestroyed()) return existing.focus();
+  const conn = await remoteHubs!.connect(id);
+  const rw = new RemoteWindow(conn, {
+    preload: join(__dirname, 'preload.js'),
+    indexHtml: join(__dirname, 'renderer', 'index.html'),
+    appearanceQuery: () => JSON.stringify(hub.appearance),
+    titleBarOptions,
+    ...(existsSync(windowIcon) ? { icon: windowIcon } : {}),
+    // Dictée, liens, mises à jour : sur cet ordinateur (mêmes règles que pour la fenêtre principale).
+    invokeLocal: async (method, args) => {
+      if (method === 'openExternal') return hub.openExternal(String(args[0]));
+      if (method === 'getUpdateState') return updater!.getState();
+      if (method === 'checkForUpdates') return updater!.check();
+      if (method === 'installUpdateNow') return updater!.installNow();
+      if (method === 'cancelUpdateDownload') return updater!.cancelDownload();
+      return (hub as any)[method](...args);
+    },
+    registerAssetProtocol: (proto) => registerHubAssetProtocol(proto),
+    clipboardFilePaths,
+    tempDir: join(app.getPath('temp'), 'hub-ia-remote'),
+    saveDir: () => app.getPath('downloads'),
+    smoke,
+    onClosed: () => {
+      remoteWindows.delete(id);
+      remoteHubs?.setOpen(id, false);
+    },
+  });
+  remoteWindows.set(id, rw);
+  remoteHubs!.setOpen(id, true);
+}
+
 /** Chemin absolu demandé par une URL hub-file (formats acceptés : hub-file://local/C:/…, hub-file:///C:/…, hub-file://c/…). */
 function pathFromHubFileUrl(raw: string): string {
   const url = new URL(raw);
@@ -257,9 +313,9 @@ const ASSET_TYPES: Record<string, string> = {
   '.txt': 'text/plain',
 };
 
-function registerHubAssetProtocol(): void {
+function registerHubAssetProtocol(proto: Protocol = protocol): void {
   const rendererDir = resolve(join(__dirname, 'renderer'));
-  protocol.handle('hub-asset', async (req) => {
+  proto.handle('hub-asset', async (req) => {
     const cors = { 'Access-Control-Allow-Origin': '*' };
     try {
       const url = new URL(req.url);
@@ -350,10 +406,18 @@ function start(): void {
   registerHubAssetProtocol();
   registerMainWindowPermissions();
   // Visionneuse d'images : copier / enregistrer sous / afficher dans le dossier (chemins revalidés, cf. hub-file).
-  registerImageActions({ ipcMain, getWindow: () => win, roots: () => hub.imageRoots(), saveDir: () => app.getPath('downloads') });
+  registerImageActions({
+    ipcMain,
+    getWindow: () => win,
+    roots: () => hub.imageRoots(),
+    saveDir: () => app.getPath('downloads'),
+    remote: (sender) => remoteWindowOf(sender),
+  });
 
   hub.onEvent((ev) => {
     if (win && !win.isDestroyed()) win.webContents.send('hub:event', ev);
+    // Dictée : modèle de CET ordinateur, aussi dans les fenêtres de pilotage d'un autre hub.
+    if (ev.type === 'voice') for (const rw of remoteWindows.values()) rw.send(ev);
   });
 
   // Mises à jour (releases GitHub publiques) : installée = automatique, portable = notification, dev = manuelle.
@@ -422,9 +486,22 @@ function start(): void {
         keepAwakeId = null;
       }
     },
+    // Pilotage complet par un autre hub du réseau (même version), associé par code.
+    remote: {
+      version: app.getVersion(),
+      name: machineName(),
+      platform: process.platform,
+      invoke: (method, args) => invokeHub(method as HubMethod, args),
+      attachmentPath: (p) => hub.attachmentToOpen(p, false),
+    },
+    discovery: !smoke,
     ...(smoke ? { forcePort: 0, host: '127.0.0.1' } : {}),
   });
   void mobile.init();
+  remoteHubs = new RemoteHubs(join(dataDir, 'remote-hubs.json'), app.getVersion(), (state) => {
+    if (win && !win.isDestroyed()) win.webContents.send('hub:event', { type: 'remoteHubs', state });
+  });
+  if (smoke) (globalThis as { __remoteSmoke?: unknown }).__remoteSmoke = { remoteHubs, remoteWindows, openRemote };
   if (smoke) (globalThis as { __mobileSmoke?: MobileServer }).__mobileSmoke = mobile; // tests (smoke-mobile.ts)
 
   // Notification Windows quand une étape manuelle (ChatGPT / Gemini web) attend l'utilisateur.
@@ -450,10 +527,20 @@ function start(): void {
   });
 
   ipcMain.handle('hub:invoke', async (e, method: HubMethod, args: unknown[]) => {
+    if (!Array.isArray(args)) args = [];
+    // Fenêtre de pilotage d'un autre hub : appels routés vers le hub distant (ou cet ordinateur, ou refusés).
+    const rw = remoteWindowSender(e);
+    if (rw) return rw.invoke(String(method), args);
     // Seule la page principale du hub (cadre principal de la fenêtre) peut appeler le hub.
     if (!isMainWindowSender(e)) throw new Error('Appel refusé');
     if (!HUB_METHODS.includes(method)) throw new Error(`Méthode non autorisée : ${method}`);
-    if (!Array.isArray(args)) args = [];
+    return invokeHub(method, args);
+  });
+
+  createWindow();
+
+  /** Méthodes du hub : appelées par l'interface de ce PC, ou par un autre hub qui le pilote (déjà filtrées). */
+  async function invokeHub(method: HubMethod, args: unknown[]): Promise<unknown> {
     switch (method) {
       case 'getSettings':
         return hub.settings;
@@ -504,6 +591,21 @@ function start(): void {
         return mobile!.revokeDevice(String(args[0]));
       case 'setMobileKeepAwake':
         return mobile!.setKeepAwake(!!args[0]);
+      case 'startHubPairing':
+        return mobile!.startHubPairing();
+      case 'remoteHubsState':
+        return remoteHubs!.state();
+      case 'discoverRemoteHubs':
+        return remoteHubs!.discover();
+      case 'pairRemoteHub':
+        return remoteHubs!.pair(String(args[0] ?? ''), String(args[1] ?? ''));
+      case 'removeRemoteHub': {
+        const id = String(args[0]);
+        remoteWindows.get(id)?.close();
+        return remoteHubs!.remove(id);
+      }
+      case 'openRemoteHub':
+        return openRemote(String(args[0]));
       case 'setAppearance': {
         const a = hub.setAppearance(args[0] && typeof args[0] === 'object' ? (args[0] as Partial<Appearance>) : {});
         applyWindowAppearance(a);
@@ -514,9 +616,8 @@ function start(): void {
       default:
         return (hub as any)[method](...args);
     }
-  });
+  }
 
-  createWindow();
   // Micro des sites (dictée / mode voix) : choix par panneau mémorisé dans les réglages du hub.
   webPanels = new WebPanels(win!, {
     get: (id) => hub.settings.webMic?.[id] ?? 'ask',

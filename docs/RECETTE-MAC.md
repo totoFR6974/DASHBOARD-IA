@@ -150,3 +150,18 @@ Cas où l'installation automatique est refusée (bouton « Télécharger » manu
 - [ ] Après la mise à jour, ~/Library/LaunchAgents/com.hub-ia.ollama.plist existe toujours (Ollama démarre avec le Mac)
 - [ ] Version Homebrew d’Ollama : « Mettre à jour » lance « brew upgrade ollama », puis relance le serveur
 - [ ] Décocher « Vérifier les mises à jour d’Ollama au lancement du hub », relancer le hub : aucun point sur « Réglages »
+
+## 18. Piloter le hub du PC depuis le Mac (même réseau, même version)
+
+- [ ] Sur le PC : Réglages › Accès à distance › « Activer l’accès à distance » (Windows peut demander d’autoriser Hub IA sur le réseau : accepter pour les réseaux privés), puis « Autoriser un autre hub » : un code ABCD-EFGH s’affiche avec l’adresse du PC et sa version
+- [ ] Sur le Mac : Réglages › Piloter un autre hub › « Rechercher sur le réseau » : le PC apparaît avec sa version (macOS peut demander l’accès au réseau local : accepter). Sinon, taper l’adresse du PC
+- [ ] « Choisir », taper le code, « Associer » : la carte du PC apparaît dans « Hubs associés », et un raccourci avec son nom dans « Accès rapide » ; côté PC, l’appareil est listé avec « hub (contrôle complet) »
+- [ ] « Ouvrir » : une fenêtre « Hub IA — <nom du PC> (à distance) » s’ouvre, avec le bandeau « Contrôle à distance » ; les discussions et dossiers sont ceux du PC, les images s’affichent
+- [ ] Envoyer un message à Claude dans cette fenêtre : la réponse s’écrit en direct, et la même discussion avance aussi sur l’écran du PC
+- [ ] Joindre une image depuis le Mac (glisser-déposer ou trombone) : elle part avec le message, et le fichier est enregistré sur le PC
+- [ ] Ouvrir une pièce jointe d’un message : le fichier est copié sur le Mac et s’ouvre dans l’appli du Mac
+- [ ] Dictée vocale dans la fenêtre de pilotage : elle utilise le micro et le modèle du Mac
+- [ ] « Ajouter un dossier », l’onglet « IA web » et les réglages d’accès à distance n’apparaissent pas dans la fenêtre de pilotage
+- [ ] Fermer le hub du PC : le bandeau passe en orange « Connexion perdue, reconnexion… » ; rouvrir le hub du PC : la fenêtre se recharge toute seule
+- [ ] Versions différentes (mettre à jour un seul des deux hubs) : « Ouvrir » refuse avec le message « Versions différentes : ce hub est en …, « PC » en … »
+- [ ] « Retirer » sur le Mac : la fenêtre se ferme, et côté PC l’appareil disparaît de la liste

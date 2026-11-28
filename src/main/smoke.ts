@@ -16,6 +16,7 @@ import { smokeAppearance } from './smoke-appearance';
 import { smokeOllamaUpdate } from './smoke-ollama-update';
 import { smokeVaultSync } from './smoke-vaultsync';
 import { smokeMobile } from './smoke-mobile';
+import { smokeRemote } from './smoke-remote';
 import { smokeAgents } from './smoke-agents';
 import { cpSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -567,6 +568,7 @@ export async function runSmoke(win: BrowserWindow, outDir: string, getWeb: () =>
     return;
   }
   if (only === 'mobile') return smokeMobile(win, outDir, shot, js);
+  if (only === 'remote') return smokeRemote(win, outDir, shot, js);
   if (only === 'agents') return smokeAgents(shot, js);
   if (only === 'web') return smokeWeb(win, outDir, getWeb, shot, js);
   if (only === 'webmic') return smokeWebMic(win, outDir, getWeb, shot, js);
